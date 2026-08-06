@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# dev-enable <template> — copy a devShell flake template into the current
+# project and activate it with direnv. Toolchains stay per-project; nothing is
+# ever installed globally (AGENTS.md).
+set -euo pipefail
+
+TEMPLATES="$HOME/dotfiles/templates/devshells"
+
+usage() {
+  echo "usage: dev-enable <template>"
+  echo "available templates:"
+  ls -1 "$TEMPLATES" 2>/dev/null | sed 's/^/  /'
+  exit 1
+}
+
+[ $# -eq 1 ] || usage
+tpl="$TEMPLATES/$1"
+[ -d "$tpl" ] || { echo "no such template: $1"; usage; }
+
+if [ -e flake.nix ]; then
+  echo "flake.nix already exists here — merge the devShell manually from:"
+  echo "  $tpl/flake.nix"
+  exit 1
+fi
+
+cp "$tpl/flake.nix" ./flake.nix
+if [ ! -e .envrc ]; then
+  echo "use flake" > .envrc
+fi
+
+echo "devShell '$1' added. Review flake.nix, then run:  direnv allow"

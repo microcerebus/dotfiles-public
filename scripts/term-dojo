@@ -1,0 +1,1982 @@
+#!/usr/bin/env python3
+"""term-dojo — terminal mastery training (PLAN Phase 5).
+
+Drills, quizzes, daily practice, progress tracking. Question content comes
+from YOUR actual mappings: Neovim keymaps are dumped from the live config
+(NvChad defaults + Bruno's + myhost tweaks), tmux bindings are parsed from
+this repo's tmux.conf. Herdr/shell/git banks mirror this repo's real setup
+(see AGENTS.md layering).
+
+Commands:
+  term-dojo game [ch]    THE GAME: 9-chapter campaign, live-verified missions,
+                         xp, belts. Premise: amnesia, but VSCode memory intact.
+  term-dojo game reset   wipe game progress (quiz/tutor history stays)
+  term-dojo              daily practice (10 questions, weakest topics first)
+  term-dojo quiz [topic] quiz on one topic (or all)
+  term-dojo drill [topic] hands-on drill instructions
+  term-dojo tutor tmux|vim [N]  interactive tutorial: do it for real, verified live
+  term-dojo topics       list topics and question counts
+  term-dojo stats        progress per topic + streak
+  term-dojo sync         rebuild question bank from live configs
+  term-dojo cheatsheet   regenerate docs/cheatsheet.md from the bank
+
+State: ~/.local/state/term-dojo/{bank.json,progress.json}
+"""
+
+import hashlib
+import json
+import os
+import random
+import re
+import select
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+from datetime import date
+from pathlib import Path
+
+STATE_DIR = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state")) / "term-dojo"
+BANK = STATE_DIR / "bank.json"
+PROGRESS = STATE_DIR / "progress.json"
+DOTFILES = Path(os.environ.get("DOTFILES", Path.home() / "dotfiles"))
+TMUX_CONF = DOTFILES / "files/.config/tmux/tmux.conf"
+CHEATSHEET = DOTFILES / "docs/cheatsheet.md"
+
+TOPICS = ["ghostty", "tmux", "neovim", "motions", "shell", "git", "nix", "herdr", "agents"]
+
+# ── question bank sources ────────────────────────────────────────────────────
+
+# Descriptions for tmux commands found in tmux.conf (parser fallback-skips
+# anything unknown rather than inventing wrong answers).
+TMUX_CMD_DESC = {
+    "select-pane -L": "focus the pane to the left",
+    "select-pane -D": "focus the pane below",
+    "select-pane -U": "focus the pane above",
+    "select-pane -R": "focus the pane to the right",
+    "resize-pane -L 5": "resize the pane left (repeatable)",
+    "resize-pane -D 5": "resize the pane down (repeatable)",
+    "resize-pane -U 5": "resize the pane up (repeatable)",
+    "resize-pane -R 5": "resize the pane right (repeatable)",
+    "last-window": "jump to the last-used window (alt-tab style)",
+    "send-prefix": "send a literal prefix keystroke through to the app",
+}
+TMUX_CMD_PREFIX_DESC = {
+    "split-window -h": "split the pane right (keeps current path)",
+    "split-window -v": "split the pane down (keeps current path)",
+    "source-file": "reload the tmux config",
+    "begin-selection": "start a selection (copy-mode, like v in vim)",
+    "copy-selection-and-cancel": "yank selection to system clipboard and exit copy-mode",
+}
+# Core tmux builtins we deliberately train even though tmux.conf doesn't
+# rebind them (they are part of the drills in docs/tmux-training.md).
+TMUX_BUILTINS = [
+    ("C-a c", "create a new window"),
+    ("C-a ,", "rename the current window"),
+    ("C-a n / C-a p", "go to next / previous window"),
+    ("C-a 1..9", "jump to window by number"),
+    ("C-a d", "detach from the session (it keeps running)"),
+    ("C-a s", "open the session picker"),
+    ("C-a z", "zoom the current pane to full window (toggle)"),
+    ("C-a x", "kill the current pane"),
+    ("C-a q", "flash pane numbers (press one to jump)"),
+    ("C-a [", "enter copy-mode"),
+    ("C-a ]", "paste the tmux buffer"),
+    ("tmux new -s name", "start a new named session"),
+    ("tmux attach -t name", "attach to a named session"),
+]
+
+# Ghostty defaults verified via `ghostty +list-keybinds --default` 2026-07-05.
+GHOSTTY_BANK = [
+    ("cmd+t", "new tab"),
+    ("cmd+w", "close the current surface (split/tab)"),
+    ("cmd+1..8 / cmd+9", "go to tab N / last tab"),
+    ("cmd+shift+[ / ]", "previous / next tab"),
+    ("cmd+d / cmd+shift+d", "split right / split down"),
+    ("cmd+[ / cmd+]", "focus previous / next split"),
+    ("cmd+alt+arrows", "focus split in that direction"),
+    ("cmd+ctrl+arrows", "resize split in that direction"),
+    ("cmd+ctrl+=", "equalize all splits"),
+    ("cmd+shift+enter", "zoom the current split (toggle)"),
+    ("cmd+enter", "toggle fullscreen"),
+    ("cmd+f / cmd+g", "search scrollback / next match"),
+    ("cmd+k", "clear the screen"),
+    ("cmd+shift+p", "command palette"),
+    ("cmd+= / cmd+- / cmd+0", "font bigger / smaller / reset"),
+    ("cmd+shift+,", "reload Ghostty config"),
+    ("cmd+shift+up / down", "jump to previous / next shell prompt"),
+    ("select text", "copies automatically (copy-on-select = clipboard)"),
+    ("cmd+space", "Raycast (owns the Spotlight chord)"),
+    ("caps lock (tap / hold)", "Escape / Ctrl (Karabiner remap)"),
+    ("cmd+alt+ctrl+g", "focus or launch Ghostty (Hammerspoon hyper)"),
+    # VSCode cmd-key layer: Ghostty translates these to ctrl bytes
+    # (files/.config/ghostty/config, docs/vscode-to-nvim.md).
+    ("cmd+p (VSCode layer)", "quick open - sends ctrl+p, Telescope find files in nvim"),
+    ("cmd+s (VSCode layer)", "save - sends ctrl+s (NvChad save binding)"),
+    ("cmd+z (VSCode layer)", "undo - sends ctrl+z (Bruno's normal-mode undo)"),
+    ("cmd+a (VSCode layer)", "select all - inside tmux press it twice (prefix eats one)"),
+    ("cmd+b (VSCode layer)", "toggle NvimTree - sends ctrl+n, never ctrl+b (Herdr prefix)"),
+]
+
+# NvChad/product-level commands — merged into the neovim topic alongside the
+# live keymap dump.
+NVCHAD_BANK = [
+    (":Nvdash", "reopen the NvChad dashboard after it's closed"),
+    (":NvCheatsheet (or Space c h)", "full keybinding cheatsheet"),
+    ("Space t h", "NvChad theme picker (catppuccin ↔ latte)"),
+    (":Mason", "install/manage LSP servers, formatters, debuggers"),
+    (":Lazy", "plugin manager UI (sync, update, profile)"),
+    (":checkhealth", "diagnose nvim config and providers"),
+    (":TSInstall <lang>", "install a treesitter parser"),
+    ("Space (wait a beat)", "which-key popup showing every leader binding"),
+    ("Tab / S-Tab", "next / previous buffer (tabufline)"),
+    (":LspInfo", "show LSP clients attached to this buffer"),
+]
+
+NIX_BANK = [
+    ("rebuild", "apply the flake: build + switch to a new generation"),
+    ("darwin-rebuild --rollback", "switch back to the previous generation"),
+    ("sudo darwin-rebuild --list-generations", "list system generations"),
+    ("nix flake update herdr && rebuild", "update one pinned input"),
+    ("nix flake check", "validate the flake evaluates"),
+    ("bash tests/mac_setup_test.sh", "sandboxed bootstrap test (never touches real system)"),
+    ("edit files/.config/*", "takes effect immediately — out-of-store symlinks, no rebuild"),
+    ("edit nix/*.nix", "needs `rebuild` to take effect"),
+    ("nix run nixpkgs#<pkg>", "try a tool once without installing it"),
+    ("Home Manager vs brew", "HM owns CLI tools; brew owns GUI apps (AGENTS.md layers)"),
+    ("dev-enable <tpl> && direnv allow", "per-project toolchain; nothing global"),
+]
+
+SHELL_BANK = [
+    ("atuin stats", "your most-used commands"),
+    ("atuin search <term>", "search history from the CLI (ctrl-r is the UI)"),
+    ("ctrl-r", "search shell history (Atuin)"),
+    ("up-arrow", "walk history of the current session only (Atuin session filter)"),
+    ("ctrl-t", "fuzzy-pick files into the command line (fzf)"),
+    ("alt-c", "fuzzy-pick a directory and cd into it (fzf)"),
+    ("z <dir>", "jump to a frecent directory (zoxide)"),
+    ("zi", "interactive zoxide picker"),
+    ("ctrl-a / ctrl-e", "cursor to start / end of line"),
+    ("ctrl-w", "delete the word before the cursor"),
+    ("ctrl-u", "delete to start of line"),
+    ("ctrl-f", "accept the autosuggestion ghost text (zsh-autosuggestions)"),
+    ("cc", "alias: claude --dangerously-skip-permissions (high-agency)"),
+    ("EDITOR=nvim", "git commit, crontab and friends open in Neovim"),
+    ("BROWSER=open-chrome", "CLI-opened links (gh, OAuth flows) land in Chrome; Brave stays personal"),
+    ("cmd_duration (starship)", "prompt shows how long slow commands took"),
+    ("v", "alias: open nvim"),
+    ("c", "alias: clear the screen"),
+    ("g", "alias: git"),
+    ("rebuild", "alias: apply the flake (sudo darwin-rebuild switch)"),
+    ("dev-doctor", "scan current project for toolchain markers, suggest devShells"),
+    ("dev-enable <tpl>", "copy a devShell template here + wire direnv"),
+    ("direnv allow", "trust and activate this project's .envrc"),
+]
+
+GIT_BANK = [
+    ("lg", "alias: open lazygit"),
+    ("gst", "git status (oh-my-zsh git plugin)"),
+    ("gco", "git checkout"),
+    ("gaa", "git add --all"),
+    ("gcmsg \"msg\"", "git commit --message"),
+    ("gp / gl", "git push / git pull"),
+    ("glog", "git log --oneline --decorate --graph"),
+    ("gd", "git diff"),
+    ("pn / pi / pa / pr", "alias: pnpm / install / add / run"),
+    ("space (lazygit)", "stage / unstage the selected file or hunk"),
+    ("c (lazygit)", "commit staged changes"),
+    ("P (lazygit)", "push to the remote"),
+    ("p (lazygit)", "pull from the remote"),
+    ("? (lazygit)", "show all keybindings for the current panel"),
+    ("enter (lazygit)", "drill into a file to stage individual hunks/lines"),
+    ("s (lazygit, files panel)", "stash all changes"),
+    ("[ / ] (lazygit)", "previous / next tab within a panel"),
+    ("git worktree add ../wt-x branch", "check out a branch in a second working tree"),
+    ("git worktree list", "list all working trees for this repo"),
+    ("git worktree remove ../wt-x", "remove a working tree when done"),
+    ("hunk", "review-first terminal diff viewer (agent changesets)"),
+]
+
+HERDR_BANK = [
+    ("herdr", "launch the agent cockpit in the current project"),
+    ("C-b ?", "herdr: show help / all prefix actions"),
+    ("C-b w", "herdr: workspace picker"),
+    ("C-b s", "herdr: settings"),
+    ("C-b q", "herdr: detach (server keeps agents alive)"),
+    ("C-b g", "herdr: goto (jump navigation)"),
+    ("C-b shift+n", "herdr: create a new workspace"),
+    ("herdr server stop", "stop the herdr server (needed after protocol updates)"),
+]
+
+AGENTS_BANK = [
+    ("HERDR_ENV=1", "set inside herdr panes; agent skill refuses to act without it, and no auto-tmux wrappers when set"),
+    ("herdr pane list", "see all panes and which is focused (yours)"),
+    ("herdr pane read 1-1 --source recent --lines 50", "read another pane's recent output"),
+    ("herdr pane split 1-2 --direction right --no-focus", "split a pane without stealing focus"),
+    ("herdr pane run <id> \"cmd\"", "type a command + Enter into a pane"),
+    ("herdr wait output <id> --match \"ready\" --timeout 30000", "block until text appears in a pane"),
+    ("herdr wait agent-status <id> --status done", "block until a sibling agent finishes"),
+    ("codex", "OpenAI Codex CLI (ChatGPT login) — second-opinion agent"),
+    ("nix flake update herdr && rebuild", "update herdr (never `herdr update`; it's a Nix store binary)"),
+]
+
+MOTIONS_BANK = [
+    ("w / b", "next / previous word start"),
+    ("e", "end of word"),
+    ("0 / $", "start / end of line"),
+    ("gg / G", "top / bottom of file"),
+    ("{ / }", "previous / next paragraph"),
+    ("f<char> / F<char>", "jump to next / previous <char> on the line"),
+    ("]f / [f", "next / previous function (treesitter; ]F [F = end)"),
+    ("]k / [k", "next / previous class or interface"),
+    ("]i / ]o", "next if/switch/try block / next loop"),
+    ("ci\"", "change inside the quotes"),
+    ("di(", "delete inside the parentheses"),
+    ("yap", "yank around paragraph"),
+    ("va{", "visually select around braces"),
+    ("vaf / cif", "select around / change inside a function"),
+    ("cia", "change an argument (ac/ic class, ai/ii if-try, al/il loop)"),
+    ("sx / sX", "swap argument with next / previous"),
+    ("saiw\" / sd\" / sr\"'", "surround word with quotes / delete them / change quote style"),
+    (". (dot)", "repeat the last change"),
+    ("u / ctrl-r", "undo / redo"),
+    ("* / #", "search word under cursor forward / backward"),
+    ("`` (backtick backtick)", "jump back to where you just were"),
+    ("qa … q / @a / 3@a", "record a macro into register a / replay it / replay 3x"),
+    ('"ayy / "ap', "yank the line into register a / paste register a"),
+    ("ma / `a", "drop mark a / jump exactly back to it"),
+    (":g/pat/d", "delete every line matching pat (the global command)"),
+    (":g/pat/norm <keys>", "run normal-mode keys on every matching line"),
+    ("ctrl-o / ctrl-i", "jumplist: go back / forward through your jumps"),
+]
+
+# Neovim mappings that aren't worth quizzing (noise, duplicates, mouse).
+NVIM_SKIP = re.compile(r"<Plug>|Mouse|ScrollWheel|<SNR>|which-key|Nvim builtin", re.I)
+NVIM_MAX = 60  # cap so telescope/gitsigns internals don't drown the signal
+
+
+def _clean_desc(desc: str) -> str:
+    # strip nerd-font glyphs / private-use icons Bruno puts in descs
+    return re.sub(r"[-\U000F0000-\U000FFFFD]", "", desc).strip()
+
+
+def dump_nvim_maps():
+    """Ask the live Neovim for its normal-mode maps with descriptions."""
+    # headless print() has no real newlines between calls — use an explicit
+    # record separator and split on it here.
+    lua = (
+        "local t={} for _,m in ipairs(vim.api.nvim_get_keymap('n')) do "
+        "if m.desc and m.desc ~= '' then t[#t+1]=m.lhs..'\\t'..m.desc end end "
+        "print(table.concat(t,'@@@'))"
+    )
+    try:
+        out = subprocess.run(
+            ["nvim", "--headless", f"+lua vim.defer_fn(function() {lua} vim.cmd('qa!') end, 4000)"],
+            capture_output=True, text=True, timeout=120,
+        ).stderr  # nvim prints lua output to stderr in headless mode
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return []
+    pairs = []
+    for rec in out.split("@@@"):
+        if "\t" not in rec:
+            continue
+        lhs, desc = rec.split("\t", 1)
+        desc = _clean_desc(desc)
+        # drop vim's :-command defaults and raw API descs — noise, not training
+        if desc.startswith(":") or desc.startswith("vim.lsp") or desc.startswith("vim."):
+            continue
+        n_leader = len(lhs) - len(lhs.lstrip(" "))   # leader (Space) in raw form
+        lhs = "Space " * n_leader + lhs.lstrip(" ")
+        lhs = lhs.strip()
+        if not lhs or not desc or NVIM_SKIP.search(lhs + " " + desc):
+            continue
+        if len(lhs) > 16 or len(desc) < 4:
+            continue
+        pairs.append((lhs, desc))
+    # stable de-dupe by lhs, keep first
+    seen, uniq = set(), []
+    for lhs, desc in pairs:
+        if lhs not in seen:
+            seen.add(lhs)
+            uniq.append((lhs, desc))
+    return uniq[:NVIM_MAX]
+
+
+def parse_tmux_conf():
+    pairs = list(TMUX_BUILTINS)
+    if not TMUX_CONF.exists():
+        return pairs
+    for line in TMUX_CONF.read_text().splitlines():
+        m = re.match(r"\s*bind(?:\s+-r)?(?:\s+-T\s+copy-mode-vi)?\s+(\S+)\s+(.+?)(?:\s*#.*)?$", line)
+        if not m:
+            continue
+        key, cmd = m.group(1), m.group(2).strip()
+        copy_mode = "-T copy-mode-vi" in line
+        desc = TMUX_CMD_DESC.get(cmd)
+        if not desc:
+            for frag, d in TMUX_CMD_PREFIX_DESC.items():
+                if cmd.startswith(frag) or frag in cmd:
+                    desc = d
+                    break
+        if not desc:
+            continue
+        shown = f"{key} (copy-mode)" if copy_mode else f"C-a {key}"
+        pairs.append((shown, desc))
+    return pairs
+
+
+def qid(topic, key):
+    return hashlib.sha1(f"{topic}:{key}".encode()).hexdigest()[:12]
+
+
+def build_bank():
+    bank = {}
+    sources = {
+        "ghostty": GHOSTTY_BANK,
+        "tmux": parse_tmux_conf(),
+        "neovim": NVCHAD_BANK + dump_nvim_maps(),
+        "motions": MOTIONS_BANK,
+        "shell": SHELL_BANK,
+        "git": GIT_BANK,
+        "nix": NIX_BANK,
+        "herdr": HERDR_BANK,
+        "agents": AGENTS_BANK,
+    }
+    for topic, pairs in sources.items():
+        bank[topic] = [{"id": qid(topic, k), "key": k, "desc": d} for k, d in pairs]
+    return bank
+
+
+# ── state ────────────────────────────────────────────────────────────────────
+
+def load(path, default):
+    try:
+        return json.loads(path.read_text())
+    except (FileNotFoundError, json.JSONDecodeError):
+        return default
+
+
+def save(path, data):
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=1))
+
+
+def get_bank():
+    bank = load(BANK, None)
+    if bank is None:
+        print("(first run: building question bank from your configs…)")
+        bank = build_bank()
+        save(BANK, bank)
+    return bank
+
+
+# ── quiz engine ──────────────────────────────────────────────────────────────
+
+def weight(prog, q):
+    s = prog.get("q", {}).get(q["id"], {})
+    right, wrong = s.get("r", 0), s.get("w", 0)
+    if right + wrong == 0:
+        return 3.0            # unseen: high priority
+    return 1.0 + 2.5 * wrong / (right + wrong)
+
+
+def pick_questions(bank, prog, topics, n):
+    pool = [(t, q) for t in topics for q in bank.get(t, [])]
+    if not pool:
+        return []
+    weights = [weight(prog, q) for _, q in pool]
+    chosen, used = [], set()
+    while pool and len(chosen) < n:
+        i = random.choices(range(len(pool)), weights=weights, k=1)[0]
+        t, q = pool[i]
+        if q["id"] not in used:
+            used.add(q["id"])
+            chosen.append((t, q))
+        pool.pop(i)
+        weights.pop(i)
+    return chosen
+
+
+def ask(topic, q, distractors):
+    """Multiple choice: what does <key> do?"""
+    opts = random.sample(distractors, min(3, len(distractors)))
+    opts.append(q["desc"])
+    random.shuffle(opts)
+    correct = opts.index(q["desc"]) + 1
+    print(f"\n[{topic}]  What does  \033[1m{q['key']}\033[0m  do?")
+    for i, o in enumerate(opts, 1):
+        print(f"  {i}) {o}")
+    while True:
+        a = input("> ").strip()
+        if a in ("1", "2", "3", "4")[: len(opts)]:
+            break
+        if a in ("q", "quit", "exit"):
+            return None
+        print("answer 1-%d (or q to stop)" % len(opts))
+    ok = int(a) == correct
+    print("\033[32m  ✓ correct\033[0m" if ok
+          else f"\033[31m  ✗ nope\033[0m — {q['key']} → {q['desc']}")
+    return ok
+
+
+def run_quiz(topics, n):
+    bank = get_bank()
+    prog = load(PROGRESS, {})
+    qs = pick_questions(bank, prog, topics, n)
+    if not qs:
+        print("no questions — run `term-dojo sync` first?")
+        return
+    all_descs = [q["desc"] for t in topics for q in bank.get(t, [])]
+    right = total = 0
+    for topic, q in qs:
+        others = [d for d in all_descs if d != q["desc"]]
+        res = ask(topic, q, others)
+        if res is None:
+            break
+        total += 1
+        right += res
+        s = prog.setdefault("q", {}).setdefault(q["id"], {"r": 0, "w": 0})
+        s["r" if res else "w"] += 1
+        s["last"] = int(time.time())
+    if total:
+        today = date.today().isoformat()
+        days = prog.setdefault("days", {})
+        d = days.setdefault(today, {"r": 0, "t": 0})
+        d["r"] += right
+        d["t"] += total
+        save(PROGRESS, prog)
+        print(f"\nscore: {right}/{total}   (streak: {streak_len(prog)} day(s))")
+
+
+def streak_len(prog):
+    days = sorted(prog.get("days", {}).keys(), reverse=True)
+    if not days:
+        return 0
+    n, cur = 0, date.today()
+    for d in days:
+        if (cur - date.fromisoformat(d)).days in (0, 1):
+            n += 1
+            cur = date.fromisoformat(d)
+        else:
+            break
+    return n
+
+
+# ── drills (hands-on; quiz can't check these — you do them in a real term) ──
+
+DRILLS = {
+    "ghostty": """\
+ghostty drills:
+ 1. cmd+d, cmd+shift+d → 3 splits; hop with cmd+[ ] and cmd+alt+arrows;
+    resize with cmd+ctrl+arrows; equalize (cmd+ctrl+=); zoom one (cmd+shift+enter).
+ 2. cmd+f search something in scrollback, cmd+g through matches.
+ 3. cmd+shift+up/down to jump between old prompts (no scrolling).
+ 4. select some output — paste it elsewhere without ever pressing copy.""",
+    "nix": """\
+nix drills:
+ 1. add a harmless pkg (e.g. cowsay) to nix/user.nix → rebuild → run it →
+    remove it → rebuild. you've done the full change cycle.
+ 2. sudo darwin-rebuild --list-generations; read what you just made.
+ 3. edit files/.config/ghostty/config padding → cmd+shift+, — no rebuild needed. revert.
+ 4. scratch dir: dev-enable python → direnv allow → python3 --version → delete dir.""",
+    "tmux": """\
+tmux drills (do in a real Ghostty tab; from docs/tmux-training.md):
+ 1. session lifecycle: tmux new -s dojo → run something → C-a d → attach → kill. <30s.
+ 2. window flow: 3 windows, rename each (C-a ,), hop by number, bounce with C-a Tab.
+ 3. pane sculpting: build editor-top/two-shells-below with C-a | and C-a -,
+    resize with held C-a H/J/K/L, zoom (C-a z), unzoom, kill all.
+ 4. copy-mode: ls -la → C-a [ → /filename → v → y → paste into prompt. no mouse.
+ 5. recovery: close the Ghostty window with tmux attached; reopen; reattach.""",
+    "neovim": """\
+neovim drills (open ~/dotfiles in nvim):
+ 1. <C-p> a file by fuzzy name; <C-b> the tree; Space f w a string in the repo.
+ 2. jump gd on a symbol, K for hover, <BS> back.
+ 3. Space c h — skim the cheatsheet; find one binding you didn't know.
+ 4. Space r a rename something, then u to undo.
+ 5. ]c / [c between git hunks in a dirty file; Space l g for lazygit.""",
+    "motions": """\
+motion drills (any file, no mouse, no arrow keys):
+ 1. navigate one screen using only w b e { } f<char>.
+ 2. change a string with ci", a call's args with ci(, delete a block with da{.
+ 3. record: make an edit, move elsewhere, repeat it with . (dot).
+ 4. * on a word, n through matches, `` back to start.""",
+    "shell": """\
+shell drills:
+ 1. ctrl-r and find a command from yesterday (Atuin); run it.
+ 2. ctrl-t to add a deep file path to a command without typing it.
+ 3. z into three projects by fragment; zi when ambiguous.
+ 4. scratch dir: dev-doctor → dev-enable node → direnv allow → node --version.""",
+    "git": """\
+git drills:
+ 1. lg → stage two files separately (space), commit (c), amend something.
+ 2. worktree: git worktree add ../wt-test main → ls it → remove it.
+ 3. hunk on a dirty tree; review a diff file-by-file.""",
+    "herdr": """\
+herdr drills (inside Ghostty):
+ 1. herdr in ~/dotfiles → C-b ? → skim actions → C-b w picker.
+ 2. open a second workspace (C-b shift+n) in another project; hop between.
+ 3. C-b q to detach; herdr again — session survived.""",
+    "agents": """\
+agent workflow drills (inside a herdr pane running claude):
+ 1. ask claude to run `herdr pane list` and explain what it sees.
+ 2. have it split a --no-focus pane, run tests there, wait on output, report.
+ 3. confirm the guardrail: outside herdr (HERDR_ENV unset) the skill must refuse.""",
+}
+
+
+# ── interactive tutor ────────────────────────────────────────────────────────
+# Unlike drills (printed instructions), the tutor verifies you actually did it:
+# tmux lessons poll the live tmux server; vim lessons check the buffer edits
+# you made in a real nvim session on scratch files.
+
+def tutor_mark_done(prog, kind, title):
+    prog.setdefault("tutor", {}).setdefault(kind, {})[title] = int(time.time())
+    save(PROGRESS, prog)
+
+
+def _tmux(*args):
+    r = subprocess.run(["tmux", *args], capture_output=True, text=True)
+    return r.stdout.rstrip("\n")
+
+
+def _tfmt(target, fmt):
+    return _tmux("display", "-p", "-t", target, fmt)
+
+
+def wait_for(check, hint=None):
+    """Poll check() until true; user may type s⏎ (skip) or q⏎ (quit) meanwhile."""
+    t0, hinted = time.time(), False
+    while True:
+        try:
+            if check():
+                return "done"
+        except (ValueError, OSError):
+            pass
+        ready, _, _ = select.select([sys.stdin], [], [], 0.4)
+        if ready:
+            ans = sys.stdin.readline().strip().lower()
+            if ans in ("s", "skip"):
+                return "skip"
+            if ans in ("q", "quit"):
+                return "quit"
+        if hint and not hinted and time.time() - t0 > 25:
+            print(f"  \033[33mhint:\033[0m {hint}")
+            hinted = True
+
+
+def tmux_tutor_lessons(ses, win, pane, ses_name=""):
+    """13 lessons against the live server. ses/win/pane identify the tutor's
+    own location so lessons can tell 'you left and came back'. ses must be a
+    session *id* ($N), not a name: names are fuzzy tmux targets, and lesson 2
+    renames a window to 'dojo', which would shadow a session named 'dojo'."""
+
+    def wc():
+        return int(_tfmt(ses, "#{session_windows}"))
+
+    def pc():
+        return int(_tfmt(win, "#{window_panes}"))
+
+    def here():
+        return _tfmt(ses, "#{window_id}") == win and _tfmt(pane, "#{pane_active}") == "1"
+
+    def zoomed():
+        return _tfmt(win, "#{window_zoomed_flag}") == "1"
+
+    def nbufs():
+        return len([ln for ln in _tmux("list-buffers").splitlines() if ln])
+
+    def geometry():
+        return _tmux("list-panes", "-t", win, "-F", "#{pane_id}:#{pane_width}x#{pane_height}")
+
+    def other_panes():
+        return [p for p in _tmux("list-panes", "-t", win, "-F", "#{pane_id}").splitlines()
+                if p and p != pane]
+
+    lessons = []
+
+    def lesson(title, text, check, setup=None, hint=None):
+        lessons.append({"title": title, "text": text, "check": check,
+                        "setup": setup, "hint": hint})
+
+    def focus_check(st):
+        if not here():
+            st["away"] = True
+        return st.get("away", False) and here()
+
+    def paste_setup():
+        return {"caps": {p: _tmux("capture-pane", "-p", "-t", p) for p in other_panes()}}
+
+    def paste_check(st):
+        first = next((ln.strip() for ln in _tmux("show-buffer").splitlines() if ln.strip()), "")
+        if len(first) < 2:
+            return False
+        for p in other_panes():
+            cap = _tmux("capture-pane", "-p", "-t", p)
+            if first in cap and first not in st["caps"].get(p, ""):
+                return True
+        return False
+
+    def detach_check(st):
+        attached = int(_tfmt(ses, "#{session_attached}") or "1")
+        if attached == 0:
+            st["gone"] = True
+        return st.get("gone", False) and attached > 0
+
+    def reload_setup():
+        _tmux("set", "-g", "status-right", " reload me: C-a r ")
+        return {}
+
+    lesson("new window, then bounce back",
+           "C-a c opens a new window (fresh shell). C-a Tab flips to the last\n"
+           "window - this one. Do both.",
+           lambda st: wc() > st["w"] and here(),
+           setup=lambda: {"w": wc()},
+           hint="C-a means: press ctrl+a, release, then press the next key.")
+    lesson("rename a window",
+           "Hop to the new window (C-a Tab), rename it with C-a , (type: dojo,\n"
+           "then enter), and come back with C-a Tab.",
+           lambda st: "dojo" in _tmux("list-windows", "-t", ses,
+                                      "-F", "#{window_name}").splitlines() and here(),
+           hint="C-a , opens a prompt in the status bar; clear it and type dojo.")
+    lesson("split right",
+           "C-a | opens a pane to the right (it inherits this directory).",
+           lambda st: pc() > st["p"],
+           setup=lambda: {"p": pc()},
+           hint="that is C-a, then shift+backslash (the pipe key).")
+    lesson("split down",
+           "C-a - splits downward. You should end up with three panes.",
+           lambda st: pc() > st["p"],
+           setup=lambda: {"p": pc()})
+    lesson("move focus, vim style",
+           "C-a h/j/k/l moves between panes (same keys as nvim windows).\n"
+           "Wander to another pane, then land focus back on THIS one - watch\n"
+           "the lavender border follow you.",
+           focus_check,
+           hint="the pane with the bright border is the focused one.")
+    lesson("resize panes",
+           "Resize is repeatable: press C-a once, then tap H/J/K/L several\n"
+           "times without re-pressing the prefix (H=left J=down K=up L=right).",
+           lambda st: pc() > 1 and geometry() != st["g"],
+           setup=lambda: {"g": geometry()},
+           hint="capital letters - hold shift. Tap L L L to see it move.")
+    lesson("zoom a pane",
+           "C-a z zooms the focused pane to fill the window.",
+           lambda st: zoomed())
+    lesson("unzoom",
+           "C-a z again restores the layout. Zoom is a toggle.",
+           lambda st: not zoomed())
+    lesson("copy-mode yank",
+           "C-a [ enters copy-mode with vi keys. Move with h/j/k/l or /search,\n"
+           "v starts the selection, y yanks it (also lands on the macOS\n"
+           "clipboard). Yank any line of text.",
+           lambda st: nbufs() > st["b"],
+           setup=lambda: {"b": nbufs()},
+           hint="stuck in copy-mode? q exits; then C-a [ to try again.")
+    lesson("paste into another pane",
+           "Focus a different pane (C-a h/j/k/l) and press C-a ] to paste what\n"
+           "you yanked at its prompt. No need to run it.",
+           paste_check,
+           setup=paste_setup,
+           hint="nothing pasted? yank a longer line first: C-a [ ... v ... y")
+    lesson("kill the extra panes",
+           "C-a x kills the focused pane (y to confirm). Close the extra\n"
+           "shells until only this pane is left. Do NOT kill this pane - it is\n"
+           "running the tutorial.",
+           lambda st: pc() == 1,
+           hint="typing exit in a shell pane also closes it.")
+    lesson("detach, then reattach",
+           f"C-a d detaches - tmux and this tutorial keep running. Reattach\n"
+           f"from the bare prompt with:  tmux attach -t {ses_name or ses}",
+           detach_check,
+           hint="after detaching you are back in your plain shell; run the attach command there.")
+    lesson("reload the config",
+           "I just vandalised your status bar (bottom right). C-a r re-sources\n"
+           "tmux.conf and repairs it.",
+           lambda st: "reload me" not in _tmux("show-options", "-gv", "status-right"),
+           setup=reload_setup,
+           hint="C-a r; you should see a 'reloaded' flash and the clock return.")
+    return lessons
+
+
+def tutor_tmux(start=1):
+    if not os.environ.get("TMUX"):
+        print("the tmux tutor runs inside tmux. From a plain Ghostty tab:")
+        print("  tmux new -s dojo")
+        print("  term-dojo tutor tmux")
+        if os.environ.get("HERDR_ENV") == "1":
+            print("(you are in herdr - use a regular Ghostty tab instead.)")
+        return
+    pane = os.environ.get("TMUX_PANE", "")
+    ses = _tfmt(pane, "#{session_id}")
+    ses_name = _tfmt(pane, "#{session_name}")
+    win = _tfmt(pane, "#{window_id}")
+    lessons = tmux_tutor_lessons(ses, win, pane, ses_name)
+    total = len(lessons)
+    start = max(1, min(start, total))
+    prog = load(PROGRESS, {})
+    print(f"\n\033[1mterm-dojo tmux tutor\033[0m - {total} lessons, verified against the live server.")
+    print("Keys are YOUR tmux.conf bindings (prefix C-a). Do each step for real;")
+    print("I detect it. Type s⏎ to skip a lesson, q⏎ to quit. Progress is saved.")
+    done = 0
+    for i in range(start, total + 1):
+        ls = lessons[i - 1]
+        print(f"\n\033[36m[{i}/{total}] {ls['title']}\033[0m")
+        print("  " + ls["text"].replace("\n", "\n  "))
+        st = ls["setup"]() if ls["setup"] else {}
+        res = wait_for(lambda: ls["check"](st), ls["hint"])
+        if res == "quit":
+            break
+        if res == "done":
+            print("  \033[32m✓ verified\033[0m")
+            tutor_mark_done(prog, "tmux", ls["title"])
+            done += 1
+        else:
+            print("  \033[33m→ skipped\033[0m")
+    else:
+        print("\n\033[1mthat's the whole tmux tour.\033[0m")
+    print(f"\ntmux tutor: {done} lesson(s) verified this run. `term-dojo stats` remembers.")
+
+
+# vim tutor: each lesson writes scratch files, opens your real nvim on them,
+# and verifies the edit after you :wq.
+
+def _rd(d, rel):
+    try:
+        return (d / rel).read_text()
+    except FileNotFoundError:
+        return ""
+
+
+def vim_tutor_lessons():
+    return [
+        {
+            "title": "dd - delete a line",
+            "brief": "one coffee does not belong; /decaf enter, dd, then :wq",
+            "open": "coffee.txt",
+            "files": {"coffee.txt": """\
+term-dojo lesson: dd (a line has to go)
+---------------------------------------
+1. one coffee below is marked for removal - move onto its line
+   (j/k walks down, or / searches: try the odd one out)
+2. dd removes the whole line
+3. :wq writes and quits
+
+keep: espresso
+keep: pour-over
+DELETE ME: decaf
+keep: cold brew
+"""},
+            "verify": lambda d: ("DELETE ME" not in _rd(d, "coffee.txt")
+                                 and "cold brew" in _rd(d, "coffee.txt"),
+                                 "the DELETE ME line should be gone, the keep lines intact"),
+        },
+        {
+            "title": 'ci" - change inside quotes',
+            "brief": 'retarget a string: /change enter, ci", type dojo, esc, :wq',
+            "open": "greet.lua",
+            "files": {"greet.lua": """\
+-- term-dojo lesson: retarget a string (recipe in the terminal)
+-- ci" from anywhere on the line wipes what is between the quotes
+-- and drops you into insert mode; esc when done, then :wq
+
+local greeting = "change me"
+"""},
+            "verify": lambda d: ('"dojo"' in _rd(d, "greet.lua"),
+                                 'the string should read "dojo" (ci" then type dojo)'),
+        },
+        {
+            "title": "ci( and da{ - text objects",
+            "brief": "empty a call's args, delete a whole block",
+            "open": "objects.lua",
+            "files": {"objects.lua": """\
+-- term-dojo lesson: inside ( ) and around { }
+-- task A: cursor anywhere between the parens, ci( deletes the args
+--         (press esc right away - leave them empty)
+-- task B: cursor anywhere inside the braces, da{ deletes the whole
+--         block, braces included
+-- then :wq
+
+configure(delete, these, args)
+
+local leftovers = {
+  "stale one",
+  "stale two",
+}
+"""},
+            "verify": lambda d: ("configure()" in _rd(d, "objects.lua")
+                                 and "stale" not in _rd(d, "objects.lua"),
+                                 "want configure() with empty parens and no stale block left"),
+        },
+        {
+            "title": ". - the dot repeat",
+            "brief": "/old enter, cw new esc, then n . n . - one edit, replayed; :wq",
+            "open": "rename.lua",
+            "files": {"rename.lua": """\
+-- term-dojo lesson: the dot repeat (the recipe is in the terminal)
+
+local counter_old = 1
+local timer_old = 2
+local logger_old = 3
+"""},
+            "verify": lambda d: (all(f"{v}_new" in _rd(d, "rename.lua")
+                                     for v in ("counter", "timer", "logger"))
+                                 and "_old" not in _rd(d, "rename.lua"),
+                                 "want counter_new, timer_new and logger_new, no _old left"),
+        },
+        {
+            "title": "Space / - toggle comment",
+            "brief": "your NvChad comment binding on real code",
+            "open": "noisy.lua",
+            "files": {"noisy.lua": """\
+-- term-dojo lesson: toggle comment (your binding)
+-- space / toggles comment on the current line (gcc also works).
+-- V to select both print lines then space / does them in one go.
+-- comment out BOTH prints, then :wq
+
+print("noisy debug one")
+print("noisy debug two")
+"""},
+            "verify": lambda d: (
+                bool(re.search(r'--\s*print\("noisy debug one"\)', _rd(d, "noisy.lua")))
+                and bool(re.search(r'--\s*print\("noisy debug two"\)', _rd(d, "noisy.lua"))),
+                "both print lines should now start with --"),
+        },
+        {
+            "title": "yap + p - duplicate a paragraph",
+            "brief": "yank around paragraph, paste below",
+            "open": "song.txt",
+            "files": {"song.txt": """\
+term-dojo lesson: yank a paragraph
+1. put the cursor anywhere in the chorus below
+2. yap (yank around paragraph)
+3. p (paste after - instant second chorus)
+4. :wq
+
+sing the dojo song
+loud and long
+"""},
+            "verify": lambda d: (_rd(d, "song.txt").count("sing the dojo song") == 2,
+                                 "the chorus should appear twice (yap, then p)"),
+        },
+        {
+            "title": ":%s - substitute everywhere",
+            "brief": "rebrand every bug in one command",
+            "open": "report.txt",
+            "files": {"report.txt": """\
+term-dojo lesson: file-wide substitute
+this report says bug three times too many. rebrand every one:
+    :%s/bug/feature/g
+then :wq
+
+status: bug in login
+status: bug in signup
+status: bug in checkout
+"""},
+            "verify": lambda d: ("bug" not in _rd(d, "report.txt")
+                                 and _rd(d, "report.txt").count("feature") >= 3,
+                                 ":%s/bug/feature/g should leave no bug behind"),
+        },
+        {
+            "title": "Space f w - live grep hunt",
+            "brief": "telescope live grep across a mini project",
+            "open": "README.md",
+            "files": {
+                "README.md": """\
+# term-dojo lesson: live grep (space f w)
+somewhere in this project a config sets DOJO_TOKEN to CHANGE_ME.
+
+1. space f w (telescope live grep), type: DOJO_TOKEN, enter opens the file
+2. change CHANGE_ME to FOUND (ciw on the word works nicely)
+3. :wa then :qa (write all, quit all)
+""",
+                "notes/roadmap.md": "- teach telescope\n- profit\n",
+                "src/util.lua": "local M = {}\nfunction M.noop() end\nreturn M\n",
+                "src/config.lua": 'return {\n  DOJO_TOKEN = "CHANGE_ME",\n}\n',
+            },
+            "verify": lambda d: ('"FOUND"' in _rd(d, "src/config.lua"),
+                                 "src/config.lua should now say DOJO_TOKEN = \"FOUND\""),
+        },
+        {
+            "title": "Space f f - fuzzy find hunt",
+            "brief": "find a buried file by name",
+            "open": "README.md",
+            "files": {
+                "README.md": """\
+# term-dojo lesson: find files (space f f, or ctrl+p)
+a file named treasure.md is buried somewhere in here.
+
+1. space f f (or ctrl+p), type: treasure, enter
+2. on the STATUS line change LOST to FOUND (ciw again)
+3. :wa then :qa
+""",
+                "deep/nested/vault/treasure.md": "# the treasure\nSTATUS: LOST\n",
+                "deep/nested/decoy.md": "nothing here\n",
+                "shallow/red-herring.md": "also nothing\n",
+            },
+            "verify": lambda d: ("STATUS: FOUND" in _rd(d, "deep/nested/vault/treasure.md"),
+                                 "deep/nested/vault/treasure.md should say STATUS: FOUND"),
+        },
+    ]
+
+
+def tutor_vim(start=1):
+    if not shutil.which("nvim"):
+        print("nvim not found on PATH - the vim tutor needs your real Neovim.")
+        return
+    lessons = vim_tutor_lessons()
+    total = len(lessons)
+    start = max(1, min(start, total))
+    prog = load(PROGRESS, {})
+    root = Path(tempfile.mkdtemp(prefix="term-dojo-vim-"))
+    print(f"\n\033[1mterm-dojo vim tutor\033[0m - {total} lessons in your real nvim config.")
+    print("Each lesson opens nvim on scratch files (instructions are inside the")
+    print("file too). Do the task, :wq, and I check the result on exit.")
+    done = 0
+    i = start
+    while i <= total:
+        ls = lessons[i - 1]
+        d = root / f"lesson{i}"
+        if d.exists():
+            shutil.rmtree(d)
+        for rel, content in ls["files"].items():
+            p = d / rel
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(content)
+        print(f"\n\033[36m[{i}/{total}] {ls['title']}\033[0m - {ls['brief']}")
+        ans = input("  enter opens nvim (s skip, q quit) > ").strip().lower()
+        if ans in ("q", "quit"):
+            break
+        if ans in ("s", "skip"):
+            print("  \033[33m→ skipped\033[0m")
+            i += 1
+            continue
+        subprocess.run(["nvim", ls["open"]], cwd=d)
+        ok, why = ls["verify"](d)
+        if ok:
+            print("  \033[32m✓ verified\033[0m")
+            tutor_mark_done(prog, "vim", ls["title"])
+            done += 1
+            i += 1
+        else:
+            print(f"  \033[31m✗ not quite\033[0m - {why}")
+            ans = input("  r retry, s skip, q quit > ").strip().lower()
+            if ans in ("q", "quit"):
+                break
+            if ans in ("s", "skip"):
+                i += 1
+    shutil.rmtree(root, ignore_errors=True)
+    print(f"\nvim tutor: {done} lesson(s) verified this run. `term-dojo stats` remembers.")
+
+
+def tutor_usage():
+    prog = load(PROGRESS, {})
+    tut = prog.get("tutor", {})
+    print("usage: term-dojo tutor tmux|vim [start-lesson]\n")
+    for kind, lessons in (("tmux", tmux_tutor_lessons("", "", "")),
+                          ("vim", vim_tutor_lessons())):
+        print(f"{kind}:")
+        for i, ls in enumerate(lessons, 1):
+            mark = "\033[32m✓\033[0m" if ls["title"] in tut.get(kind, {}) else "·"
+            print(f"  {mark} {i:>2}  {ls['title']}")
+        print()
+
+
+# ── the game ─────────────────────────────────────────────────────────────────
+# `term-dojo game`: a campaign that teaches the whole stack from scratch.
+# Premise: total amnesia, except VSCode muscle memory survived. Chapters
+# unlock in order; missions are live-verified wherever the tool allows it
+# (vim edits on scratch files, tmux against the live server, shell and git
+# missions on scratch dirs/repos). Herdr has no scriptable server, so the
+# cockpit chapter is scenario quiz + recall (AGENTS.md sharp edge).
+
+MOCHA = {
+    "mauve": (203, 166, 247), "blue": (137, 180, 250), "green": (166, 227, 161),
+    "red": (243, 139, 168), "yellow": (249, 226, 175), "peach": (250, 179, 135),
+    "teal": (148, 226, 213), "lavender": (180, 190, 254), "text": (205, 214, 244),
+    "subtext": (166, 173, 200), "overlay": (108, 112, 134),
+}
+
+
+def col(name, s, bold=False):
+    r, g, b = MOCHA[name]
+    pre = "\033[1m" if bold else ""
+    return f"{pre}\033[38;2;{r};{g};{b}m{s}\033[0m"
+
+
+BELTS = [(0, "white belt"), (40, "yellow belt"), (90, "orange belt"),
+         (150, "green belt"), (230, "blue belt"), (320, "purple belt"),
+         (410, "brown belt"), (480, "red belt"), (540, "black belt"),
+         (589, "sensei")]
+
+
+def belt(xp):
+    cur, nxt = BELTS[0][1], None
+    for t, name in BELTS:
+        if xp >= t:
+            cur = name
+        elif nxt is None:
+            nxt = (t, name)
+    return cur, nxt
+
+
+GAME_INTRO = """
+you wake up on the dojo floor. the year is 2026. you remember... VSCode.
+cmd+P. cmd+shift+F. the sidebar. the mouse. nothing else.
+
+this machine has no VSCode. it has Ghostty, zsh, tmux, Neovim, lazygit,
+and an agent cockpit called Herdr. the good news: it was configured by
+someone who knew you would forget. your cmd keys still work here, and
+every VSCode instinct has a sharper native counterpart waiting.
+
+nine chapters stand between you and mastery. missions are verified live:
+real edits, real panes, real commits. clear 70% of a chapter to unlock
+the next. xp buys belts. the boss trial buys the black belt.
+"""
+
+
+def _after(d, rel, marker):
+    """First line following the line that starts with marker (stripped)."""
+    lines = _rd(d, rel).splitlines()
+    for i, ln in enumerate(lines):
+        if ln.strip().startswith(marker) and i + 1 < len(lines):
+            return lines[i + 1].strip()
+    return ""
+
+
+def _squash(s):
+    return " ".join(s.split())
+
+
+def _canon_key(s):
+    s = s.strip().lower().replace("<", "").replace(">", "")
+    for a, b in (("control", "ctrl"), ("command", "cmd"), ("super", "cmd"),
+                 ("option", "alt"), ("escape", "esc")):
+        s = s.replace(a, b)
+    s = re.sub(r"\bc-", "ctrl+", s)
+    return re.sub(r"[\s+\-]", "", s)
+
+
+# ── game content: vim missions ──────────────────────────────────────────────
+
+def _vim_basics():
+    return [
+        {"id": "first.x", "kind": "vim", "xp": 15,
+         "title": "hjkl + x: walk and strike",
+         "bridge": "VSCode: click the typo, press delete. the mouse is gone now.\nhjkl moves (left/down/up/right); x deletes the char under the cursor.",
+         "brief": "three words have a stray * jammed inside. walk to each with hjkl,\nx it out, then :wq (write and quit).",
+         "open": "walk.txt",
+         "files": {"walk.txt": """\
+term-dojo: walk with hjkl, strike with x
+h = left   j = down   k = up   l = right
+x = delete the character under the cursor
+(arrow keys also work, but hjkl keeps you on the home row - use them)
+
+the qu*ick brown fox
+jumps ov*er the lazy
+d*og
+"""},
+         "verify": lambda d: ("*" not in _rd(d, "walk.txt")
+                              and all(w in _rd(d, "walk.txt") for w in ("quick", "over", "dog")),
+                              "want the three * gone and quick/over/dog intact")},
+        {"id": "first.insert", "kind": "vim", "xp": 15,
+         "title": "i a o: three doors into insert mode",
+         "bridge": "VSCode: you just... typed. here typing is a mode you enter on purpose:\ni = insert here, a = after the cursor, o = open a new line below. esc leaves.",
+         "brief": "sign on to the crew: cursor on the last crew line, press o,\ntype exactly:  - me (the amnesiac)   then esc, then :wq",
+         "open": "crew.txt",
+         "files": {"crew.txt": """\
+term-dojo: insert mode (i = here, a = after, o = new line below)
+add yourself under the last member, then esc and :wq
+
+crew:
+- captain nvim
+- first mate tmux
+"""},
+         "verify": lambda d: ("- me (the amnesiac)" in _rd(d, "crew.txt"),
+                              "want a new line reading: - me (the amnesiac)")},
+        {"id": "first.words", "kind": "vim", "xp": 15,
+         "title": "w b e + dw: think in words",
+         "bridge": "VSCode: alt+arrow hops words. here w/b/e hop words without a modifier,\nand dw deletes from the cursor through the end of the word.",
+         "brief": "delete every REDACTED word: w/b to hop onto the R, dw eats the word.\nthen :wq",
+         "open": "words.txt",
+         "files": {"words.txt": """\
+term-dojo: word motions. w = next word, b = back, e = end of word.
+dw deletes a word. remove all three classified words below, then :wq
+
+the REDACTED treasure is REDACTED buried under the REDACTED palm tree
+"""},
+         "verify": lambda d: ("REDACTED" not in _rd(d, "words.txt")
+                              and "the treasure is buried under the palm tree"
+                              in _squash(_rd(d, "words.txt")),
+                              "want: the treasure is buried under the palm tree")},
+        {"id": "first.ends", "kind": "vim", "xp": 15,
+         "title": "0 $ A: own the line ends",
+         "bridge": "VSCode: home/end keys. here 0 = line start, $ = line end,\nand A = jump to the end AND start typing. capital A, one keystroke.",
+         "brief": "the three statements lost their semicolons. on each line: A ; esc.\nj to drop down a line. then :wq",
+         "open": "semi.lua",
+         "files": {"semi.lua": """\
+-- term-dojo: line ends. 0 = start, $ = end, A = append at end.
+-- give each statement below its trailing semicolon (A ; esc), then :wq
+
+local a = 1
+local b = 2
+local c = 3
+"""},
+         "verify": lambda d: (all(f"= {n};" in _rd(d, "semi.lua") for n in (1, 2, 3)),
+                              "each local line should end with ;")},
+        {"id": "first.jumps", "kind": "vim", "xp": 15,
+         "title": "gg G: teleport top and bottom",
+         "bridge": "VSCode: cmd+home / cmd+end. here gg = first line, G = last line.\nno scrolling, no mouse wheel, instant.",
+         "brief": "1. gg to the top: the title says DRAFT - cw on it, type FINAL, esc\n2. G to the bottom, o, type: THE END   then esc\n3. :wq",
+         "open": "jumps.txt",
+         "files": {"jumps.txt": "term-dojo: gg = top of file, G = bottom of file\n"
+                                "fix the title word up top, add THE END at the bottom, :wq\n\n"
+                                "title: DRAFT\n\n"
+                   + "\n".join(f"chapter {i}: nothing happens" for i in range(1, 21)) + "\n"},
+         "verify": lambda d: ("title: FINAL" in _rd(d, "jumps.txt")
+                              and _rd(d, "jumps.txt").rstrip().endswith("THE END"),
+                              "want title: FINAL up top and THE END as the last line")},
+        {"id": "first.ddp", "kind": "vim", "xp": 15,
+         "title": "dd + p: cut a line, paste it",
+         "bridge": "VSCode: cmd+X the line, click, cmd+V. here dd cuts the whole line\nand p pastes it below the cursor. no selection step needed.",
+         "brief": "the steps are shuffled: dd the '2.' line at the bottom, move up\nonto the '1.' line, p. then :wq",
+         "open": "recipe.txt",
+         "files": {"recipe.txt": """\
+term-dojo: dd cuts the current line, p pastes it below the cursor
+put the tea ceremony back in order, then :wq
+
+1. boil the water
+3. drink the tea
+2. pour the water
+"""},
+         "verify": lambda d: (0 < _rd(d, "recipe.txt").find("1. boil")
+                              < _rd(d, "recipe.txt").find("2. pour")
+                              < _rd(d, "recipe.txt").find("3. drink"),
+                              "want the steps ordered 1, 2, 3")},
+    ]
+
+
+def _vim_flow():
+    return [
+        {"id": "flow.cistr", "kind": "vim", "xp": 15,
+         "title": 'ci": surgical string swap',
+         "bridge": "VSCode: double-click the string, retype it. here ci\" works from\nANYWHERE on the line - vim finds the quotes for you.",
+         "brief": 'cursor anywhere on the password line: ci" then type hunter2,\nesc, :wq',
+         "open": "secret.lua",
+         "files": {"secret.lua": """\
+-- term-dojo: ci" = change inside the quotes, from anywhere on the line
+-- make the password hunter2, then :wq
+
+local password = "correct horse battery staple"
+"""},
+         "verify": lambda d: ('"hunter2"' in _rd(d, "secret.lua"),
+                              'want local password = "hunter2"')},
+        {"id": "flow.objects", "kind": "vim", "xp": 15,
+         "title": "ci( da{: text objects",
+         "bridge": "VSCode: carefully drag-select between brackets. here i( means\n'inside parens' and a{ means 'around braces' - vim does the selecting.",
+         "brief": "task A: cursor between the parens, ci( then esc (leave them empty)\ntask B: cursor inside the braces, da{ deletes the whole block\nthen :wq",
+         "open": "objects.lua",
+         "files": {"objects.lua": """\
+-- term-dojo: text objects. i( = inside parens, a{ = around braces.
+-- empty the launch call's args; delete the junk block entirely. :wq
+
+launch(rockets, now, please)
+
+local junk = {
+  "old",
+  "stuff",
+}
+"""},
+         "verify": lambda d: ("launch()" in _rd(d, "objects.lua")
+                              and '"old"' not in _rd(d, "objects.lua")
+                              and '"stuff"' not in _rd(d, "objects.lua"),
+                              "want launch() empty and the junk block gone")},
+        {"id": "flow.fD", "kind": "vim", "xp": 15,
+         "title": "f + D: snipe and chop",
+         "bridge": "VSCode: shift+end to select to line end, then delete. here f jumps\nto a character on the line and D deletes from the cursor to the end.",
+         "brief": "three lines have garbage bolted on after an at-sign. on each:\n0 (line start), f then the at-sign key, D. j down. and psst: after\nthe first line, . (dot) repeats the whole chop. :wq when clean.",
+         "open": "snip.txt",
+         "files": {"snip.txt": """\
+term-dojo: f = jump to a character on this line, D = delete to line end
+chop the garbage off all three lines below, then :wq
+
+keep this line @ kersplat nonsense
+also keep this @ kersplat
+finally this @ kersplat kersplat
+"""},
+         "verify": lambda d: ("@" not in _rd(d, "snip.txt")
+                              and "kersplat" not in _rd(d, "snip.txt")
+                              and all(s in _rd(d, "snip.txt")
+                                      for s in ("keep this line", "also keep this", "finally this")),
+                              "want all three lines to end before the at-sign")},
+        {"id": "flow.dot", "kind": "vim", "xp": 15,
+         "title": ". the dot repeat",
+         "bridge": "VSCode: cmd+D multi-cursor, select next occurrence, type once.\nhere: change one occurrence, then n jumps to the next and . replays\nthe change. one keystroke per occurrence, no cursors to manage.",
+         "brief": "the three variables end in a suffix that must become db.\n/ then the old suffix, enter. cw, type db, esc.\nthen: n . n .   done. :wq",
+         "open": "dots.lua",
+         "files": {"dots.lua": """\
+-- term-dojo: the dot repeat. one change, replayed with . wherever n lands.
+-- rename the suffix on all three lines to db, then :wq
+
+local alpha_xx = 1
+local beta_xx = 2
+local gamma_xx = 3
+"""},
+         "verify": lambda d: (all(f"{w}_db" in _rd(d, "dots.lua")
+                                  for w in ("alpha", "beta", "gamma"))
+                              and "xx" not in _rd(d, "dots.lua"),
+                              "want alpha_db, beta_db, gamma_db and no xx left")},
+        {"id": "flow.subst", "kind": "vim", "xp": 15,
+         "title": ":%s file-wide substitute",
+         "bridge": "VSCode: cmd+shift+H, fill two boxes, click replace all.\nhere it is one ex command: :%s/old/new/g - % means every line.",
+         "brief": "every wombat must become a capybara:\n:%s/wombat/capybara/g   then :wq\n(yes, it will rewrite the instructions too. % means % .)",
+         "open": "subst.md",
+         "files": {"subst.md": """\
+term-dojo: :%s/wombat/capybara/g rewrites the whole file in one command
+run it, watch every line change at once, then :wq
+
+the wombat is fast. the wombat is furious.
+never bet against a wombat.
+"""},
+         "verify": lambda d: ("wombat" not in _rd(d, "subst.md")
+                              and _rd(d, "subst.md").count("capybara") >= 3,
+                              "want zero wombats - :%s/wombat/capybara/g")},
+        {"id": "flow.yap", "kind": "vim", "xp": 15,
+         "title": "yap + p: duplicate a paragraph",
+         "bridge": "VSCode: select lines carefully, cmd+C, cmd+V. here yap yanks the\nwhole paragraph you are standing in and p pastes it below. two keys.",
+         "brief": "cursor anywhere in the verse, yap, then p. instant second verse.\nthen :wq",
+         "open": "chorus.txt",
+         "files": {"chorus.txt": """\
+term-dojo: yap = yank around paragraph, p = paste below
+duplicate the verse (the song needs a second round), then :wq
+
+we type h j k l
+we never touch the mouse
+"""},
+         "verify": lambda d: (_rd(d, "chorus.txt").count("we type h j k l") == 2,
+                              "the verse should appear twice (yap, then p)")},
+    ]
+
+
+def _vim_power():
+    return [
+        {"id": "power.regs", "kind": "vim", "xp": 15,
+         "title": "named registers: parallel clipboards",
+         "bridge": "VSCode: one clipboard, constant round-trips. here you have 26:\n\"ayy yanks the line into register a, \"ap pastes it. b through z too.",
+         "brief": "1. cursor on the SPELL line:  \"ayy\n2. cursor on the POTION line: \"byy\n3. cursor on the CAST line:   \"ap\n4. cursor on the BREW line:   \"bp\n5. :wq   (a plain yy would have clobbered the first yank)",
+         "open": "regs.txt",
+         "files": {"regs.txt": """\
+term-dojo: named registers survive each other
+yank the spell into a, the potion into b, paste each under its station
+
+SPELL: abracadabra
+POTION: polyjuice
+CAST HERE:
+BREW HERE:
+"""},
+         "verify": lambda d: (_after(d, "regs.txt", "CAST HERE:") == "SPELL: abracadabra"
+                              and _after(d, "regs.txt", "BREW HERE:") == "POTION: polyjuice",
+                              "want the spell line right under CAST HERE and the potion under BREW HERE")},
+        {"id": "power.macro", "kind": "vim", "xp": 15,
+         "title": "macros: record once, replay forever",
+         "bridge": "VSCode: cmd+D or a regex if you are brave. here qa records your\nactual keystrokes into register a, q stops, @a replays, 3@a replays 3x.",
+         "brief": "turn every fruit into a quoted list item, like  plum -> \"plum\",\nrecipe on the first fruit:  qa 0 i\" esc A\", esc j q\nthen:  3@a   finishes the rest. :wq",
+         "open": "macro.txt",
+         "files": {"macro.txt": """\
+term-dojo: macros. qa = record into a, q = stop, @a = replay, 3@a = x3
+quote every fruit and give it a trailing comma, then :wq
+
+apple
+banana
+cherry
+dragonfruit
+"""},
+         "verify": lambda d: (all(f'"{w}",' in _rd(d, "macro.txt")
+                                  for w in ("apple", "banana", "cherry", "dragonfruit")),
+                              'want each fruit as "fruit", - record on apple, replay 3x')},
+        {"id": "power.marks", "kind": "vim", "xp": 15,
+         "title": "marks: teleport anchors",
+         "bridge": "VSCode: cmd+P and re-find your place, or split the editor. here\nma drops an invisible anchor and backtick-a snaps you back, exact column.",
+         "brief": "1. cursor on the TODO line just below the header: ma\n2. G to the bottom, $ onto the final word, yiw (yank inner word)\n3. backtick then a  (teleport home), then $ then p\n4. :wq",
+         "open": "mark.txt",
+         "files": {"mark.txt": "term-dojo: marks. ma drops mark a; ` a (backtick a) jumps back to it.\n"
+                               "fetch the magic word from the bottom and paste it on the TODO line.\n\n"
+                               "TODO: the magic word is ->\n\n"
+                   + "\n".join(f"scroll {i}: keep going" for i in range(1, 31))
+                   + "\n\nthe magic word is xyzzy\n"},
+         "verify": lambda d: (any(ln.startswith("TODO:") and "xyzzy" in ln
+                                  for ln in _rd(d, "mark.txt").splitlines()),
+                              "the TODO line should now contain the magic word")},
+        {"id": "power.global", "kind": "vim", "xp": 15,
+         "title": ":g the global command",
+         "bridge": "VSCode: no real equivalent - you would regex-replace lines to\nnothing and tidy up. here :g/NOISE/d deletes every matching line, period.",
+         "brief": "purge the log:  :g/NOISE/d   then :wq\n(the recipe line in the file mentions NOISE, so :g eats it too.\nthat is not a bug. that is how global the global command is.)",
+         "open": "purge.log",
+         "files": {"purge.log": """\
+term-dojo: :g/NOISE/d deletes every line containing NOISE, then :wq
+
+12:00 boot ok
+12:01 NOISE spurious warning
+12:02 users: 3
+12:03 NOISE heartbeat
+12:04 request served
+12:05 NOISE heartbeat
+12:06 shutdown
+"""},
+         "verify": lambda d: ("NOISE" not in _rd(d, "purge.log")
+                              and all(s in _rd(d, "purge.log")
+                                      for s in ("boot ok", "users: 3", "request served", "shutdown")),
+                              "want every NOISE line gone and the real log intact")},
+        {"id": "power.gnorm", "kind": "vim", "xp": 15,
+         "title": ":g + norm: multi-cursor, terminal edition",
+         "bridge": "VSCode: cmd+D cmd+D cmd+D or alt+click per line. here one command\nruns normal-mode keys on every matching line - it scales to thousands.",
+         "brief": "every line starting with item becomes a checkbox:\n:g/^item/norm I- [ ]    <- with ONE trailing space after the ]\nthen :wq",
+         "open": "checklist.md",
+         "files": {"checklist.md": """\
+term-dojo: :g/^pat/norm KEYS runs the keys on every matching line
+turn the three tasks below into checkboxes, leave the note alone, :wq
+
+item wash the katana
+item sweep the dojo
+notes: not this line
+item feed the terminal
+"""},
+         "verify": lambda d: (sum(1 for ln in _rd(d, "checklist.md").splitlines()
+                                  if ln.startswith("- [ ] item")) == 3
+                              and "notes: not this line" in _rd(d, "checklist.md"),
+                              "want 3 lines like - [ ] item ... and the note untouched")},
+        {"id": "power.jumplist", "kind": "vim", "xp": 15,
+         "title": "the jumplist: ctrl-o ctrl-i",
+         "bridge": "VSCode: ctrl+- to go back. here every big motion (gg, G, /search)\nis recorded; ctrl-o walks back, ctrl-i forward, `` flips to the last spot.",
+         "brief": "1. /BOTTOM enter - cw the status word there to: golden\n2. ctrl-o (or backtick backtick) jumps you back near the top\n3. fix the TOP status word the same way: golden\n4. :wq",
+         "open": "jumplist.txt",
+         "files": {"jumplist.txt": "term-dojo: jumps are recorded. ctrl-o = back, ctrl-i = forward.\n"
+                                   "both status words below must become: golden\n\n"
+                                   "TOP: status busted\n\n"
+                   + "\n".join(f"hallway {i}: empty" for i in range(1, 31))
+                   + "\n\nBOTTOM: status busted\n"},
+         "verify": lambda d: ("TOP: status golden" in _rd(d, "jumplist.txt")
+                              and "BOTTOM: status golden" in _rd(d, "jumplist.txt"),
+                              "want both TOP and BOTTOM status lines reading golden")},
+    ]
+
+
+def _boss_vim():
+    return {"id": "boss.trial", "kind": "vim", "xp": 30,
+            "title": "the black belt trial",
+            "bridge": "everything at once. any technique counts - only the result is graded.",
+            "brief": "three tasks, any order:\n"
+                     " 1. purge every log line containing DEBUG   (:g was built for this)\n"
+                     " 2. every opt line must start with:  set    (:g/^opt/norm Iset  ...or a macro)\n"
+                     " 3. the server string must become \"dojo\"    (ci\" is fastest)\nthen :wq",
+            "open": "trial.lua",
+            "files": {"trial.lua": """\
+-- black belt trial. the tasks are in the terminal. :wq when done.
+
+server = "swapme"
+
+opt one
+opt two
+opt three
+opt four
+
+log DEBUG boot
+log info ready
+log DEBUG heartbeat
+log info serving
+log DEBUG heartbeat
+"""},
+            "verify": lambda d: ("DEBUG" not in _rd(d, "trial.lua")
+                                 and '"dojo"' in _rd(d, "trial.lua")
+                                 and all(f"set opt {w}" in _rd(d, "trial.lua")
+                                         for w in ("one", "two", "three", "four"))
+                                 and "log info ready" in _rd(d, "trial.lua")
+                                 and "log info serving" in _rd(d, "trial.lua"),
+                                 "want: no DEBUG lines, four set opt lines, server = \"dojo\", info lines intact")}
+
+
+# ── game content: shell + git missions ──────────────────────────────────────
+
+def _shell_missions():
+    def v_forge(d):
+        ok = all((d / f"logs/day{i}.md").exists() for i in range(1, 6))
+        return ok, "want logs/day1.md through day5.md - mkdir -p logs && touch logs/day{1..5}.md"
+
+    def v_pipe(d):
+        want = {"ERROR disk almost full", "ERROR network flap on en0", "ERROR agent pane crashed"}
+        got = {ln.strip() for ln in _rd(d, "errors.txt").splitlines() if ln.strip()}
+        return got == want, "errors.txt should hold exactly the three ERROR lines - grep ERROR app.log > errors.txt"
+
+    return [
+        {"id": "legs.forge", "kind": "shell", "xp": 15,
+         "title": "forge files in bulk",
+         "bridge": "VSCode: right-click, new file, type a name. five times.\nthe shell does it in one breath: brace expansion.",
+         "brief": "in the shell that opens, run:\n  mkdir -p logs && touch logs/day{1..5}.md\nls logs to admire your work, then exit (or ctrl-d).",
+         "files": {},
+         "verify": v_forge},
+        {"id": "legs.pipe", "kind": "shell", "xp": 15,
+         "title": "pipes: filter a log",
+         "bridge": "VSCode: cmd+F in the file, eyeball the matches, copy them out.\nthe shell composes tools: grep finds, > redirects into a new file.",
+         "brief": "app.log is waiting in this directory. build errors.txt holding\nonly the ERROR lines:\n  grep ERROR app.log > errors.txt\ncat errors.txt to check, then exit.",
+         "files": {"app.log": """\
+INFO boot sequence complete
+ERROR disk almost full
+INFO user login: myhost
+ERROR network flap on en0
+INFO cache warmed
+ERROR agent pane crashed
+INFO all quiet
+"""},
+         "verify": v_pipe},
+    ]
+
+
+def _git_env(d):
+    _sh(d, "git", "init", "-q", "-b", "main")
+    _sh(d, "git", "config", "user.email", "dojo@term.local")
+    _sh(d, "git", "config", "user.name", "term-dojo")
+
+
+def _sh(d, *args):
+    return subprocess.run(list(args), cwd=str(d), capture_output=True, text=True)
+
+
+def _git_out(d, *args):
+    return _sh(d, "git", *args).stdout.strip()
+
+
+def _git_missions():
+    def setup_stage(d):
+        _git_env(d)
+        (d / "a.txt").write_text("alpha v1\n")
+        (d / "b.txt").write_text("beta v1\n")
+        _sh(d, "git", "add", ".")
+        _sh(d, "git", "commit", "-q", "-m", "chore: init")
+        (d / "a.txt").write_text("alpha v2\n")
+        (d / "b.txt").write_text("beta v2\n")
+
+    def v_stage(d):
+        if _git_out(d, "rev-list", "--count", "HEAD") != "2":
+            return False, "want exactly one new commit on top of the init commit"
+        if _git_out(d, "show", "--name-only", "--format=", "HEAD").split() != ["a.txt"]:
+            return False, "the new commit must touch only a.txt"
+        if "b.txt" not in _git_out(d, "status", "--porcelain"):
+            return False, "b.txt should still be dirty - you were too thorough"
+        return True, ""
+
+    def setup_branch(d):
+        _git_env(d)
+        (d / "notes.txt").write_text("teh dojo opens at dawn\n")
+        _sh(d, "git", "add", ".")
+        _sh(d, "git", "commit", "-q", "-m", "docs: opening notes")
+
+    def v_branch(d):
+        if _sh(d, "git", "rev-parse", "--verify", "-q", "fix/typo").returncode != 0:
+            return False, "no fix/typo branch yet (gcb fix/typo, or lazygit: n on a branch)"
+        tip = _git_out(d, "show", "fix/typo:notes.txt")
+        if "teh" in tip or "the dojo" not in tip:
+            return False, "fix/typo's notes.txt should say 'the dojo' with the typo gone"
+        if "teh" not in _git_out(d, "show", "main:notes.txt"):
+            return False, "main should be untouched - branch first, commit there"
+        return True, ""
+
+    def setup_stash(d):
+        _git_env(d)
+        (d / "wip.txt").write_text("steady state\n")
+        _sh(d, "git", "add", ".")
+        _sh(d, "git", "commit", "-q", "-m", "chore: steady state")
+        (d / "wip.txt").write_text("mid-experiment chaos\n")
+
+    def v_stash(d):
+        if not _git_out(d, "stash", "list"):
+            return False, "nothing stashed - git stash (or lazygit: s in the files panel)"
+        dirty = [ln for ln in _git_out(d, "status", "--porcelain").splitlines()
+                 if ln and not ln.startswith("??")]
+        if dirty:
+            return False, "the working tree should be clean after the stash"
+        return True, ""
+
+    return [
+        {"id": "gitflow.stage", "kind": "git", "xp": 15,
+         "title": "surgical staging",
+         "bridge": "VSCode: the source control sidebar, + on one file. here lazygit is\nthat sidebar but faster: lg, space stages the file, c commits.",
+         "brief": "this repo has a.txt and b.txt both modified. commit ONLY a.txt\n(message up to you). leave b.txt dirty. lazygit (lg) or aliases\n(ga a.txt; gcmsg \"feat: bump alpha\") both count. exit when done.",
+         "setup": setup_stage, "verify": v_stage},
+        {"id": "gitflow.branch", "kind": "git", "xp": 15,
+         "title": "branch, fix, commit",
+         "bridge": "VSCode: the branch widget bottom-left. here: gcb fix/typo creates\nand switches in one go (or lazygit: n on the branches panel).",
+         "brief": "notes.txt has a typo: teh -> the. create a branch named fix/typo,\nfix the typo there (v notes.txt opens nvim), commit it.\nmain must stay untouched. exit when done.",
+         "setup": setup_branch, "verify": v_branch},
+        {"id": "gitflow.stash", "kind": "git", "xp": 15,
+         "title": "stash the mess",
+         "bridge": "VSCode: source control menu, stash, hunt through submenus.\nhere: git stash. two words. gst to confirm the tree is clean.",
+         "brief": "wip.txt is mid-experiment and you need a clean tree NOW.\nstash it (git stash, or lazygit: s in the files panel), confirm\nwith gst, leave it stashed, exit.",
+         "setup": setup_stash, "verify": v_stash},
+    ]
+
+
+# ── game content: chapters ──────────────────────────────────────────────────
+
+def game_chapters():
+    mux_titles = [ls["title"] for ls in tmux_tutor_lessons("", "", "")]
+    return [
+        {"key": "wake", "name": "The Terminal Room", "tag": "ghostty + the cmd layer",
+         "missions": [
+             {"id": "wake.quiz", "kind": "quiz", "xp": 10, "title": "what this window can do",
+              "topics": ["ghostty"], "n": 6, "pass": 4},
+             {"id": "wake.recall", "kind": "recall", "xp": 10, "title": "cmd muscle memory, recalled",
+              "pass": 4, "items": [
+                  ("quick open a file in nvim (VSCode: cmd+P)", ["cmd+p", "ctrl+p", "c-p"]),
+                  ("save the buffer (VSCode: cmd+S)", ["cmd+s", "ctrl+s", "c-s"]),
+                  ("toggle the file tree (VSCode: cmd+B)", ["cmd+b", "ctrl+n", "c-n"]),
+                  ("split the terminal to the right", ["cmd+d"]),
+                  ("search the scrollback", ["cmd+f"]),
+                  ("new terminal tab", ["cmd+t"]),
+              ]},
+         ]},
+        {"key": "legs", "name": "Find Your Shell Legs", "tag": "zsh, atuin, fzf, zoxide, aliases",
+         "missions": [
+             {"id": "legs.quiz", "kind": "quiz", "xp": 10, "title": "the prompt is alive",
+              "topics": ["shell"], "n": 6, "pass": 4},
+             {"id": "legs.recall", "kind": "recall", "xp": 10, "title": "fingers on the keys",
+              "pass": 4, "items": [
+                  ("search your whole shell history (atuin)", ["ctrl+r", "c-r"]),
+                  ("fuzzy-insert a file path into the command line", ["ctrl+t", "c-t"]),
+                  ("fuzzy-pick a directory and cd into it", ["alt+c", "esc+c", "meta+c"]),
+                  ("accept the gray autosuggestion ghost text", ["ctrl+f", "c-f"]),
+                  ("two letters: the interactive zoxide picker", ["zi"]),
+                  ("alias that opens lazygit", ["lg"]),
+                  ("alias that launches high-agency claude", ["cc"]),
+              ]},
+         ] + _shell_missions()},
+        {"key": "first", "name": "Hands on the Home Row", "tag": "vim survival: hjkl to dd",
+         "missions": _vim_basics()},
+        {"key": "flow", "name": "Edit at the Speed of Thought", "tag": "text objects, dot, :%s",
+         "missions": _vim_flow()},
+        {"key": "power", "name": "Registers and Dark Arts", "tag": "registers, macros, marks, :g",
+         "missions": _vim_power()},
+        {"key": "mux", "name": "The Multiplexer", "tag": "tmux, live against the server",
+         "missions": [{"id": f"mux.{i}", "kind": "tmux", "xp": 8, "title": t}
+                      for i, t in enumerate(mux_titles)]},
+        {"key": "gitflow", "name": "Git Without a Mouse", "tag": "lazygit, aliases, real repos",
+         "missions": [
+             {"id": "gitflow.quiz", "kind": "quiz", "xp": 10, "title": "speak git fluently",
+              "topics": ["git"], "n": 6, "pass": 4},
+         ] + _git_missions()},
+        {"key": "cockpit", "name": "The Agent Cockpit", "tag": "herdr, agents, nix",
+         "missions": [
+             {"id": "cockpit.herdr", "kind": "quiz", "xp": 10, "title": "herdr and the agents",
+              "topics": ["herdr", "agents"], "n": 6, "pass": 4},
+             {"id": "cockpit.recall", "kind": "recall", "xp": 10, "title": "cockpit reflexes",
+              "pass": 3, "items": [
+                  ("the herdr prefix key", ["ctrl+b", "c-b"]),
+                  ("herdr: open the workspace picker", ["ctrl+b w", "c-b w", "w"]),
+                  ("herdr: detach, agents keep running", ["ctrl+b q", "c-b q", "q"]),
+                  ("herdr: show help / all prefix actions", ["ctrl+b ?", "c-b ?", "?"]),
+              ]},
+             {"id": "cockpit.nix", "kind": "quiz", "xp": 10, "title": "the machine that rebuilds itself",
+              "topics": ["nix"], "n": 6, "pass": 4},
+         ]},
+        {"key": "boss", "name": "The Black Belt Trial", "tag": "everything, no hints",
+         "missions": [
+             _boss_vim(),
+             {"id": "boss.recall", "kind": "quiz", "xp": 30, "title": "total recall",
+              "topics": list(TOPICS), "n": 12, "pass": 10},
+         ]},
+    ]
+
+
+# ── game engine ──────────────────────────────────────────────────────────────
+
+def ch_done(ch, g):
+    return sum(1 for m in ch["missions"] if m["id"] in g["done"])
+
+
+def ch_need(ch):
+    return (len(ch["missions"]) * 7 + 9) // 10  # ceil(70%)
+
+
+def ch_unlocked(i, chapters, g):
+    if i == 0:
+        return True
+    if chapters[i]["key"] == "boss":
+        return all(ch_done(c, g) >= ch_need(c) for c in chapters[:-1])
+    prev = chapters[i - 1]
+    return ch_done(prev, g) >= ch_need(prev)
+
+
+def award(prog, g, m):
+    before, _ = belt(g["xp"])
+    g["done"][m["id"]] = int(time.time())
+    g["xp"] += m["xp"]
+    save(PROGRESS, prog)
+    after, _ = belt(g["xp"])
+    print(col("green", f"  verified. +{m['xp']} xp", True)
+          + col("subtext", f"  (total {g['xp']} xp)"))
+    if after != before:
+        print(col("yellow", f"  belt up: you are now a {after}", True))
+
+
+def play_vim(m, prog):
+    if not shutil.which("nvim"):
+        print(col("red", "  nvim not found on PATH - skipping"))
+        return "skip"
+    while True:
+        root = Path(tempfile.mkdtemp(prefix="term-dojo-game-vim-"))
+        try:
+            for rel, content in m["files"].items():
+                p = root / rel
+                p.parent.mkdir(parents=True, exist_ok=True)
+                p.write_text(content)
+            if m.get("bridge"):
+                print(col("lavender", "  " + m["bridge"].replace("\n", "\n  ")))
+            print("  " + m["brief"].replace("\n", "\n  "))
+            ans = input(col("subtext", "  enter opens nvim (s skip, q quit) > ")).strip().lower()
+            if ans in ("q", "quit"):
+                return "quit"
+            if ans in ("s", "skip"):
+                return "skip"
+            subprocess.run(["nvim", m["open"]], cwd=root)
+            ok, why = m["verify"](root)
+            if ok:
+                return "done"
+            print(col("red", "  x not quite") + col("subtext", f" - {why}"))
+            ans = input(col("subtext", "  r retry (fresh file), s skip, q quit > ")).strip().lower()
+            if ans in ("q", "quit"):
+                return "quit"
+            if ans in ("s", "skip"):
+                return "skip"
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+
+def play_shellish(m, prog):
+    while True:
+        d = Path(tempfile.mkdtemp(prefix="term-dojo-game-"))
+        try:
+            for rel, content in m.get("files", {}).items():
+                p = d / rel
+                p.parent.mkdir(parents=True, exist_ok=True)
+                p.write_text(content)
+            if m.get("setup"):
+                m["setup"](d)
+            if m.get("bridge"):
+                print(col("lavender", "  " + m["bridge"].replace("\n", "\n  ")))
+            print("  " + m["brief"].replace("\n", "\n  "))
+            ans = input(col("subtext", "  enter drops you into a shell there (s skip, q quit) > ")).strip().lower()
+            if ans in ("q", "quit"):
+                return "quit"
+            if ans in ("s", "skip"):
+                return "skip"
+            subprocess.run([os.environ.get("SHELL", "/bin/zsh")], cwd=d)
+            ok, why = m["verify"](d)
+            if ok:
+                return "done"
+            print(col("red", "  x not quite") + col("subtext", f" - {why}"))
+            ans = input(col("subtext", "  r retry (fresh setup), s skip, q quit > ")).strip().lower()
+            if ans in ("q", "quit"):
+                return "quit"
+            if ans in ("s", "skip"):
+                return "skip"
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+
+def play_quiz(m, prog):
+    bank = get_bank()
+    qs = pick_questions(bank, prog, m["topics"], m["n"])
+    if not qs:
+        print("  (no questions - run term-dojo sync first)")
+        return "skip"
+    all_descs = [q["desc"] for t in m["topics"] for q in bank.get(t, [])]
+    print(col("subtext", f"  {len(qs)} questions, {m['pass']} correct to pass. q bails."))
+    right = 0
+    for topic, q in qs:
+        res = ask(topic, q, [x for x in all_descs if x != q["desc"]])
+        if res is None:
+            return "quit"
+        right += res
+        s = prog.setdefault("q", {}).setdefault(q["id"], {"r": 0, "w": 0})
+        s["r" if res else "w"] += 1
+        s["last"] = int(time.time())
+    save(PROGRESS, prog)
+    if right >= m["pass"]:
+        print(col("green", f"  passed: {right}/{len(qs)}"))
+        return "done"
+    print(col("red", f"  {right}/{len(qs)} - need {m['pass']}.")
+          + col("subtext", " the map remembers; come back."))
+    return "fail"
+
+
+def play_recall(m, prog):
+    items = m["items"]
+    print(col("subtext", f"  type the key or command. {m['pass']}/{len(items)} to pass. q bails."))
+    right = 0
+    for prompt, answers in items:
+        a = input(f"  {prompt}\n  > ").strip()
+        if a.lower() in ("q", "quit"):
+            return "quit"
+        if _canon_key(a) in {_canon_key(x) for x in answers}:
+            print(col("green", "    yes"))
+            right += 1
+        else:
+            print(col("red", "    no") + col("subtext", f" - it is: {answers[0]}"))
+    if right >= m["pass"]:
+        print(col("green", f"  passed: {right}/{len(items)}"))
+        return "done"
+    print(col("red", f"  {right}/{len(items)} - need {m['pass']}.")
+          + col("subtext", " drill it and come back."))
+    return "fail"
+
+
+def play_mux_chapter(ch, prog, g):
+    if not os.environ.get("TMUX"):
+        print("\n  the multiplexer chapter runs inside tmux. from a plain Ghostty tab:")
+        print("    tmux new -s dojo")
+        print("    term-dojo game mux")
+        if os.environ.get("HERDR_ENV") == "1":
+            print("  (you are inside herdr - use a regular Ghostty tab; never nest tmux in herdr.)")
+        return
+    pane = os.environ.get("TMUX_PANE", "")
+    ses = _tfmt(pane, "#{session_id}")
+    ses_name = _tfmt(pane, "#{session_name}")
+    win = _tfmt(pane, "#{window_id}")
+    lessons = tmux_tutor_lessons(ses, win, pane, ses_name)
+    print(col("subtext", "  live against the tmux server: do each step for real, I detect it."))
+    print(col("subtext", "  s + enter skips a mission, q + enter quits."))
+    for i, ls in enumerate(lessons):
+        m = ch["missions"][i]
+        if m["id"] in g["done"]:
+            continue
+        print("\n" + col("blue", f"  mission: {ls['title']}", True)
+              + col("subtext", f"  [{m['xp']} xp]"))
+        print("  " + ls["text"].replace("\n", "\n  "))
+        st = ls["setup"]() if ls["setup"] else {}
+        res = wait_for(lambda: ls["check"](st), ls["hint"])
+        if res == "quit":
+            return
+        if res == "done":
+            tutor_mark_done(prog, "tmux", ls["title"])
+            award(prog, g, m)
+        else:
+            print(col("yellow", "  skipped"))
+
+
+def play_chapter(ch, prog, g):
+    print("\n" + col("mauve", f"  chapter: {ch['name']}", True)
+          + col("subtext", f"  - {ch['tag']}"))
+    if ch["key"] == "mux":
+        play_mux_chapter(ch, prog, g)
+    else:
+        players = {"quiz": play_quiz, "recall": play_recall, "vim": play_vim,
+                   "shell": play_shellish, "git": play_shellish}
+        for m in ch["missions"]:
+            if m["id"] in g["done"]:
+                continue
+            print("\n" + col("blue", f"  mission: {m['title']}", True)
+                  + col("subtext", f"  [{m['xp']} xp]"))
+            res = players[m["kind"]](m, prog)
+            if res == "quit":
+                return
+            if res == "done":
+                award(prog, g, m)
+    if ch_done(ch, g) == len(ch["missions"]):
+        print("\n" + col("green", f"  chapter clear: {ch['name']}", True))
+
+
+def render_map(chapters, prog, g):
+    xp = g["xp"]
+    cur, nxt = belt(xp)
+    print()
+    print(col("mauve", "  term-dojo: the amnesiac's path", True))
+    status = f"  {cur}   {xp} xp"
+    if nxt:
+        status += f"   next belt at {nxt[0]}"
+    status += f"   streak: {streak_len(prog)} day(s)"
+    print(col("text", status))
+    if nxt:
+        lo = max(t for t, _ in BELTS if t <= xp)
+        span = nxt[0] - lo
+        fill = int(24 * (xp - lo) / span) if span else 24
+    else:
+        fill = 24
+    print("  " + col("mauve", "█" * fill) + col("overlay", "░" * (24 - fill)))
+    for i, ch in enumerate(chapters):
+        done, total = ch_done(ch, g), len(ch["missions"])
+        tag = col("subtext", f"  - {ch['tag']}")
+        if not ch_unlocked(i, chapters, g):
+            print(col("overlay", f"   {i + 1}. locked  {ch['name']}") + tag)
+        elif done == total:
+            print(col("green", f"   {i + 1}. clear   {ch['name']}  {done}/{total}") + tag)
+        else:
+            print(col("blue", f"   {i + 1}. open    {ch['name']}  {done}/{total}", True) + tag)
+    print()
+
+
+def game_main(args):
+    prog = load(PROGRESS, {})
+    g = prog.setdefault("game", {})
+    g.setdefault("xp", 0)
+    g.setdefault("done", {})
+    if args and args[0] == "reset":
+        a = input("wipe all game progress (xp, belts, missions)? type yes > ").strip().lower()
+        if a == "yes":
+            prog.pop("game", None)
+            save(PROGRESS, prog)
+            print("fresh start. run: term-dojo game")
+        return
+    chapters = game_chapters()
+    if not g.get("intro"):
+        print(col("lavender", GAME_INTRO))
+        g["intro"] = True
+        save(PROGRESS, prog)
+
+    def find(tok):
+        tok = tok.lower()
+        if tok.isdigit() and 1 <= int(tok) <= len(chapters):
+            return chapters[int(tok) - 1]
+        for c in chapters:
+            if c["key"] == tok or c["key"].startswith(tok) or tok in c["name"].lower():
+                return c
+        return None
+
+    if args:
+        ch = find(args[0])
+        if not ch:
+            print(f"no chapter matching {args[0]!r} - run term-dojo game for the map")
+            return
+        if not ch_unlocked(chapters.index(ch), chapters, g):
+            need = ch_need(chapters[chapters.index(ch) - 1])
+            print(f"locked - clear {need} mission(s) in the previous chapter first")
+            return
+        play_chapter(ch, prog, g)
+        render_map(chapters, prog, g)
+        return
+    while True:
+        render_map(chapters, prog, g)
+        nxt_ch = None
+        for i, c in enumerate(chapters):
+            if ch_unlocked(i, chapters, g) and ch_done(c, g) < len(c["missions"]):
+                nxt_ch = c
+                break
+        if nxt_ch is None:
+            print(col("mauve", "  every chapter is clear. sensei. teach someone else now.", True))
+            return
+        try:
+            sel = input(col("subtext", f"  enter = {nxt_ch['name']}, 1-{len(chapters)} = pick, q = quit > ")).strip().lower()
+        except EOFError:
+            return
+        if sel in ("q", "quit", "exit"):
+            return
+        ch = find(sel) if sel else nxt_ch
+        if not ch:
+            print(f"  no chapter matching {sel!r}")
+            continue
+        if not ch_unlocked(chapters.index(ch), chapters, g):
+            print(col("overlay", "  locked - clear 70% of the previous chapter first"))
+            continue
+        play_chapter(ch, prog, g)
+
+
+# ── cheatsheet ───────────────────────────────────────────────────────────────
+
+def gen_cheatsheet():
+    bank = get_bank()
+    lines = [
+        "# Cheatsheet (generated)",
+        "",
+        "Generated by `term-dojo cheatsheet` from the live configs — do not edit",
+        "by hand. Layering contract: Ghostty `cmd+*` · tmux `C-a` · Herdr `C-b`",
+        "(details: docs/tmux-training.md).",
+    ]
+    for topic in TOPICS:
+        qs = bank.get(topic, [])
+        if not qs:
+            continue
+        lines += ["", f"## {topic}", "", "| key | action |", "|---|---|"]
+        for q in qs:
+            key = q["key"].replace("|", "\\|")
+            lines.append(f"| `{key}` | {q['desc']} |")
+    CHEATSHEET.write_text("\n".join(lines) + "\n")
+    print(f"wrote {CHEATSHEET}")
+
+
+# ── stats ────────────────────────────────────────────────────────────────────
+
+def show_stats():
+    bank = get_bank()
+    prog = load(PROGRESS, {})
+    qstats = prog.get("q", {})
+    print(f"streak: {streak_len(prog)} day(s)\n")
+    print(f"{'topic':<10} {'seen':>9} {'accuracy':>9}")
+    for topic in TOPICS:
+        qs = bank.get(topic, [])
+        seen = [qstats[q['id']] for q in qs if q["id"] in qstats]
+        r = sum(s["r"] for s in seen)
+        w = sum(s["w"] for s in seen)
+        acc = f"{100 * r // (r + w)}%" if r + w else "—"
+        print(f"{topic:<10} {len(seen):>4}/{len(qs):<4} {acc:>9}")
+    tut = prog.get("tutor", {})
+    if tut:
+        totals = {"tmux": len(tmux_tutor_lessons("", "", "")),
+                  "vim": len(vim_tutor_lessons())}
+        print("\ntutor lessons verified:")
+        for kind, total in totals.items():
+            n = len(tut.get(kind, {}))
+            if n:
+                print(f"  {kind:<6} {n}/{total}")
+    g = prog.get("game")
+    if g:
+        cur, _ = belt(g.get("xp", 0))
+        total = sum(len(c["missions"]) for c in game_chapters())
+        print(f"\ngame: {cur}, {g.get('xp', 0)} xp, "
+              f"{len(g.get('done', {}))}/{total} missions cleared")
+
+
+# ── main ─────────────────────────────────────────────────────────────────────
+
+def main():
+    args = sys.argv[1:]
+    cmd = args[0] if args else "daily"
+    topic_arg = [a for a in args[1:] if a in TOPICS]
+
+    if cmd == "game":
+        game_main(args[1:])
+    elif cmd == "daily":
+        run_quiz(TOPICS, 10)
+    elif cmd == "quiz":
+        run_quiz(topic_arg or TOPICS, 8)
+    elif cmd == "drill":
+        for t in (topic_arg or TOPICS):
+            print(DRILLS[t], "\n")
+    elif cmd == "tutor":
+        which = args[1] if len(args) > 1 else ""
+        start = int(args[2]) if len(args) > 2 and args[2].isdigit() else 1
+        if which == "tmux":
+            tutor_tmux(start)
+        elif which in ("vim", "nvim", "neovim"):
+            tutor_vim(start)
+        else:
+            tutor_usage()
+    elif cmd == "topics":
+        bank = get_bank()
+        for t in TOPICS:
+            print(f"{t:<10} {len(bank.get(t, []))} questions")
+    elif cmd == "stats":
+        show_stats()
+    elif cmd == "sync":
+        save(BANK, build_bank())
+        print("bank rebuilt from live configs.")
+        gen_cheatsheet()
+    elif cmd == "cheatsheet":
+        gen_cheatsheet()
+    else:
+        print(__doc__)
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (KeyboardInterrupt, EOFError):
+        print()

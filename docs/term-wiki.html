@@ -1,0 +1,628 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>My Terminal - Cheatsheet &amp; Field Guide</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,400;0,500;0,700;1,400&display=swap" rel="stylesheet">
+<style>
+  /* Catppuccin Mocha - the repo's locked palette (AGENTS.md theme rule) */
+  :root{
+    --base:#1e1e2e; --mantle:#181825; --crust:#11111b;
+    --surface0:#313244; --surface1:#45475a; --surface2:#585b70;
+    --overlay0:#6c7086; --overlay1:#7f849c;
+    --text:#cdd6f4; --subtext:#a6adc8;
+    --mauve:#cba6f7; --blue:#89b4fa; --sapphire:#74c7ec; --teal:#94e2d5;
+    --green:#a6e3a1; --yellow:#f9e2af; --peach:#fab387; --red:#f38ba8;
+    --pink:#f5c2e7; --lavender:#b4befe;
+    --mono:'JetBrains Mono',ui-monospace,SFMono-Regular,Menlo,monospace;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html{scroll-behavior:smooth}
+  body{
+    background:var(--crust);color:var(--text);
+    font-family:var(--mono);font-size:14px;line-height:1.6;
+    padding:0 16px 80px;
+  }
+  .wrap{max-width:1120px;margin:0 auto;min-width:0}
+  header.hero{
+    margin:36px 0 8px;padding:22px 28px;border-radius:14px;
+    background:linear-gradient(135deg,var(--base) 0%,var(--mantle) 100%);
+    border:1px solid var(--surface0);
+    display:flex;flex-wrap:wrap;align-items:center;gap:14px;justify-content:space-between;
+  }
+  .hero h1{font-size:22px;font-weight:700;letter-spacing:-.5px}
+  .hero h1 .prompt{color:var(--green)}
+  .hero .meta{display:flex;gap:8px;flex-wrap:wrap}
+  .chip{
+    font-size:11.5px;padding:3px 10px;border-radius:999px;
+    background:var(--surface0);color:var(--lavender);border:1px solid var(--surface1);
+    white-space:nowrap;
+  }
+  nav.toc{
+    position:sticky;top:0;z-index:50;background:rgba(17,17,27,.92);backdrop-filter:blur(6px);
+    display:flex;gap:6px;flex-wrap:wrap;align-items:center;padding:12px 0;margin:0 0 4px;
+    border-bottom:1px solid var(--surface0);
+  }
+  nav.toc .tl{font-size:10.5px;color:var(--overlay0);text-transform:uppercase;letter-spacing:1px;margin-right:2px}
+  nav.toc a{
+    color:var(--subtext);text-decoration:none;font-size:12px;
+    padding:4px 10px;border-radius:8px;border:1px solid transparent;
+  }
+  nav.toc a:hover{color:var(--text);background:var(--surface0)}
+  nav.toc .sep{color:var(--surface2);margin:0 4px}
+  section{margin:36px 0}
+  h2{
+    font-size:18px;margin-bottom:6px;color:var(--mauve);font-weight:700;
+    display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;
+  }
+  h2 .no{color:var(--overlay0);font-size:12px;font-weight:400}
+  .partband{
+    margin:52px 0 10px;padding:10px 16px;border-radius:10px;
+    background:var(--mantle);border:1px dashed var(--surface1);
+    color:var(--overlay1);font-size:11.5px;text-transform:uppercase;letter-spacing:2px;
+  }
+  p.lead{color:var(--subtext);max-width:80ch;margin-bottom:14px}
+  h3{font-size:14px;color:var(--blue);margin:0 0 8px}
+  .card{
+    background:var(--base);border:1px solid var(--surface0);border-radius:12px;
+    padding:16px;min-width:0;
+  }
+  .grid{display:grid;gap:14px;min-width:0}
+  .grid.cols2{grid-template-columns:repeat(auto-fit,minmax(min(380px,100%),1fr))}
+  .grid.cols3{grid-template-columns:repeat(auto-fit,minmax(min(300px,100%),1fr))}
+  .grid>*{min-width:0}
+  kbd{
+    display:inline-block;font-family:var(--mono);font-size:12px;
+    background:var(--surface0);border:1px solid var(--surface2);
+    border-bottom-width:2.5px;border-radius:6px;padding:0 7px;
+    color:var(--peach);white-space:nowrap;
+  }
+  code{
+    font-family:var(--mono);font-size:12.5px;background:var(--mantle);
+    border:1px solid var(--surface0);border-radius:5px;padding:1px 6px;color:var(--teal);
+    overflow-wrap:anywhere;
+  }
+  .tablewrap{overflow-x:auto;border:1px solid var(--surface0);border-radius:10px;background:var(--base)}
+  table{border-collapse:collapse;width:100%;font-size:13px}
+  th{
+    text-align:left;padding:8px 12px;color:var(--overlay1);font-weight:500;
+    font-size:10.5px;text-transform:uppercase;letter-spacing:.8px;
+    border-bottom:1px solid var(--surface1);white-space:nowrap;
+  }
+  td{padding:7px 12px;border-bottom:1px solid var(--surface0);vertical-align:top}
+  tr:last-child td{border-bottom:none}
+  td.dim{color:var(--subtext)}
+  td.k{white-space:nowrap}
+  .tag{
+    display:inline-block;font-size:10.5px;padding:1px 8px;border-radius:999px;
+    border:1px solid;white-space:nowrap;
+  }
+  .tag.danger{color:var(--red);border-color:var(--red)}
+  .tag.info{color:var(--sapphire);border-color:var(--sapphire)}
+  .tag.warn{color:var(--yellow);border-color:var(--yellow)}
+  .callout{
+    border-left:3px solid var(--yellow);background:var(--base);
+    border-radius:0 10px 10px 0;padding:10px 16px;margin:12px 0;color:var(--subtext);
+    font-size:13px;
+  }
+  .callout.green{border-left-color:var(--green)}
+  .callout b{color:var(--text)}
+  .owner{font-size:12px;color:var(--overlay1)}
+  .mermaid{background:var(--base);border:1px solid var(--surface0);border-radius:12px;padding:14px;overflow-x:auto}
+  ul.plain{list-style:none}
+  ul.plain li{padding:3px 0;color:var(--subtext)}
+  ul.plain li::before{content:"❯ ";color:var(--green)}
+  ul.plain li b{color:var(--text);font-weight:500}
+  footer{margin-top:60px;color:var(--overlay0);font-size:12px;border-top:1px solid var(--surface0);padding-top:18px}
+  footer code{font-size:11px}
+  .pathline{color:var(--overlay1);font-size:11.5px;margin-top:8px;overflow-wrap:anywhere}
+  .pathline::before{content:"src: ";color:var(--overlay0)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="hero">
+  <h1><span class="prompt">❯</span> My Terminal - Cheatsheet &amp; Field Guide</h1>
+  <div class="meta">
+    <span class="chip">v1.4</span>
+    <span class="chip">updated 2026-07-06</span>
+  </div>
+</header>
+
+<nav class="toc">
+  <span class="tl">Cheatsheet</span>
+  <a href="#cmd">cmd keys</a>
+  <a href="#shell">shell</a>
+  <a href="#vim">vim core</a>
+  <a href="#vim-power">vim power</a>
+  <a href="#nvim">neovim</a>
+  <a href="#plugins">plugins</a>
+  <a href="#mux">tmux · herdr</a>
+  <a href="#aliases">aliases</a>
+  <span class="sep">|</span>
+  <span class="tl">Reference</span>
+  <a href="#layers">key layers</a>
+  <a href="#stack">stack</a>
+  <a href="#agents">agents</a>
+  <a href="#ops">ops</a>
+</nav>
+
+<!-- ══════════════════════ PART 1: CHEATSHEET ══════════════════════ -->
+
+<section id="cmd">
+  <h2><span class="no">cheatsheet</span> cmd keys (VSCode muscle memory)</h2>
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th>Press</th><th>Does</th><th>How</th></tr></thead>
+      <tbody>
+        <tr><td class="k"><kbd>cmd</kbd>+<kbd>p</kbd></td><td>quick open (Telescope, git-files first)</td><td class="dim">Ghostty sends <code>ctrl+p</code></td></tr>
+        <tr><td class="k"><kbd>cmd</kbd>+<kbd>s</kbd></td><td>save (insert mode: drops to normal, autosave fires)</td><td class="dim">sends <code>ctrl+s</code></td></tr>
+        <tr><td class="k"><kbd>cmd</kbd>+<kbd>z</kbd></td><td>undo, insert mode too</td><td class="dim">sends <code>ctrl+z</code></td></tr>
+        <tr><td class="k"><kbd>cmd</kbd>+<kbd>a</kbd></td><td>select whole buffer</td><td class="dim">sends <code>ctrl+a</code></td></tr>
+        <tr><td class="k"><kbd>cmd</kbd>+<kbd>b</kbd></td><td>toggle NvimTree sidebar</td><td class="dim">sends <code>ctrl+n</code> (ctrl+b = Herdr prefix)</td></tr>
+        <tr><td class="k"><kbd>cmd</kbd>+<kbd>c</kbd> / <kbd>cmd</kbd>+<kbd>v</kbd></td><td>copy / paste, every mode, every app</td><td class="dim">Ghostty-native clipboard</td></tr>
+        <tr><td class="k"><kbd>cmd</kbd>+<kbd>t</kbd> / <kbd>w</kbd> / <kbd>d</kbd></td><td>terminal tab new / close / split</td><td class="dim">Ghostty-native</td></tr>
+        <tr><td class="k"><kbd>cmd</kbd>+<kbd>shift</kbd>+<kbd>,</kbd></td><td>reload Ghostty config</td><td class="dim">Ghostty-native</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="callout"><b>Caveats:</b> inside tmux <kbd>cmd</kbd>+<kbd>a</kbd> hits the prefix - press twice. At a bare shell prompt: <kbd>cmd</kbd>+<kbd>z</kbd> suspends (<code>fg</code> returns); <kbd>cmd</kbd>+<kbd>s</kbd> freezes output until the <code>stty -ixon</code> rebuild lands (<kbd>ctrl</kbd>+<kbd>q</kbd> unfreezes).</div>
+</section>
+
+<section id="shell">
+  <h2><span class="no">cheatsheet</span> shell keys</h2>
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th>Press</th><th>Does</th></tr></thead>
+      <tbody>
+        <tr><td class="k"><kbd>type…</kbd></td><td class="dim">ghost text appears from history (zsh-autosuggestions)</td></tr>
+        <tr><td class="k"><kbd>ctrl</kbd>+<kbd>f</kbd></td><td class="dim">accept the ghost text (home row)</td></tr>
+        <tr><td class="k"><kbd>TAB</kbd></td><td class="dim">fzf-tab: fuzzy menu over real completions (try <code>brew install --cask fire⇥</code>)</td></tr>
+        <tr><td class="k"><kbd>ctrl</kbd>+<kbd>r</kbd></td><td class="dim">atuin: search history across all sessions (up-arrow stays session-scoped)</td></tr>
+        <tr><td class="k"><kbd>ctrl</kbd>+<kbd>t</kbd> / <kbd>alt</kbd>+<kbd>c</kbd></td><td class="dim">fzf: insert file path / cd into directory</td></tr>
+        <tr><td class="k"><code>z part-of-path</code></td><td class="dim">zoxide: jump to any directory you've visited</td></tr>
+        <tr><td class="k"><kbd>caps</kbd></td><td class="dim">held = Ctrl, tapped = Esc (Karabiner) - makes every ctrl chord a home-row roll</td></tr>
+        <tr><td class="k"><kbd>cmd</kbd>+<kbd>space</kbd></td><td class="dim">Raycast (Spotlight disabled)</td></tr>
+        <tr><td class="k"><kbd>hyper</kbd>+<kbd>g</kbd></td><td class="dim">focus/launch Ghostty from anywhere (hyper = cmd+alt+ctrl)</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section id="vim">
+  <h2><span class="no">cheatsheet</span> vim core - the grammar</h2>
+  <p class="lead">Vim is a language, not a list of shortcuts: <b>[count] verb + motion/text-object</b>. <code>d2w</code> = delete two words, <code>ci"</code> = change inside quotes, <code>y}</code> = yank to end of paragraph. Learn the pieces below and every combination works.</p>
+  <div class="grid cols3">
+    <div class="card">
+      <h3>Motions - where the cursor goes</h3>
+      <div class="tablewrap"><table><tbody>
+        <tr><td class="k"><kbd>h</kbd><kbd>j</kbd><kbd>k</kbd><kbd>l</kbd></td><td class="dim">left · down · up · right</td></tr>
+        <tr><td class="k"><kbd>w</kbd> / <kbd>b</kbd> / <kbd>e</kbd></td><td class="dim">next word start / back / word end (<kbd>W</kbd><kbd>B</kbd><kbd>E</kbd> = space-delimited)</td></tr>
+        <tr><td class="k"><kbd>0</kbd> / <kbd>^</kbd> / <kbd>$</kbd></td><td class="dim">line start / first char / line end</td></tr>
+        <tr><td class="k"><kbd>f</kbd><kbd>x</kbd> / <kbd>t</kbd><kbd>x</kbd></td><td class="dim">jump onto / just before next "x" (<kbd>F</kbd><kbd>T</kbd> backwards; repeat <kbd>;</kbd> / reverse <kbd>,</kbd>)</td></tr>
+        <tr><td class="k"><kbd>{</kbd> / <kbd>}</kbd></td><td class="dim">paragraph up / down</td></tr>
+        <tr><td class="k"><kbd>gg</kbd> / <kbd>G</kbd> / <kbd>42G</kbd></td><td class="dim">file top / bottom / line 42</td></tr>
+        <tr><td class="k"><kbd>%</kbd></td><td class="dim">matching bracket/paren</td></tr>
+        <tr><td class="k"><kbd>H</kbd> <kbd>M</kbd> <kbd>L</kbd></td><td class="dim">screen top / middle / bottom</td></tr>
+        <tr><td class="k"><kbd>ctrl</kbd>+<kbd>d</kbd>/<kbd>u</kbd></td><td class="dim">half-page down / up · <kbd>zz</kbd> center cursor line</td></tr>
+        <tr><td class="k"><kbd>]f</kbd> / <kbd>[f</kbd></td><td class="dim">next / previous function (<kbd>]F</kbd> <kbd>[F</kbd> = function end) - treesitter</td></tr>
+        <tr><td class="k"><kbd>]k</kbd> / <kbd>[k</kbd></td><td class="dim">next / previous class or interface (<kbd>]K</kbd> <kbd>[K</kbd> = end)</td></tr>
+        <tr><td class="k"><kbd>]i</kbd>/<kbd>[i</kbd> · <kbd>]o</kbd>/<kbd>[o</kbd></td><td class="dim">next / previous if/switch/try · loop (<kbd>]c</kbd> <kbd>[c</kbd> stay git hunks)</td></tr>
+      </tbody></table></div>
+    </div>
+    <div class="card">
+      <h3>Operators - what to do</h3>
+      <div class="tablewrap"><table><tbody>
+        <tr><td class="k"><kbd>d</kbd> / <kbd>c</kbd> / <kbd>y</kbd></td><td class="dim">delete / change (delete + insert) / yank - each takes any motion</td></tr>
+        <tr><td class="k"><kbd>dd</kbd> <kbd>cc</kbd> <kbd>yy</kbd></td><td class="dim">doubled = whole line</td></tr>
+        <tr><td class="k"><kbd>D</kbd> <kbd>C</kbd></td><td class="dim">delete / change to end of line</td></tr>
+        <tr><td class="k"><kbd>x</kbd> / <kbd>r</kbd><kbd>x</kbd> / <kbd>s</kbd></td><td class="dim">delete char / replace char with x / substitute char</td></tr>
+        <tr><td class="k"><kbd>&gt;</kbd> <kbd>&lt;</kbd> <kbd>=</kbd></td><td class="dim">indent · outdent · auto-indent (e.g. <code>&gt;ip</code>, <code>=ap</code>)</td></tr>
+        <tr><td class="k"><kbd>gu</kbd> / <kbd>gU</kbd> / <kbd>g~</kbd></td><td class="dim">lowercase / uppercase / toggle case</td></tr>
+        <tr><td class="k"><kbd>J</kbd></td><td class="dim">join line below onto this one</td></tr>
+        <tr><td class="k"><kbd>u</kbd> / <kbd>ctrl</kbd>+<kbd>r</kbd></td><td class="dim">undo / redo (persistent across sessions here)</td></tr>
+        <tr><td class="k"><kbd>.</kbd></td><td class="dim">repeat the last change - the most underrated key in vim</td></tr>
+      </tbody></table></div>
+    </div>
+    <div class="card">
+      <h3>Text objects - what to act on</h3>
+      <div class="tablewrap"><table><tbody>
+        <tr><td class="k"><kbd>iw</kbd> / <kbd>aw</kbd></td><td class="dim">inner word / word + space</td></tr>
+        <tr><td class="k"><kbd>i"</kbd> <kbd>i'</kbd> <kbd>i`</kbd></td><td class="dim">inside quotes (<kbd>a"</kbd> includes them)</td></tr>
+        <tr><td class="k"><kbd>i(</kbd> <kbd>i[</kbd> <kbd>i{</kbd> <kbd>i&lt;</kbd></td><td class="dim">inside brackets (<kbd>a(</kbd> … includes them)</td></tr>
+        <tr><td class="k"><kbd>it</kbd> / <kbd>at</kbd></td><td class="dim">inside / around an HTML/JSX tag</td></tr>
+        <tr><td class="k"><kbd>ip</kbd> / <kbd>ap</kbd></td><td class="dim">inner / around paragraph</td></tr>
+        <tr><td class="k"><kbd>if</kbd> / <kbd>af</kbd></td><td class="dim">inner / around function (treesitter, arrow fns too)</td></tr>
+        <tr><td class="k"><kbd>ic</kbd> / <kbd>ac</kbd></td><td class="dim">inner / around class</td></tr>
+        <tr><td class="k"><kbd>ia</kbd> / <kbd>aa</kbd></td><td class="dim">inner / around argument</td></tr>
+        <tr><td class="k"><kbd>ii</kbd>/<kbd>ai</kbd> · <kbd>il</kbd>/<kbd>al</kbd></td><td class="dim">inner / around if-try · loop</td></tr>
+        <tr><td colspan="2" class="dim">Combos to internalize: <code>ciw</code> rename word · <code>di(</code> clear args · <code>ya"</code> yank string · <code>dap</code> delete block · <code>cit</code> edit tag text · <code>vaf</code> select function · <code>cia</code> change argument</td></tr>
+        <tr><td colspan="2" class="dim">Surround (mini.surround): <code>saiw"</code> quote a word · <code>sd"</code> delete quotes · <code>sr"'</code> swap quote style. Swap arguments: <kbd>sx</kbd> / <kbd>sX</kbd> with next / previous</td></tr>
+      </tbody></table></div>
+      <h3 style="margin-top:14px">Entering insert mode</h3>
+      <div class="tablewrap"><table><tbody>
+        <tr><td class="k"><kbd>i</kbd> / <kbd>a</kbd></td><td class="dim">insert before / after cursor</td></tr>
+        <tr><td class="k"><kbd>I</kbd> / <kbd>A</kbd></td><td class="dim">insert at line start / end</td></tr>
+        <tr><td class="k"><kbd>o</kbd> / <kbd>O</kbd></td><td class="dim">open line below / above</td></tr>
+        <tr><td class="k"><kbd>Esc</kbd></td><td class="dim">back to normal mode - tap <kbd>caps</kbd> (Karabiner) · autosave fires on leaving insert</td></tr>
+      </tbody></table></div>
+    </div>
+  </div>
+</section>
+
+<section id="vim-power">
+  <h2><span class="no">cheatsheet</span> vim power - search, registers, macros, windows</h2>
+  <div class="grid cols3">
+    <div class="card">
+      <h3>Search &amp; replace</h3>
+      <div class="tablewrap"><table><tbody>
+        <tr><td class="k"><kbd>/</kbd><code>foo</code> / <kbd>?</kbd><code>foo</code></td><td class="dim">search forward / backward · <kbd>n</kbd>/<kbd>N</kbd> next/prev</td></tr>
+        <tr><td class="k"><kbd>*</kbd> / <kbd>#</kbd></td><td class="dim">search word under cursor fwd / back</td></tr>
+        <tr><td class="k"><code>:%s/old/new/g</code></td><td class="dim">replace in file (<code>/gc</code> = confirm each; visual select first to scope)</td></tr>
+        <tr><td class="k"><code>:noh</code></td><td class="dim">clear search highlight</td></tr>
+        <tr><td class="k"><code>:g/pat/d</code></td><td class="dim">run a command on every matching line</td></tr>
+      </tbody></table></div>
+      <h3 style="margin-top:14px">Visual mode</h3>
+      <div class="tablewrap"><table><tbody>
+        <tr><td class="k"><kbd>v</kbd> / <kbd>V</kbd> / <kbd>ctrl</kbd>+<kbd>v</kbd></td><td class="dim">char / line / block select, then any operator</td></tr>
+        <tr><td class="k"><kbd>o</kbd> / <kbd>gv</kbd></td><td class="dim">swap selection end / reselect last</td></tr>
+        <tr><td class="k">block + <kbd>I</kbd>/<kbd>A</kbd></td><td class="dim">multi-cursor-style column insert, apply with <kbd>Esc</kbd></td></tr>
+      </tbody></table></div>
+    </div>
+    <div class="card">
+      <h3>Registers &amp; macros</h3>
+      <div class="tablewrap"><table><tbody>
+        <tr><td class="k"><kbd>"</kbd><kbd>+</kbd><kbd>y</kbd></td><td class="dim">yank to system clipboard (this config: clipboard is shared, plain <kbd>y</kbd> works too)</td></tr>
+        <tr><td class="k"><kbd>"</kbd><kbd>0</kbd><kbd>p</kbd></td><td class="dim">paste the last yank, ignoring deletes</td></tr>
+        <tr><td class="k"><kbd>"</kbd><kbd>_</kbd><kbd>d</kbd></td><td class="dim">delete into the void (keep clipboard) - visual-paste already preserves it here</td></tr>
+        <tr><td class="k"><code>:reg</code></td><td class="dim">inspect all registers</td></tr>
+        <tr><td class="k"><kbd>q</kbd><kbd>a</kbd> … <kbd>q</kbd></td><td class="dim">record macro into register a</td></tr>
+        <tr><td class="k"><kbd>@a</kbd> / <kbd>@@</kbd> / <kbd>5@a</kbd></td><td class="dim">play macro / replay last / play 5 times</td></tr>
+      </tbody></table></div>
+      <h3 style="margin-top:14px">Marks &amp; jumps</h3>
+      <div class="tablewrap"><table><tbody>
+        <tr><td class="k"><kbd>m</kbd><kbd>a</kbd> / <kbd>`</kbd><kbd>a</kbd></td><td class="dim">set mark a / jump to it (<kbd>`</kbd><kbd>`</kbd> = previous spot)</td></tr>
+        <tr><td class="k"><kbd>ctrl</kbd>+<kbd>o</kbd> / <kbd>ctrl</kbd>+<kbd>i</kbd></td><td class="dim">jumplist back / forward (<kbd>BS</kbd> = back here)</td></tr>
+        <tr><td class="k"><kbd>g</kbd><kbd>;</kbd> / <kbd>g</kbd><kbd>,</kbd></td><td class="dim">previous / next change location</td></tr>
+      </tbody></table></div>
+    </div>
+    <div class="card">
+      <h3>Windows &amp; buffers</h3>
+      <div class="tablewrap"><table><tbody>
+        <tr><td class="k"><code>:vsp</code> / <code>:sp</code></td><td class="dim">vertical / horizontal split</td></tr>
+        <tr><td class="k"><kbd>ctrl</kbd>+<kbd>h</kbd><kbd>j</kbd><kbd>k</kbd><kbd>l</kbd></td><td class="dim">move between splits (same keys as tmux panes under its prefix)</td></tr>
+        <tr><td class="k"><kbd>Tab</kbd> / <kbd>shift</kbd>+<kbd>Tab</kbd></td><td class="dim">next / previous buffer (this config)</td></tr>
+        <tr><td class="k"><code>:w</code> <code>:q</code> <code>:wq</code> <code>:q!</code></td><td class="dim">save · quit · both · discard</td></tr>
+        <tr><td class="k"><code>:e file</code></td><td class="dim">open a file (or <kbd>cmd</kbd>+<kbd>p</kbd>)</td></tr>
+      </tbody></table></div>
+      <h3 style="margin-top:14px">Practice ladder</h3>
+      <ul class="plain">
+        <li><b>1.</b> hjkl + w/b/e + i/a/o until automatic</li>
+        <li><b>2.</b> operators × motions (<code>dw</code> <code>ct)</code> <code>y$</code>), then text objects (<code>ciw</code> <code>di"</code>)</li>
+        <li><b>3.</b> f/t + <kbd>;</kbd>, <kbd>%</kbd>, marks, <kbd>.</kbd>-repeat</li>
+        <li><b>4.</b> macros, block visual, <code>:g</code> - and <code>vimtutor</code> / <code>term-dojo tutor vim</code> to drill it live</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<section id="nvim">
+  <h2><span class="no">cheatsheet</span> neovim (leader = <kbd>space</kbd>)</h2>
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th>VSCode habit</th><th>Here</th><th>Notes</th></tr></thead>
+      <tbody>
+        <tr><td>Quick open</td><td class="k"><kbd>cmd</kbd>+<kbd>p</kbd> / <kbd>space</kbd><kbd>f</kbd><kbd>f</kbd></td><td class="dim">Telescope</td></tr>
+        <tr><td>Search in files</td><td class="k"><kbd>space</kbd><kbd>f</kbd><kbd>w</kbd></td><td class="dim">live grep</td></tr>
+        <tr><td>Explorer</td><td class="k"><kbd>cmd</kbd>+<kbd>b</kbd> / <kbd>space</kbd><kbd>e</kbd></td><td class="dim">NvimTree</td></tr>
+        <tr><td>Go to definition / hover</td><td class="k"><kbd>g</kbd><kbd>d</kbd> / <kbd>K</kbd></td><td class="dim">LSP</td></tr>
+        <tr><td>Rename / quick fix</td><td class="k"><kbd>space</kbd><kbd>r</kbd><kbd>a</kbd> / <kbd>space</kbd><kbd>c</kbd><kbd>a</kbd></td><td class="dim">LSP rename · code action</td></tr>
+        <tr><td>Problems panel</td><td>Trouble</td><td class="dim">diagnostics list</td></tr>
+        <tr><td>Format</td><td class="k"><kbd>space</kbd><kbd>f</kbd><kbd>m</kbd></td><td class="dim">Conform; format-on-save off by design</td></tr>
+        <tr><td>CodeLens</td><td class="k"><kbd>space</kbd><kbd>c</kbd><kbd>l</kbd></td><td class="dim">run the lens under cursor (servers that offer it, e.g. gopls)</td></tr>
+        <tr><td>Source control</td><td class="k"><kbd>space</kbd><kbd>l</kbd><kbd>g</kbd></td><td class="dim">LazyGit float · <kbd>]</kbd><kbd>c</kbd>/<kbd>[</kbd><kbd>c</kbd> jump hunks</td></tr>
+        <tr><td>Switch tabs</td><td class="k"><kbd>Tab</kbd> / <kbd>shift</kbd>+<kbd>Tab</kbd></td><td class="dim">buffer line</td></tr>
+        <tr><td>"What was that key?"</td><td class="k"><kbd>space</kbd><kbd>c</kbd><kbd>h</kbd></td><td class="dim">cheatsheet; which-key hints after <kbd>space</kbd></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="callout green"><b>Discoverability net:</b> press <kbd>space</kbd> and wait - which-key shows every follow-up. Full generated list: <code>docs/cheatsheet.md</code>. Drill your real bindings with <code>term-dojo</code>. Files autosave on leaving insert mode; inline git blame is on.</div>
+</section>
+
+<section id="plugins">
+  <h2><span class="no">cheatsheet</span> neovim plugins - what's installed and how to drive it</h2>
+  <p class="lead">~60 plugins after the 2026-07-06 audit (copilot and the unused Go/Kotlin/WezTerm extras are gone; Claude Code is the AI layer). The table is the daily-driver keys; the cards below are the full inventory so nothing installed stays unknown.</p>
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th>Press</th><th>Does</th><th>Plugin</th></tr></thead>
+      <tbody>
+        <tr><td class="k"><kbd>ctrl</kbd>+<kbd>p</kbd> / <kbd>space</kbd><kbd>f</kbd><kbd>f</kbd> / <kbd>space</kbd><kbd>f</kbd><kbd>w</kbd></td><td>find files / live grep</td><td class="dim">telescope (+fzf-native)</td></tr>
+        <tr><td class="k"><kbd>ctrl</kbd>+<kbd>b</kbd> / <kbd>space</kbd><kbd>e</kbd></td><td>file tree toggle / focus</td><td class="dim">nvim-tree</td></tr>
+        <tr><td class="k"><kbd>space</kbd><kbd>space</kbd><kbd>w</kbd> / <kbd>l</kbd> / <kbd>c</kbd></td><td>hop to any word / line / column</td><td class="dim">hop.nvim</td></tr>
+        <tr><td class="k"><kbd>K</kbd> / <kbd>g</kbd><kbd>h</kbd> / <kbd>g</kbd><kbd>l</kbd></td><td>docs hover / hover.nvim / line diagnostics</td><td class="dim">hover.nvim · LSP</td></tr>
+        <tr><td class="k"><kbd>space</kbd><kbd>c</kbd><kbd>a</kbd> / <kbd>space</kbd><kbd>r</kbd><kbd>a</kbd></td><td>code action / rename</td><td class="dim">fastaction · LSP</td></tr>
+        <tr><td class="k"><kbd>]</kbd><kbd>c</kbd> / <kbd>[</kbd><kbd>c</kbd> · <kbd>space</kbd><kbd>l</kbd><kbd>g</kbd></td><td>next/prev git hunk · LazyGit float</td><td class="dim">gitsigns · snacks terminal</td></tr>
+        <tr><td class="k"><kbd>space</kbd><kbd>g</kbd><kbd>x</kbd><kbd>x</kbd></td><td>resolve merge conflict under cursor</td><td class="dim">git-conflict</td></tr>
+        <tr><td class="k"><kbd>alt</kbd>+<kbd>R</kbd> / <kbd>ctrl</kbd>+<kbd>r</kbd></td><td>project-wide search &amp; replace / in-file replace</td><td class="dim">grug-far · match/searchbox</td></tr>
+        <tr><td class="k"><kbd>space</kbd><kbd>/</kbd> (or <kbd>g</kbd><kbd>c</kbd><kbd>c</kbd>)</td><td>toggle comment</td><td class="dim">NvChad comment</td></tr>
+        <tr><td class="k"><kbd>alt</kbd>+<kbd>i</kbd> / <kbd>alt</kbd>+<kbd>h</kbd> / <kbd>alt</kbd>+<kbd>v</kbd></td><td>floating / horizontal / vertical terminal</td><td class="dim">NvChad term</td></tr>
+        <tr><td class="k"><kbd>z</kbd><kbd>a</kbd> / <kbd>z</kbd><kbd>R</kbd> / <kbd>z</kbd><kbd>M</kbd></td><td>toggle / open all / close all folds</td><td class="dim">ufo (+fundo persistence)</td></tr>
+        <tr><td class="k"><kbd>space</kbd><kbd>f</kbd><kbd>m</kbd></td><td>format buffer (format-on-save off by design)</td><td class="dim">conform</td></tr>
+        <tr><td class="k"><kbd>space</kbd><kbd>a</kbd><kbd>a</kbd> / <kbd>space</kbd><kbd>a</kbd><kbd>s</kbd></td><td>toggle Claude split / send selection to Claude (<kbd>space</kbd><kbd>a</kbd><kbd>t</kbd> send position, <kbd>space</kbd><kbd>a</kbd><kbd>p</kbd> prompts)</td><td class="dim">sidekick + claude CLI</td></tr>
+        <tr><td class="k"><kbd>space</kbd><kbd>s</kbd><kbd>'</kbd> / <kbd>space</kbd><kbd>s</kbd><kbd>*</kbd></td><td>surround word with quotes / asterisks (mini.surround adds <kbd>s</kbd><kbd>a</kbd>/<kbd>s</kbd><kbd>d</kbd>/<kbd>s</kbd><kbd>r</kbd>)</td><td class="dim">custom · mini.surround</td></tr>
+        <tr><td class="k"><kbd>space</kbd><kbd>.</kbd> / <kbd>ctrl</kbd>+<kbd>.</kbd></td><td>code action (VSCode cmd+.)</td><td class="dim">fastaction</td></tr>
+        <tr><td class="k"><kbd>space</kbd><kbd>i</kbd></td><td>invert value under cursor (true↔false …)</td><td class="dim">nvim-toggler</td></tr>
+        <tr><td class="k"><kbd>space</kbd><kbd>t</kbd><kbd>h</kbd> / <kbd>space</kbd><kbd>c</kbd><kbd>h</kbd></td><td>theme picker / cheatsheet</td><td class="dim">NvChad</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="grid cols3" style="margin-top:14px">
+    <div class="card">
+      <h3>Completion &amp; AI</h3>
+      <ul class="plain">
+        <li><b>blink.cmp</b> + blink.pairs + colorful-menu - completion engine, auto-pairs, pretty menu</li>
+        <li><b>sidekick</b> - drives the <b>claude</b> CLI in a split (<kbd>space</kbd><kbd>a</kbd><kbd>a</kbd>); copilot removed</li>
+        <li><b>Hex</b> (macOS app, not a plugin) - voice-to-text into any focused input, nvim included</li>
+        <li><b>lazydev</b> - lua/nvim API completions</li>
+      </ul>
+      <h3 style="margin-top:14px">LSP &amp; syntax</h3>
+      <ul class="plain">
+        <li><b>lspconfig</b> + <b>mason</b> - servers, auto-installed</li>
+        <li><b>treesitter</b> + textobjects + ts-autotag + hlargs - syntax, structural motions (<kbd>]f</kbd> <kbd>]k</kbd> <kbd>af</kbd>…), tag close, arg highlights</li>
+        <li><b>hover.nvim</b>, <b>eagle</b> - keyboard + mouse hover docs</li>
+        <li><b>symbol-usage</b> - reference counts above functions</li>
+        <li><b>tiny-inline-diagnostic</b> - pretty inline errors</li>
+        <li>schemastore · lsp-file-operations · workspace-diagnostics</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3>Navigation &amp; UI</h3>
+      <ul class="plain">
+        <li><b>telescope</b> (+ui-select) - pickers for everything</li>
+        <li><b>nvim-tree</b> - explorer · <b>dropbar</b> - breadcrumbs</li>
+        <li><b>hop</b> - jump anywhere · <b>edgy</b> - window layout manager</li>
+        <li><b>snacks</b> - lazygit term, indent guides, utilities</li>
+        <li><b>noice</b> + <b>notify</b> - cmdline/message UI</li>
+        <li><b>which-key</b> - binding hints (the discoverability net)</li>
+        <li><b>trouble</b> - diagnostics panel · <b>todo-comments</b> - TODO/FIXME index</li>
+        <li><b>auto-session</b> - restore session per directory</li>
+        <li>colorizer · visimatch · tiny-glimmer · statuscol · render-markdown · live-preview · floaterm/menu/minty (nvzone)</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3>Editing &amp; git</h3>
+      <ul class="plain">
+        <li><b>mini.surround</b> + visual-surround - quote/bracket wrapping</li>
+        <li><b>cutlass</b> - <kbd>x</kbd>/<kbd>c</kbd> delete without clobbering the clipboard</li>
+        <li><b>nvim-toggler</b> · vim-table-mode · full_visual_line (pairs live in blink.pairs, above)</li>
+        <li><b>nvim-recorder</b> - saner macro UX</li>
+        <li><b>grug-far</b> · match.nvim · searchbox - replace flows</li>
+        <li><b>gitsigns</b> (inline blame on) · <b>diffview</b> · <b>git-conflict</b></li>
+        <li><b>auto-save</b> - saves on InsertLeave (why Esc "is" save)</li>
+      </ul>
+      <h3 style="margin-top:14px">Test &amp; debug</h3>
+      <ul class="plain">
+        <li><b>nvim-dap</b> + dap-ui + virtual-text - debugging</li>
+        <li><b>conform</b> (format) · <b>nvim-lint</b></li>
+        <li>neotest removed with the Go adapter - re-add with neotest-jest / neotest-python when wanted</li>
+      </ul>
+    </div>
+  </div>
+  <p class="pathline">~/.config/nvim/lua/plugins/init.lua (specs) · lua/mappings.lua (keys) · press <kbd>space</kbd><kbd>c</kbd><kbd>h</kbd> in nvim for the live list</p>
+</section>
+
+<section id="mux">
+  <h2><span class="no">cheatsheet</span> tmux &amp; herdr</h2>
+  <div class="grid cols2">
+    <div class="card">
+      <h3>Herdr <span class="tag info">agent cockpit</span> - prefix <kbd>ctrl</kbd>+<kbd>b</kbd></h3>
+      <div class="tablewrap">
+        <table>
+          <tbody>
+            <tr><td class="k"><kbd>prefix</kbd>+<kbd>c</kbd> / <kbd>&amp;</kbd></td><td class="dim">new tab / close tab</td></tr>
+            <tr><td class="k"><kbd>prefix</kbd>+<kbd>"</kbd> / <kbd>%</kbd></td><td class="dim">split horizontal / vertical</td></tr>
+            <tr><td class="k"><kbd>prefix</kbd>+<kbd>h</kbd><kbd>j</kbd><kbd>k</kbd><kbd>l</kbd></td><td class="dim">focus pane</td></tr>
+            <tr><td class="k"><kbd>prefix</kbd>+<kbd>w</kbd> / <kbd>g</kbd></td><td class="dim">workspace picker / goto</td></tr>
+            <tr><td class="k"><kbd>prefix</kbd>+<kbd>y</kbd></td><td class="dim">copy-mode (v select · y copy · q cancel)</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+    <div class="card">
+      <h3>tmux <span class="tag warn">training env</span> - prefix <kbd>ctrl</kbd>+<kbd>a</kbd></h3>
+      <div class="tablewrap">
+        <table>
+          <tbody>
+            <tr><td class="k"><kbd>prefix</kbd>+<kbd>|</kbd> / <kbd>-</kbd></td><td class="dim">split (keeps current path)</td></tr>
+            <tr><td class="k"><kbd>prefix</kbd>+<kbd>h</kbd><kbd>j</kbd><kbd>k</kbd><kbd>l</kbd></td><td class="dim">focus pane · <kbd>H</kbd><kbd>J</kbd><kbd>K</kbd><kbd>L</kbd> resize (repeatable)</td></tr>
+            <tr><td class="k"><kbd>prefix</kbd>+<kbd>Tab</kbd></td><td class="dim">last window (alt-tab style)</td></tr>
+            <tr><td class="k">copy-mode</td><td class="dim">vi keys: <kbd>v</kbd> select, <kbd>y</kbd> yank to clipboard</td></tr>
+            <tr><td class="k"><kbd>prefix</kbd>+<kbd>r</kbd></td><td class="dim">reload config · practice: <code>term-dojo tutor tmux</code></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="aliases">
+  <h2><span class="no">cheatsheet</span> aliases &amp; commands</h2>
+  <div class="tablewrap">
+    <table>
+      <tbody>
+        <tr><td class="k"><code>rebuild</code></td><td class="dim">apply the flake (<code>sudo darwin-rebuild switch</code>) - the one command that changes the machine</td></tr>
+        <tr><td class="k"><code>v</code> · <code>vim</code></td><td class="dim">nvim (<code>$EDITOR</code> is nvim too)</td></tr>
+        <tr><td class="k"><code>lg</code></td><td class="dim">lazygit</td></tr>
+        <tr><td class="k"><code>g</code> + git plugin</td><td class="dim">gst · gco · gaa · gp · glog …</td></tr>
+        <tr><td class="k"><code>pn pi pa pad pr pt px</code></td><td class="dim">pnpm family (px = pnpm dlx)</td></tr>
+        <tr><td class="k"><code>cc</code> <span class="tag danger">high-agency</span></td><td class="dim">claude --dangerously-skip-permissions - trusted repos only</td></tr>
+        <tr><td class="k"><code>is</code></td><td class="dim">inshellisense dropdown session, opt-in only (corrupts TUIs if auto-wrapped)</td></tr>
+        <tr><td class="k"><code>term-dojo</code></td><td class="dim">daily practice · quiz · tutor (live-verified drills)</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- ══════════════════════ PART 2: REFERENCE ══════════════════════ -->
+
+<div class="partband">Reference - the why behind the keys</div>
+
+<section id="layers">
+  <h2><span class="no">A</span> Keybinding layers - who owns which modifier</h2>
+  <p class="lead">The core contract (AGENTS.md): keybindings never overlap across layers. When a key "does nothing", a lower layer consumed it.</p>
+  <div class="grid cols3">
+    <div class="card">
+      <h3>macOS globals</h3>
+      <ul class="plain">
+        <li><b>Karabiner</b>: caps → Ctrl held / Esc tapped</li>
+        <li><b>Raycast</b> owns <kbd>cmd</kbd>+<kbd>space</kbd></li>
+        <li><b>Hammerspoon</b> binds only hyper chords (cmd+alt+ctrl), which nothing else uses</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3>Ghostty owns <kbd>cmd</kbd>+*</h3>
+      <ul class="plain">
+        <li>native tabs/splits/clipboard on cmd</li>
+        <li>VSCode layer translates cmd+p/s/z/a/b into ctrl bytes - plain bytes survive tmux and Herdr, so one shortcut works in every context</li>
+        <li>option = Alt so tmux/nvim meta chords work</li>
+        <li>never binds ctrl-based chords itself</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3>Multiplexers &amp; editor</h3>
+      <ul class="plain">
+        <li><b>tmux</b> owns <kbd>ctrl</kbd>+<kbd>a</kbd> only</li>
+        <li><b>Herdr</b> owns <kbd>ctrl</kbd>+<kbd>b</kbd> only</li>
+        <li><b>Neovim</b> owns <kbd>space</kbd> (leader) inside its own panes</li>
+        <li>rule: when <code>HERDR_ENV=1</code>, nothing auto-wraps in tmux</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<section id="stack">
+  <h2><span class="no">B</span> The stack - who installs what</h2>
+  <p class="lead">Everything is one Nix flake: clone the repo, run <code>rebuild</code>, and a fresh Mac becomes this exact machine. Solid arrows = "provisions"; the boxed column is the runtime you actually touch.</p>
+  <pre class="mermaid">
+flowchart TB
+  flake["flake.nix - one flake, one bootstrap"]
+  flake --> darwin["nix-darwin (nix/host.nix)<br/>macOS defaults · Homebrew casks · fonts · Touch ID sudo"]
+  flake --> hm["home-manager (nix/user.nix)<br/>CLI baseline · zsh · git · symlinks into files/"]
+  darwin --> casks["Ghostty · Raycast · Karabiner · Hammerspoon<br/>OrbStack · claude-code · Tailscale ..."]
+  hm --> cli["ripgrep fd jq gh tmux atuin zoxide fzf<br/>neovim lazygit direnv herdr no-mistakes treehouse"]
+  subgraph runtime["the terminal you live in"]
+    ghostty["Ghostty (emulator, owns cmd+*)"]
+    ghostty --> zsh["zsh + starship prompt"]
+    zsh --> herdr["Herdr - agent cockpit (prefix ctrl+b)"]
+    zsh --> tmux["tmux - training env (prefix ctrl+a)"]
+    herdr --> nvim["Neovim (NvChad/Bruno, leader = Space)"]
+    herdr --> agentsN["claude · codex"]
+  end
+  casks --> ghostty
+  cli --> zsh
+  </pre>
+  <p class="pathline">flake.nix · nix/host.nix · nix/user.nix · AGENTS.md (layer-ownership rules)</p>
+</section>
+
+<section id="agents">
+  <h2><span class="no">C</span> Agent workflows - the captain/crew model</h2>
+  <p class="lead">Target operating model (docs/workflow-north-star.md): human time goes to planning and final judgment; agents own the middle. Everything is agent-agnostic - claude and codex read the same memory files and ride the same tools.</p>
+  <pre class="mermaid">
+flowchart LR
+  you["you (director)"] --> herdr2["Herdr cockpit<br/>parallel agent panes"]
+  herdr2 --> claude2["claude / cc"]
+  herdr2 --> codex2["codex"]
+  claude2 --> nm["no-mistakes gate<br/>review · tests · lint · PR + evidence"]
+  codex2 --> nm
+  nm --> pr["reviewed PR"]
+  mem["~/AGENTS.md → CLAUDE.md<br/>OPINIONS.md · VOICE.md (lazy)"] -.-> claude2
+  mem -.-> codex2
+  th["treehouse worktree pool"] -.-> herdr2
+  </pre>
+  <div class="grid cols3">
+    <div class="card">
+      <h3>Shared memory</h3>
+      <ul class="plain">
+        <li><code>~/AGENTS.md</code> - one rule file for every harness (claude reads it as <code>~/.claude/CLAUDE.md</code>)</li>
+        <li>per-repo <code>AGENTS.md</code> grows via "remember this mistake"</li>
+        <li>skills carry conditional knowledge instead of bloating memory</li>
+        <li>browser rule: agents use Chrome only (<code>BROWSER=open-chrome</code>); Brave is personal</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3>Context discipline</h3>
+      <ul class="plain">
+        <li>auto-compact off, no artificial cap; statusline shows real tokens vs the model's window</li>
+        <li><code>/handoff</code> compacts a session into a doc for a fresh agent</li>
+        <li>manual <code>/compact</code> is shaped into a handoff by a PreCompact hook</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3>Tooling on PATH</h3>
+      <ul class="plain">
+        <li><code>no-mistakes</code> - validation pipeline (flake-built, telemetry off)</li>
+        <li><code>treehouse</code> - git worktree pool for parallel agents</li>
+        <li><code>hunk</code> - review-first diff TUI for agent changesets</li>
+        <li>skills: lavish · chrome-devtools-axi · no-mistakes · handoff</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<section id="ops">
+  <h2><span class="no">D</span> Daily ops - editing the machine</h2>
+  <div class="grid cols2">
+    <div class="card">
+      <h3>Two speeds of change</h3>
+      <ul class="plain">
+        <li><b>Instant:</b> anything under <code>files/</code> is symlinked out-of-store - edit ghostty/tmux/starship/karabiner config, reload the app, done</li>
+        <li><b>Rebuild:</b> package lists, zsh init, macOS defaults (<code>nix/*.nix</code>) - run <code>rebuild</code>, which the human always drives</li>
+        <li>Homebrew cleanup is <b>zap</b>: any app not declared in <code>nix/host.nix</code> gets uninstalled on the next rebuild - declare everything</li>
+        <li>validate without touching the system: <code>nix flake check --no-build</code> · <code>tests/mac_setup_test.sh</code></li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3>Repo map</h3>
+      <ul class="plain">
+        <li><code>flake.nix</code> - entry point, pinned inputs (herdr, no-mistakes, treehouse, hunk)</li>
+        <li><code>nix/host.nix</code> - macOS defaults · casks · fonts</li>
+        <li><code>nix/user.nix</code> - shell · CLI · symlinks · agent files</li>
+        <li><code>files/</code> - live configs (ghostty · tmux · herdr · starship · karabiner · hammerspoon · skills)</li>
+        <li><code>docs/</code> - cheatsheet · vscode-to-nvim · tmux-training · herdr-workflows · workflow-north-star</li>
+        <li><code>scripts/term-dojo</code> - trainer; being grown into a full TUI game</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<footer>
+  v1.4 · generated 2026-07-06 from the live configs in <code>~/dotfiles</code> and <code>~/.config/nvim</code> (branch <code>myhost</code>).
+  Theme: Catppuccin Mocha · Font: JetBrains Mono - as mandated by AGENTS.md.
+</footer>
+
+</div>
+<script type="module">
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+  mermaid.initialize({
+    startOnLoad: true,
+    theme: "base",
+    themeVariables: {
+      background: "#1e1e2e",
+      primaryColor: "#313244",
+      primaryTextColor: "#cdd6f4",
+      primaryBorderColor: "#585b70",
+      lineColor: "#7f849c",
+      secondaryColor: "#45475a",
+      tertiaryColor: "#181825",
+      clusterBkg: "#181825",
+      clusterBorder: "#45475a",
+      fontFamily: "JetBrains Mono, monospace",
+      fontSize: "13px"
+    }
+  });
+</script>
+</body>
+</html>

@@ -1,0 +1,10 @@
+# Herdr — the agent cockpit (AGENTS.md). Runs inside Ghostty; not a terminal
+# emulator. Keybinding layering (docs/tmux-training.md): Ghostty owns cmd+*,
+# tmux owns ctrl+a, Herdr keeps its default ctrl+b prefix — no overlap.
+# Caveat: Neovim maps <C-b> (NvimTree); inside a Herdr pane use <leader>e.
+
+[theme]
+name = "catppuccin"           # Catppuccin everywhere (AGENTS.md theme rule)
+auto_switch = true
+dark_name = "catppuccin"
+light_name = "catppuccin-latte"

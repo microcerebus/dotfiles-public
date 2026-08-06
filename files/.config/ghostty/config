@@ -1,0 +1,44 @@
+# Ghostty — minimal, fast, beautiful. Refined with the user in PLAN Phase 2.
+# Docs: ghostty +show-config --default --docs
+
+theme = Catppuccin Mocha
+font-family = JetBrainsMono Nerd Font
+font-size = 14
+
+window-padding-x = 8
+window-padding-y = 8
+macos-titlebar-style = tabs
+mouse-hide-while-typing = true
+
+# Semi-transparent background so the wallpaper shows through; blur keeps text
+# readable. Raise opacity toward 1.0 if contrast suffers. Reload: cmd+shift+,
+background-opacity = 0.6
+background-blur = 20
+
+# Option acts as Alt so tmux/Neovim can see meta chords (cmd+* stays macOS's)
+macos-option-as-alt = true
+copy-on-select = clipboard
+window-save-state = always
+
+# Keybinding layering rule (AGENTS.md): Ghostty owns cmd+*, tmux owns its
+# prefix, Herdr must not clash. Do not bind ctrl-based chords here.
+
+# ── VSCode muscle memory (docs/vscode-to-nvim.md) ────────────────────────────
+# Translate cmd chords into the ctrl bytes the Neovim layer already binds
+# (NvChad/Bruno's VSCode-style <C-*> maps). Plain control bytes survive tmux
+# and Herdr unchanged, so no kitty-protocol/extended-keys machinery is needed.
+# Layering stays intact: Ghostty still owns cmd+*; nothing here binds ctrl.
+# cmd+c/cmd+v stay native Ghostty copy/paste - do not rebind them.
+keybind = super+s=text:\x13
+# ^ ctrl+s = save. At a shell prompt ctrl+s is XOFF (freezes output) until the
+#   `stty -ixon` in zsh initContent lands via rebuild; ctrl+q unfreezes.
+keybind = super+p=text:\x10
+# ^ ctrl+p = quick open (Telescope find files); shell: previous history.
+keybind = super+z=text:\x1a
+# ^ ctrl+z = undo (nvim normal mode); shell: suspend, `fg` to return.
+keybind = super+a=text:\x01
+# ^ ctrl+a = select all in nvim. Caveat: inside tmux this is the prefix, so
+#   cmd+a there needs a second ctrl+a (same caveat as typing ctrl+a).
+keybind = super+b=text:\x0e
+# ^ ctrl+n = NvimTree toggle (VSCode cmd+b sidebar). Deliberately NOT \x02:
+#   ctrl+b is Herdr's prefix and would be eaten inside the agent cockpit.

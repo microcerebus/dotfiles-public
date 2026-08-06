@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# dev-doctor — inspect the current project for toolchain markers and suggest
+# per-project devShells. Never installs anything (AGENTS.md: nothing global).
+set -euo pipefail
+
+found=0
+say() { printf '%s\n' "$*"; }
+suggest() { # suggest <template> <reason>
+  found=1
+  say "  → detected $2"
+  say "    enable with:  dev-enable $1"
+}
+
+say "dev-doctor: scanning $(pwd)"
+
+has() { compgen -G "$1" > /dev/null 2>&1; }
+
+has "*.tf" || has "*.tfvars" || has ".terraform.lock.hcl" \
+  && suggest terraform "Terraform files"
+has "Chart.yaml" || has "kustomization.yaml" \
+  && suggest kubernetes "Kubernetes/Helm manifests (template TBD: kubectl/helm/k9s)"
+has "cdk.json" || has "serverless.yml" || has "template.yaml" \
+  && suggest aws "AWS CDK/Serverless/SAM files (template TBD)"
+has "package.json" \
+  && suggest node "Node/TypeScript project"
+has "pyproject.toml" || has "requirements.txt" \
+  && suggest python "Python project"
+has "go.mod"     && suggest go "Go module (template TBD)"
+has "Cargo.toml" && suggest rust "Rust crate (template TBD)"
+
+if [ -f .envrc ]; then
+  say "  ✓ .envrc present (direnv active)"
+fi
+
+if [ "$found" -eq 0 ]; then
+  say "  nothing to enable — no toolchain markers found."
+fi

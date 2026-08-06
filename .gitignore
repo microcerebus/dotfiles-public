@@ -1,0 +1,29 @@
+# Secrets & credentials — never committed (AGENTS.md)
+.env
+.env.*
+*.pem
+*.key
+id_*
+*_rsa
+*_ed25519
+*.token
+secrets/
+
+# Nix / direnv artifacts
+result
+result-*
+.direnv/
+
+# macOS
+.DS_Store
+
+# Python bytecode (scripts/ are executable python)
+__pycache__/
+
+# Karabiner writes runtime artifacts next to its config (which is a directory
+# symlink into this repo — see nix/user.nix)
+files/.config/karabiner/automatic_backups/
+files/.config/karabiner/assets/
+
+# Claude Code local (per-machine) settings
+.claude/settings.local.json
