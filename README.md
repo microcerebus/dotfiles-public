@@ -167,6 +167,33 @@ nix flake check                # flake evaluates
 Agents never run `setup/mac.sh`, `darwin-rebuild`, or `brew` against the real
 system - they propose diffs; the human applies them (`AGENTS.md`).
 
+## Credits
+
+This setup stands on other people's work, and some of it is referenced rather
+than reproduced here:
+
+- **[Bruno Krugel](https://github.com/BrunoKrugel/dotfiles)** - the Neovim
+  config. Cloned separately (`docs/vscode-to-nvim.md`), not vendored here.
+- **[Kun Chen (kunchenguid)](https://github.com/kunchenguid)** -
+  [`no-mistakes`](https://github.com/kunchenguid/no-mistakes) and the `*-axi`
+  CLIs, plus the "L8 Principal's Agentic Engineering Workflow" talk that
+  `docs/workflow-north-star.md` digests. Their skill docs are **not**
+  redistributed here; each `files/.claude/skills/*/README.md` points at the
+  real source.
+- **[DietrichGebert/ponytail](https://github.com/DietrichGebert/ponytail)** -
+  the "lazy senior dev" baseline that `files/OPINIONS.md` is adapted from.
+- **[Omer Xx](https://github.com/omerxx/dotfiles)** - tmux/zsh/starship and
+  macOS automation reference.
+- **[Ghostty](https://ghostty.org)**,
+  **[Herdr](https://github.com/ogulcancelik/herdr)**,
+  **[hunk](https://github.com/modem-dev/hunk)**,
+  **[Catppuccin](https://catppuccin.com)**.
+
 ## License
 
-MIT. See [`LICENSE`](LICENSE).
+MIT, covering the configuration and scripts in this repo. See
+[`LICENSE`](LICENSE).
+
+It does **not** cover the third-party work listed under
+[Credits](#credits) - those carry their own licenses from their own
+repositories.
