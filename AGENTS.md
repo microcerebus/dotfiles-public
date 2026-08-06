@@ -33,6 +33,8 @@ tool-adoption backlog; check it before adding workflow tooling).
   training. **Herdr** is the agent cockpit and runs *inside* Ghostty. Herdr is
   not a terminal emulator. Keybindings must not overlap across the three.
 - If `HERDR_ENV=1`, never auto-launch tmux wrappers.
+- Remote/SSH logins auto-attach to the persistent Herdr session (guarded
+  snippet in `nix/user.nix` initContent); tmux is never auto-launched.
 - Neovim base is **BrunoKrugel/dotfiles** (VSCode-familiar). Never replace it
   with LazyVim, AstroNvim, Typecraft, or Omerxx's Neovim. It lives outside the
   Nix store (plain clone at `~/.config/nvim`) so it stays fast to iterate on.

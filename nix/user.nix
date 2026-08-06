@@ -192,8 +192,13 @@ in
         bindkey '^f' autosuggest-accept
 
         # Herdr is the agent cockpit; never auto-wrap it in tmux (AGENTS.md).
-        # If you later add an auto-tmux snippet, guard it:
-        #   if [[ -z "$HERDR_ENV" && -z "$TMUX" ]]; then ...; fi
+        # SSH logins (phone/iPad via Termius) land in the persistent herdr
+        # session instead of a bare shell. Guards: skip when already inside
+        # herdr or tmux, and never touch local (non-SSH) shells.
+        if [[ -n "$SSH_CONNECTION" && -z "$HERDR_ENV" && -z "$TMUX" ]] \
+            && command -v herdr >/dev/null; then
+          exec herdr
+        fi
 
         # More aggressive shell candidates, off by default (PLAN Phase 2):
         # - carapace: https://github.com/carapace-sh/carapace-bin
