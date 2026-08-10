@@ -31,7 +31,7 @@ by hand. Layering contract: Ghostty `cmd+*` · tmux `C-a` · Herdr `C-b`
 | `cmd+alt+ctrl+g` | focus or launch Ghostty (Hammerspoon hyper) |
 | `cmd+p (VSCode layer)` | quick open - sends ctrl+p, Telescope find files in nvim |
 | `cmd+s (VSCode layer)` | save - sends ctrl+s (NvChad save binding) |
-| `cmd+z (VSCode layer)` | undo - sends ctrl+z (Bruno's normal-mode undo) |
+| `cmd+z (VSCode layer)` | undo - sends ctrl+z (normal-mode undo) |
 | `cmd+a (VSCode layer)` | select all - inside tmux press it twice (prefix eats one) |
 | `cmd+b (VSCode layer)` | toggle NvimTree - sends ctrl+n, never ctrl+b (Herdr prefix) |
 
@@ -129,16 +129,16 @@ by hand. Layering contract: Ghostty `cmd+*` · tmux `C-a` · Herdr `C-b`
 | `Space h` | terminal new horizontal term |
 | `Space bx` | Close all but current buffer |
 | `Space fk` | Find keymaps |
-| `Space fa` | telescope find all files |
 | `Space fs` | Find document symbols |
 | `Space li` | Highlights |
 | `Space fu` | Undo tree |
+| `Space fa` | telescope find all files |
 | `Space Space dr` | Debug: Open REPL |
 | `Space tt` | Debug: Toggle breakpoint |
-| `Space td` | Todo/Fix/Fixme |
-| `Space t` | Toggle warnings |
 | `Space ft` | Telescope TODO |
 | `Space el` | Toggle error lens |
+| `Space td` | Todo/Fix/Fixme |
+| `Space t` | Toggle warnings |
 | `Space cs` | Symbols Outline |
 | `Space tr` | Toggle transparency |
 | `Space w` | Close buffer |

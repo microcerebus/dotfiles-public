@@ -3,7 +3,7 @@
 
 Drills, quizzes, daily practice, progress tracking. Question content comes
 from YOUR actual mappings: Neovim keymaps are dumped from the live config
-(NvChad defaults + Bruno's + myhost tweaks), tmux bindings are parsed from
+(NvChad defaults + the config's own maps + myhost tweaks), tmux bindings are parsed from
 this repo's tmux.conf. Herdr/shell/git banks mirror this repo's real setup
 (see AGENTS.md layering).
 
@@ -114,7 +114,7 @@ GHOSTTY_BANK = [
     # (files/.config/ghostty/config, docs/vscode-to-nvim.md).
     ("cmd+p (VSCode layer)", "quick open - sends ctrl+p, Telescope find files in nvim"),
     ("cmd+s (VSCode layer)", "save - sends ctrl+s (NvChad save binding)"),
-    ("cmd+z (VSCode layer)", "undo - sends ctrl+z (Bruno's normal-mode undo)"),
+    ("cmd+z (VSCode layer)", "undo - sends ctrl+z (normal-mode undo)"),
     ("cmd+a (VSCode layer)", "select all - inside tmux press it twice (prefix eats one)"),
     ("cmd+b (VSCode layer)", "toggle NvimTree - sends ctrl+n, never ctrl+b (Herdr prefix)"),
 ]
@@ -257,7 +257,7 @@ NVIM_MAX = 60  # cap so telescope/gitsigns internals don't drown the signal
 
 
 def _clean_desc(desc: str) -> str:
-    # strip nerd-font glyphs / private-use icons Bruno puts in descs
+    # strip nerd-font glyphs / private-use icons the config puts in descs
     return re.sub(r"[-\U000F0000-\U000FFFFD]", "", desc).strip()
 
 

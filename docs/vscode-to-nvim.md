@@ -1,8 +1,10 @@
-# VSCode → Neovim (Bruno's NvChad config)
+# VSCode → Neovim
 
-The Neovim setup is **BrunoKrugel/dotfiles** - an NvChad v2.5 config built by a
-VSCode user migrating to nvim, so it deliberately mimics VSCode keybinds and UI
-(AGENTS.md: never swap this base for another distro). The `nvim` binary comes
+The Neovim setup is a personal NvChad v2.5 config that deliberately mimics
+VSCode keybinds and UI (AGENTS.md: never swap this base for another distro).
+Credit: this config was inspired by
+[Bruno Krugel's dotfiles](https://github.com/BrunoKrugel/dotfiles) - an NvChad
+config built by a VSCode user migrating to nvim. The `nvim` binary comes
 from Home Manager; the config is a **plain git clone outside the Nix store** so
 it stays fast to iterate on.
 
@@ -16,7 +18,7 @@ cd ~/.config/nvim && git checkout -b myhost   # local tweaks live here
 nvim --headless "+Lazy! sync" +qa              # first launch: plugins + base46 cache
 ```
 
-Local tweaks are committed on the `myhost` branch. To pull Bruno's updates:
+Local tweaks are committed on the `myhost` branch. To pull upstream updates:
 
 ```sh
 cd ~/.config/nvim
@@ -24,7 +26,7 @@ git fetch origin && git rebase origin/master   # replays our tweaks on top
 nvim --headless "+Lazy! sync" +qa
 ```
 
-If a rebase conflicts, resolve favoring Bruno's structure and re-apply our
+If a rebase conflicts, resolve favoring upstream structure and re-apply our
 tweaks minimally (they are deliberately tiny - see log on `myhost`).
 
 Local tweaks so far:
@@ -32,10 +34,10 @@ Local tweaks so far:
   theme rule), `theme_toggle = { "catppuccin", "catppucin-latte" }`.
 - `lua/plugins/init.lua`: wakatime removed (unused, nagged for an API key);
   blink.pairs uses `download()` (prebuilt lib) since Rust isn't global.
-- `lua/configs/lspconfig.lua`: yamlls uses the public schema store - Bruno's
-  version reads `SCHEMA_*` env vars from his work machine and crashes without
+- `lua/configs/lspconfig.lua`: yamlls uses the public schema store - the
+  upstream version reads `SCHEMA_*` env vars from a work machine and crashes without
   them ("table index is nil").
-- `lua/plugins/init.lua`: which-key re-enabled (Bruno disables it) - the
+- `lua/plugins/init.lua`: which-key re-enabled (upstream disables it) - the
   leader-key hint popup is the discoverability net while bindings are being
   learned; flip back off once they're muscle memory.
 - `lua/plugins/init.lua`: gitsigns `current_line_blame = true` - GitLens-style
@@ -65,12 +67,12 @@ Local tweaks so far:
   path), plus removed inert master-branch treesitter module config.
 
 External deps: `tree-sitter` CLI (Home Manager) - parsers fail to compile
-without it. Font is inherited from Ghostty (JetBrains Mono Nerd Font); Bruno's
-README mentions Hack + WezTerm, both intentionally not used here.
+without it. Font is inherited from Ghostty (JetBrains Mono Nerd Font); the
+upstream README mentions Hack + WezTerm, both intentionally not used here.
 
 ## VSCode muscle memory → this config
 
-Leader is **Space**. Bindings come from NvChad defaults + Bruno's
+Leader is **Space**. Bindings come from NvChad defaults + this config's
 `lua/mappings.lua` (the authoritative list: `<leader>ch` opens the cheatsheet).
 
 **The cmd key works for the core habits.**
@@ -89,7 +91,7 @@ unfreezes); `cmd+Z` at a shell prompt suspends the job (`fg` returns).
 | `cmd+shift+F` search in files | `<leader>fw` | Telescope live grep |
 | `cmd+B` / `cmd+shift+E` explorer | `cmd+B` / `<C-b>` or `<leader>e` | NvimTree toggle (cmd+B emits `<C-n>`, not `<C-b>`, to dodge Herdr's prefix) |
 | `cmd+S` save | `cmd+S` / `<C-s>` | NvChad default (normal mode) |
-| `cmd+Z` undo | `cmd+Z` / `<C-z>` | Bruno maps it in normal mode |
+| `cmd+Z` undo | `cmd+Z` / `<C-z>` | mapped in normal mode |
 | `cmd+A` select all | `cmd+A` / `<C-a>` | **inside tmux press it twice** - tmux prefix eats the first one |
 | `cmd+C` / `cmd+X` / `cmd+V` | `cmd+C` / `<C-x>` / `cmd+V` | Ghostty-native clipboard; `<C-c>`/`<C-v>` also work in normal mode |
 | `cmd+shift+M` problems panel | Trouble (diagnostics tab) | VSCode-style diagnostics list |
@@ -97,7 +99,7 @@ unfreezes); `cmd+Z` at a shell prompt suspends the job (`fg` returns).
 | `cmd+.` quick fix | `<leader>ca` | LSP code action |
 | `F12` go to definition | `gd` (hover docs on `K`) | LSP |
 | format document | `<leader>fm` | Conform; format-on-save is off by design |
-| find/replace in file | `<C-r>` → SearchBox | Bruno's `Match`/SearchBox flow |
+| find/replace in file | `<C-r>` → SearchBox | the `Match`/SearchBox flow |
 | global search & replace | `<A-R>` | GrugFar panel |
 | terminal toggle | `<A-i>` (float) / `<A-h>` / `<A-v>` | NvChad terms |
 | go back / forward | `<BS>` / `<C-o>`·`<C-i>` | jumplist |
@@ -112,9 +114,9 @@ keys under its prefix).
 ## Deliberate divergences
 
 - Theme forced to Catppuccin via NvChad's own base46 mechanism (no second
-  theming system); Bruno defaults to his custom Frappé variant.
-- Font/terminal: Bruno uses Hack Nerd Font + WezTerm; we inherit JetBrains
+  theming system); upstream defaults to a custom Frappé variant.
+- Font/terminal: upstream uses Hack Nerd Font + WezTerm; we inherit JetBrains
   Mono Nerd Font from Ghostty and change nothing in nvim.
 - Neovim's `<C-a>` (select all) collides with the tmux prefix by design of
-  Bruno's config; tmux wins when nested - `C-a C-a` passes through. Everything
+  the upstream config; tmux wins when nested - `C-a C-a` passes through. Everything
   else respects the layering contract in `docs/tmux-training.md`.

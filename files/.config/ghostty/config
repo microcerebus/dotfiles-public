@@ -25,7 +25,7 @@ window-save-state = always
 
 # ── VSCode muscle memory (docs/vscode-to-nvim.md) ────────────────────────────
 # Translate cmd chords into the ctrl bytes the Neovim layer already binds
-# (NvChad/Bruno's VSCode-style <C-*> maps). Plain control bytes survive tmux
+# (NvChad's VSCode-style <C-*> maps). Plain control bytes survive tmux
 # and Herdr unchanged, so no kitty-protocol/extended-keys machinery is needed.
 # Layering stays intact: Ghostty still owns cmd+*; nothing here binds ctrl.
 # cmd+c/cmd+v stay native Ghostty copy/paste - do not rebind them.

@@ -3,7 +3,7 @@
 A reproducible macOS setup built around terminal-native AI agents.
 **Nix (nix-darwin + Home Manager)** owns the CLI baseline, **Homebrew** owns
 GUI apps, **Ghostty** is the terminal, **tmux** is for terminal training,
-**Herdr** is the agent cockpit, **Bruno Krugel's NvChad** is the editor.
+**Herdr** is the agent cockpit, **an NvChad-based Neovim** is the editor.
 Catppuccin + JetBrains Mono Nerd Font everywhere.
 
 > **This is a sanitized public mirror.** It is generated from a private repo,
@@ -23,7 +23,7 @@ Durable rules live in [`AGENTS.md`](AGENTS.md).
 | CLI tools + shell      | Home Manager (`nix/user.nix`)               | git, ripgrep, nvim, tmux, codex, herdr, pnpm        |
 | GUI / macOS apps       | Homebrew, declared in `nix/host.nix`        | Ghostty, OrbStack, Karabiner, Hammerspoon, Raycast  |
 | Per-project toolchains | devShells + direnv (`templates/devshells/`) | node, python, opentofu - never global               |
-| Editor config          | plain git clone, outside Nix                | `~/.config/nvim` (BrunoKrugel/dotfiles)             |
+| Editor config          | plain git clone, outside Nix                | `~/.config/nvim` (NvChad config)                    |
 
 Two flake inputs beyond the platform (nixpkgs/nix-darwin/home-manager):
 [`hunk`](https://github.com/modem-dev/hunk) (terminal diff review) and
@@ -173,7 +173,8 @@ This setup stands on other people's work, and some of it is referenced rather
 than reproduced here:
 
 - **[Bruno Krugel](https://github.com/BrunoKrugel/dotfiles)** - the Neovim
-  config. Cloned separately (`docs/vscode-to-nvim.md`), not vendored here.
+  config is inspired by his NvChad setup. Cloned separately
+  (`docs/vscode-to-nvim.md`), not vendored here.
 - **[Kun Chen (kunchenguid)](https://github.com/kunchenguid)** -
   [`no-mistakes`](https://github.com/kunchenguid/no-mistakes) and the `*-axi`
   CLIs, plus the "L8 Principal's Agentic Engineering Workflow" talk that

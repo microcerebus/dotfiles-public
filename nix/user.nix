@@ -85,7 +85,7 @@ in
     tree
     wget
     # editor + git UX
-    neovim          # binary only; config is Bruno's clone at ~/.config/nvim (Phase 3)
+    neovim          # binary only; config is a plain clone at ~/.config/nvim (Phase 3)
                     # lazygit comes from programs.lazygit below (Catppuccin-themed)
     tree-sitter     # CLI required by nvim-treesitter to compile parsers (Phase 3)
     inputs.hunk.packages.${pkgs.stdenv.hostPlatform.system}.default
@@ -323,7 +323,7 @@ in
   xdg.configFile."herdr/config.toml".source = link "files/.config/herdr/config.toml";
   home.file.".hammerspoon/init.lua".source = link "files/.hammerspoon/init.lua";
   # NOTE: ~/.config/nvim is intentionally NOT managed here — it is a plain
-  # clone of BrunoKrugel/dotfiles' Neovim config (PLAN Phase 3, AGENTS.md).
+  # clone of the NvChad config (docs/vscode-to-nvim.md; PLAN Phase 3, AGENTS.md).
 
   # ── Personal scripts + user-local installers on PATH ─────────────────────
   # ~/.local/bin is where self-installers (claude, uv tools, pipx) put

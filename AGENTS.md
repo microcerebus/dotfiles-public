@@ -35,11 +35,12 @@ tool-adoption backlog; check it before adding workflow tooling).
 - If `HERDR_ENV=1`, never auto-launch tmux wrappers.
 - Remote/SSH logins auto-attach to the persistent Herdr session (guarded
   snippet in `nix/user.nix` initContent); tmux is never auto-launched.
-- Neovim base is **BrunoKrugel/dotfiles** (VSCode-familiar). Never replace it
+- Neovim base is a personal NvChad `v2.5` config (VSCode-familiar; lineage
+  credited in `docs/vscode-to-nvim.md`). Never replace it
   with LazyVim, AstroNvim, Typecraft, or Omerxx's Neovim. It lives outside the
   Nix store (plain clone at `~/.config/nvim`) so it stays fast to iterate on.
   Tripwire (2026-07-06): NvChad is effectively single-maintainer; the config
-  pins BrunoKrugel/NvChad `v2.5` (carries the treesitter-main migration - do
+  pins a fork of NvChad `v2.5` (carries the treesitter-main migration - do
   not repoint to upstream NvChad/NvChad) with `nvchad/ui` + `base46` from
   upstream. If `nvchad/ui` breaks on a new Neovim release and sees no fix for
   ~2 months, that is the one condition under which the LazyVim question

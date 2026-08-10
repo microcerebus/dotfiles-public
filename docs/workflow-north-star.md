@@ -29,7 +29,7 @@ existing foundation in this repo.
 |---|---|---|
 | WezTerm | Ghostty (AGENTS.md: fixed choice) | have |
 | tmux | tmux (training env) | have |
-| Neovim | NvChad (Bruno base) | have |
+| Neovim | NvChad (custom config) | have |
 | Claude Code + codex | both installed | have |
 | ~/AGENTS.md -> ~/.claude/CLAUDE.md | files/AGENTS.md via home-manager | have (rebuild) |
 | OPINIONS.md / VOICE.md | files/OPINIONS.md, files/VOICE.md | have (rebuild) |
