@@ -40,7 +40,7 @@
     # treehouse: worktree pool used by firstmate crewmates (workflow north
     # star). Same pattern: pinned release tag, vendorHash in user.nix.
     treehouse-src = {
-      url = "github:kunchenguid/treehouse/v2.0.0";
+      url = "github:kunchenguid/treehouse/v2.1.1";
       flake = false;
     };
   };

@@ -42,11 +42,11 @@ let
   # pinned in flake.nix. Update = bump tag + vendorHash.
   treehouse = pkgs.buildGoModule {
     pname = "treehouse";
-    version = "2.0.0";
+    version = "2.1.1";
     src = inputs.treehouse-src;
-    vendorHash = "sha256-fH93/19rZY/jduF4ZS0RLrqBWdCjz6XYnoN+3KPd4Lg=";
+    vendorHash = "sha256-z8IndcHcZ6nLqhLtAYul3ppddpOA4AHGQWIlfYY/pfI=";
     doCheck = false;
-    ldflags = [ "-X main.version=v2.0.0" ];
+    ldflags = [ "-X main.version=v2.1.1" ];
   };
 in
 {

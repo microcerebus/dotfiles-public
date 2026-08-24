@@ -280,16 +280,16 @@
     "treehouse-src": {
       "flake": false,
       "locked": {
-        "lastModified": 1782318452,
-        "narHash": "sha256-G9NqwTzwqgr8rt+HlhXAFtR6ajYjZ6LfHdNKhaPfEls=",
+        "lastModified": 1785475217,
+        "narHash": "sha256-nybPc6SXPxw5MZIFrjrmJDno9aMH2R4uZz0U8rayAOo=",
         "owner": "kunchenguid",
         "repo": "treehouse",
-        "rev": "68fa3d2556542add76bf80255787b8625a5041a6",
+        "rev": "939cb59ba0bd69036ae52fc19b5b41e0a3f167d3",
         "type": "github"
       },
       "original": {
         "owner": "kunchenguid",
-        "ref": "v2.0.0",
+        "ref": "v2.1.1",
         "repo": "treehouse",
         "type": "github"
       }
