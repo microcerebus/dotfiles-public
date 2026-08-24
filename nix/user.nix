@@ -298,6 +298,10 @@ in
   home.file.".claude/skills/lavish".source = link "files/.claude/skills/lavish";
   home.file.".claude/skills/no-mistakes".source = link "files/.claude/skills/no-mistakes";
   home.file.".claude/skills/chrome-devtools-axi".source = link "files/.claude/skills/chrome-devtools-axi";
+  # unslop (cursor/plugins, pstack/skills/unslop): strips AI writing tells from
+  # everything user-facing; prompt-only markdown, security-read 2026-08-24.
+  # Captain standing instruction: apply by default to all writing.
+  home.file.".claude/skills/unslop".source = link "files/.claude/skills/unslop";
   # Codex delegation (own authorship, inspired by Theo's Fable 5 workflow):
   # route token-heavy review, bounded implementation, and native computer-use
   # verification to GPT-5.5 via the codex CLI declared above.

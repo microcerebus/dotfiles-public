@@ -3,6 +3,7 @@
 How I think about building software.
 Baseline adapted from DietrichGebert/ponytail ("lazy senior dev"); local additions below.
 This is a living document - update it when my actual decisions contradict it.
+Last reviewed: 2026-08-24.
 
 ## Before writing code, climb this ladder
 

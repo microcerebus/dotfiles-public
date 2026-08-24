@@ -63,10 +63,11 @@ Glossary: "intelligence" = how hard a problem the model can handle unsupervised.
 - Effort applies per tool call, not per run: a long task needs more steps, not higher effort.
 - When spawning subagents or workflow stages, set effort low for mechanical stages (scanning, formatting, collection) and high for judgment stages (verify, judge, review).
 
-## Opinions
+## Writing
 
-When you are working on something that would benefit from being informed by these viewpoints, read ~/OPINIONS.md.
-
-## Voice Profile
-
-When you are writing or posting as me, read ~/VOICE.md first.
+- Apply the `unslop` skill to everything user-facing by default: chat replies, documents, artifacts, commit messages, anything the owner or another person will read.
+  Do not wait to be asked.
+- Read ~/VOICE.md before writing anything as the owner or for the owner to send, and ~/OPINIONS.md before design or tooling decisions.
+- Both files are living documents.
+  When a decision or correction in a session contradicts them, propose the update in that session.
+  Each file carries a `Last reviewed:` date; if it is more than 7 days old, review the file against recent sessions and refresh it before ending the session.
