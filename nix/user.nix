@@ -325,6 +325,24 @@ in
   # not the symlink target.
   home.file.".claude/statusline.sh".source = link "files/.claude/statusline.sh";
 
+  # Lavish over Tailscale: Lavish binds 127.0.0.1:4387 and rejects non-localhost
+  # Host headers, so a small node proxy on 127.0.0.1:4389 rewrites Host and
+  # strips X-Forwarded-*; `tailscale serve --bg http://127.0.0.1:4389` (one-time,
+  # persisted by tailscaled) publishes it as https://myhost.<tailnet>.ts.net.
+  # Phone URL for a session = https://myhost.tail608a89.ts.net/session/<id>.
+  home.file."bin/lavish-tailscale-proxy.mjs".source = link "files/bin/lavish-tailscale-proxy.mjs";
+  launchd.agents.lavish-tailscale-proxy = {
+    enable = true;
+    config = {
+      Label = "com.myuser.lavish-tailscale-proxy";
+      ProgramArguments = [ "${pkgs.nodejs_22}/bin/node" "${config.home.homeDirectory}/dotfiles/files/bin/lavish-tailscale-proxy.mjs" ];
+      RunAtLoad = true;
+      KeepAlive = true;
+      StandardOutPath = "${config.home.homeDirectory}/Library/Logs/lavish-tailscale-proxy.log";
+      StandardErrorPath = "${config.home.homeDirectory}/Library/Logs/lavish-tailscale-proxy.log";
+    };
+  };
+
   # ── App configs linked into place (editable without rebuild) ─────────────
   xdg.configFile."ghostty/config".source = link "files/.config/ghostty/config";
   xdg.configFile."tmux/tmux.conf".source = link "files/.config/tmux/tmux.conf";
