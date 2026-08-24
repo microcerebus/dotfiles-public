@@ -33,7 +33,7 @@
     # no-mistakes: validation-gate pipeline (docs/workflow-north-star.md).
     # Pinned to a release tag; bump deliberately, vendorHash lives in user.nix.
     no-mistakes-src = {
-      url = "github:kunchenguid/no-mistakes/v1.31.2";
+      url = "github:kunchenguid/no-mistakes/v1.57.0";
       flake = false;
     };
 
