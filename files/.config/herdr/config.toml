@@ -1,3 +1,4 @@
+onboarding = false
 # Herdr — the agent cockpit (AGENTS.md). Runs inside Ghostty; not a terminal
 # emulator. Keybinding layering (docs/tmux-training.md): Ghostty owns cmd+*,
 # tmux owns ctrl+a, Herdr keeps its default ctrl+b prefix — no overlap.
@@ -8,3 +9,9 @@ name = "catppuccin"           # Catppuccin everywhere (AGENTS.md theme rule)
 auto_switch = true
 dark_name = "catppuccin"
 light_name = "catppuccin-latte"
+
+[ui.toast]
+delivery = "herdr"
+
+[ui]
+show_agent_labels_on_pane_borders = true

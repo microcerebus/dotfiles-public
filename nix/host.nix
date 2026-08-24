@@ -53,9 +53,11 @@
       # Daily apps. Previously hand-installed; declared here so cleanup = "zap"
       # stops removing them and fresh machines get them for free.
       # One-time adoption of already-present apps (human runs):
-      #   brew install --cask --adopt brave-browser discord kitlangton-hex \
-      #     logi-options+ rectangle visual-studio-code
+      #   brew install --cask --adopt brave-browser chatgpt discord \
+      #     kitlangton-hex logi-options+ rectangle visual-studio-code
       "brave-browser"   # kept installed; Chrome is the browser for agent tooling
+      "chatgpt"         # OpenAI ChatGPT desktop app
+      "cursor"          # Cursor editor
       "discord"
       "google-chrome"
       "google-drive"         # Google Drive desktop sync client
