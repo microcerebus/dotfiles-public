@@ -96,6 +96,7 @@ in
     no-mistakes     # validation-gate pipeline + /no-mistakes skill (north star)
     treehouse       # worktree pool; firstmate crewmate dependency (north star)
     shellcheck      # shell lint; firstmate bin/fm-lint.sh pins 0.11.0 (nixpkgs matches). Replaces an ad-hoc brew install (2026-08-24)
+    actionlint      # GitHub workflow lint; firstmate bin/fm-lint-workflows.sh pins 1.7.12 (nixpkgs matches)
     # agents (PLAN Phase 4)
     codex           # OpenAI Codex CLI; auth via `codex login` browser flow
                     # (ChatGPT Plus plan) — never an API key in config

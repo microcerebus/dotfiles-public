@@ -18,6 +18,19 @@
   # owned by Determinate. See AGENTS.md sharp edges.
   nix.enable = false;
 
+  # tmux 3.7c's configure aborts on macOS unless told what to do about
+  # jemalloc (macOS calloc(3) mis-zeroes; tmux recommends jemalloc there).
+  # Mirrors the nixpkgs master fix; drop this overlay once it reaches
+  # nixpkgs-unstable (check: tmux builds without it).
+  nixpkgs.overlays = [
+    (final: prev: {
+      tmux = prev.tmux.overrideAttrs (old: {
+        buildInputs = old.buildInputs ++ [ final.jemalloc ];
+        configureFlags = old.configureFlags ++ [ "--enable-jemalloc" ];
+      });
+    })
+  ];
+
   programs.zsh.enable = true; # default shell integration for nix-darwin
 
   # ── Declarative Homebrew (GUI apps only) ──────────────────────────────────
