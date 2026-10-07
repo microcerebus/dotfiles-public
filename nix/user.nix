@@ -126,6 +126,13 @@ in
 
   # ── Zsh (FOSS autocomplete stack, polished but not slow) ─────────────────
   programs.zsh = {
+    # Homebrew goes LAST on PATH (zshenv, so every shell gets it): brew pulls
+    # in dependency formulae (python@3.14 on 2026-10-07) whose binaries must
+    # not shadow the Nix-declared ones. Brew-only CLIs (dcli, codex) still
+    # resolve because nothing earlier provides them.
+    envExtra = ''
+      path+=(/opt/homebrew/bin)
+    '';
     enable = true;
     autosuggestion.enable = true;
     syntaxHighlighting.enable = true;
@@ -374,6 +381,5 @@ in
     "${dotfiles}/scripts"
     "${config.home.homeDirectory}/.local/bin"
     "${config.home.homeDirectory}/Library/pnpm/bin" # pnpm global shims (PNPM_HOME/bin)
-    "/opt/homebrew/bin" # brew CLI formulae (e.g. dcli); GUI casks don't need it
   ];
 }
