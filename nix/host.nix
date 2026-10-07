@@ -38,16 +38,19 @@
   homebrew = {
     enable = true;
     onActivation = {
-      # Upgrades happen at every activation: the daily dotfiles-autoupdate
-      # daemon below, or a human-run `rebuild`. brew refreshes taps and
-      # upgrades everything declared here. Guardrails: casks stay non-greedy
-      # (default) so self-updating apps manage themselves; cleanup=zap keeps
-      # the set declarative; `brew pin <formula>` holds back a known-bad
-      # version; the daily cloud routine reviews new formula/cask versions for
-      # advisories alongside the flake.lock bump it pushes to main.
-      autoUpdate = true;
+      # Activation only installs what is missing and zaps what is undeclared.
+      # Upgrades run as a separate `brew upgrade` AFTER activation (daily
+      # dotfiles-autoupdate daemon below, and the `rebuild` alias), because
+      # inside activation one failed download aborts everything after it:
+      # on 2026-10-07 the chatgpt cask pointed at a 404 and blocked the whole
+      # Home Manager switch. Outside activation a bad cask fails alone.
+      # Guardrails: casks stay non-greedy (default) so self-updating apps
+      # manage themselves; `brew pin <formula>` holds back a known-bad
+      # version; the daily cloud routine reviews new formula/cask versions
+      # for advisories alongside the flake.lock bump it pushes to main.
+      autoUpdate = false;
       cleanup = "zap"; # remove anything not declared here (keeps machine honest)
-      upgrade = true;
+      upgrade = false;
     };
 
     casks = [
@@ -193,9 +196,8 @@
   # ── Daily unattended update ──────────────────────────────────────────────
   # Once per calendar day, at the first hourly tick from 04:00 on (the cloud
   # routine pushes the flake.lock bump at 02:00): fast-forward ~/dotfiles to
-  # origin/main, update pnpm globals, then the same switch as the `rebuild`
-  # alias - which also upgrades every Homebrew cask/formula/mas app declared
-  # above. Hourly ticks + RunAtLoad instead of a calendar slot because launchd
+  # origin/main, update pnpm globals, run the same switch as the `rebuild`
+  # alias, then `brew upgrade` (non-fatal per app, see onActivation above). Hourly ticks + RunAtLoad instead of a calendar slot because launchd
   # drops calendar runs missed while the Mac is powered off; this way a Mac
   # that was off or asleep at 04:00 catches up within an hour of coming back.
   # A day counts as attempted once the network is up (stamp in /var/db), so a
@@ -208,7 +210,8 @@
   # dotfiles-autoupdate.failed, which every new zsh prints (nix/user.nix)
   # until a successful run or `rebuild` removes it. Known failure: casks that
   # ship a .pkg (karabiner-elements, logi-options+, google-drive) need an
-  # interactive sudo to upgrade - run `rebuild` when the banner says so.
+  # interactive sudo to upgrade - run `rebuild` when the banner says so,
+  # which retries `brew upgrade` interactively.
   # AbandonProcessGroup: when activation reloads this daemon's own plist, the
   # bootout kills only the wrapper, not the in-flight darwin-rebuild.
   launchd.daemons.dotfiles-autoupdate = {
@@ -226,7 +229,7 @@
           ts() { date '+%F %T'; }
           as_user() {
             /usr/bin/sudo -u "$user" -H env \
-              PATH="$home/Library/pnpm/bin:/etc/profiles/per-user/$user/bin:$PATH" \
+              PATH="$home/Library/pnpm/bin:/etc/profiles/per-user/$user/bin:/opt/homebrew/bin:$PATH" \
               PNPM_HOME="$home/Library/pnpm" "$@"
           }
           fail() { echo "$(ts) FAILED: $*"; echo "$(ts) $*" > "$marker"; exit 1; }
@@ -265,6 +268,10 @@
           as_user pnpm update -g --latest || echo "$(ts) warn: pnpm update -g failed"
 
           darwin-rebuild switch --flake "$repo" || fail "darwin-rebuild switch failed"
+
+          # Runs last so a broken cask can't block the switch above.
+          as_user brew upgrade \
+            || fail "system updated, but brew upgrade failed for some apps (see log)"
 
           lock_age=$(( ($(date +%s) - $(as_user git -C "$repo" log -1 --format=%ct -- flake.lock)) / 86400 ))
           [ "$lock_age" -le 3 ] \

@@ -150,7 +150,9 @@ in
     ];
 
     shellAliases = {
-      rebuild = "sudo darwin-rebuild switch --flake ${dotfiles} && rm -f ~/Library/Logs/dotfiles-autoupdate.failed";
+      # brew upgrade runs after the switch so one broken cask cannot block it
+      # (see homebrew.onActivation in nix/host.nix).
+      rebuild = "sudo darwin-rebuild switch --flake ${dotfiles} && brew upgrade && rm -f ~/Library/Logs/dotfiles-autoupdate.failed";
       vim = "nvim";
       v = "nvim";
       c = "clear";
