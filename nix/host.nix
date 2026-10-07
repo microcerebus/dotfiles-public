@@ -87,6 +87,8 @@
       "logi-options+"        # Logitech Options+ (mouse/keyboard driver)
       "lunar"                # adaptive brightness for external displays
       "rectangle"            # window snapping
+      "opensuperwhisper"     # voice typing, local Whisper (Starmel/OpenSuperWhisper, MIT).
+                             # Upstream, not the opensuperwhisper.com fork (no cask, young).
       "spotify"
       "termius"              # SSH client (hosts sync via Termius account)
       "visual-studio-code"
