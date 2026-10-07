@@ -32,6 +32,10 @@ tool-adoption backlog; check it before adding workflow tooling).
 - Layer ownership: **Home Manager** owns the CLI baseline and shell; **Homebrew
   (declared in `nix/host.nix`)** owns GUI/macOS-native apps (Ghostty, OrbStack);
   **ecosystem managers** (pnpm, uv) own per-project tooling via devShells.
+  Exception: fast-moving agent CLIs that other apps must be able to update
+  install outside Nix - `claude` via its native self-updater, `codex` as a
+  Homebrew cask (nixpkgs lagged ~11 releases and T3 Code could not update a
+  read-only store binary, 2026-10-07).
 - One flake, one bootstrap, no phase install scripts. Growth = small reviewed
   commits to the flake, applied with `rebuild`.
 - Terminal layering: **Ghostty** is the emulator. **tmux** is for terminal

@@ -61,6 +61,12 @@
       # left it ~60 versions behind (2026-10-07).
       "t3-code@nightly" # T3 Code nightly (pingdotgg/t3code); self-updating.
                         # Data in ~/.t3 - removing this cask zaps it.
+      "codex"      # OpenAI Codex CLI. A CLI, so by the layer rule it belongs in
+                   # Home Manager, but nixpkgs ran ~11 releases behind (0.149 vs
+                   # 0.160.1, 2026-10-07) and a read-only /nix/store binary left
+                   # T3 Code unable to update it. The cask is upgraded daily by
+                   # `brew upgrade` and T3 detects it and can upgrade it too.
+                   # Auth via `codex login` browser flow - never an API key.
       "orbstack"   # container runtime (AGENTS.md: no Docker Desktop et al.)
       "karabiner-elements"   # key remapping (files/.config/karabiner)
       "hammerspoon"          # macOS automation (files/.hammerspoon)

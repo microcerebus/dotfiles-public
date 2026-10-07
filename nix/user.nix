@@ -100,8 +100,7 @@ in
     shellcheck      # shell lint; firstmate bin/fm-lint.sh pins 0.11.0 (nixpkgs matches). Replaces an ad-hoc brew install (2026-08-24)
     actionlint      # GitHub workflow lint; firstmate bin/fm-lint-workflows.sh pins 1.7.12 (nixpkgs matches)
     # agents (PLAN Phase 4)
-    codex           # OpenAI Codex CLI; auth via `codex login` browser flow
-                    # (ChatGPT Plus plan) — never an API key in config
+    # codex CLI: Homebrew cask in nix/host.nix (nixpkgs lagged releases)
     inputs.herdr.packages.${pkgs.stdenv.hostPlatform.system}.default
                     # herdr: agent cockpit (AGENTS.md); runs inside Ghostty
     # enabled-by-default toolchains (kept lean; projects use devShells)
@@ -324,7 +323,7 @@ in
   home.file.".claude/skills/domain-modeling".source = link "files/.claude/skills/domain-modeling";
   # Codex delegation (own authorship, inspired by Theo's Fable 5 workflow):
   # route token-heavy review, bounded implementation, and native computer-use
-  # verification to the codex CLI declared above. codex-review and codex-implement
+  # verification to the codex CLI (Homebrew cask, nix/host.nix). codex-review and codex-implement
   # are slash-command only (unused as model-triggered skills, 2026-10-07).
   home.file.".claude/skills/codex-review".source = link "files/.claude/skills/codex-review";
   home.file.".claude/skills/codex-implement".source = link "files/.claude/skills/codex-implement";
