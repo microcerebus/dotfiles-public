@@ -75,6 +75,11 @@ The statusline instead shows real usage against the model's actual context
 window (tokens used / window size / %), with the window taken from the
 harness when reported and inferred from the model id otherwise
 (files/.claude/statusline.sh).
+Its colour goes by absolute fill, not percent (2026-10-07): yellow at 200k
+(plan a handoff), red at 350k (hand off or `/compact <hint>` now), because
+Anthropic's session-management guidance puts quality decay well before a 1M
+window fills. Habits: `/clear` at task boundaries, `Esc Esc` rewind instead of
+"that failed, try X", noisy work in subagents.
 A PreCompact hook in ~/.claude/settings.json (matcher `manual`) shapes each
 /compact into a handoff document.
 The vendored `/handoff` skill (mattpocock/skills) writes a handoff doc on

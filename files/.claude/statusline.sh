@@ -40,7 +40,8 @@ window="$(jq -r '.context_window.context_window_size // empty' <<<"$input")"
 if [ -z "$window" ]; then
   model_id="$(jq -r '.model.id // ""' <<<"$input")"
   case "$model_id" in
-    *"[1m]"*|*fable*) window=1000000 ;;
+    # Native 1M context: Fable, Opus 4.7+, Sonnet 5.x (code.claude.com model-config).
+    *"[1m]"*|*fable*|*opus-5*|*opus-4-[789]*|*sonnet-5*) window=1000000 ;;
     *) window=200000 ;;
   esac
 fi
@@ -62,9 +63,16 @@ out="$(seg "$BLUE" "$model")"
 if [ -n "$used_tokens" ]; then
   tokens_int="$(printf '%.0f' "$used_tokens")"
   pct_int=$(( tokens_int * 100 / window ))
-  if [ "$pct_int" -ge 80 ]; then
+  # Colour by absolute fill, not percent: with auto-compact off this is the
+  # only warning, and quality degrades well before a 1M window is full
+  # (Anthropic's session-management guidance: compact or hand off by
+  # ~300-400k). Yellow = plan a handoff, red = do it now. Small windows keep
+  # the 50%/80% marks.
+  warn=$(( window / 2 )); [ "$warn" -gt 200000 ] && warn=200000
+  crit=$(( window * 4 / 5 )); [ "$crit" -gt 350000 ] && crit=350000
+  if [ "$tokens_int" -ge "$crit" ]; then
     color="$RED"
-  elif [ "$pct_int" -ge 50 ]; then
+  elif [ "$tokens_int" -ge "$warn" ]; then
     color="$YELLOW"
   else
     color="$GREEN"
