@@ -1,11 +1,12 @@
 ---
 name: codex-implement
-description: Delegate bounded, clearly-specified implementation work (mechanical migrations, clear-spec features, bulk edits) to the codex CLI (GPT-5.5), usually on a git worktree. Use when the work is token-heavy but well specified, and taste requirements are low.
+description: Delegate bounded, clearly-specified implementation work (mechanical migrations, clear-spec features, bulk edits) to the codex CLI, usually on a git worktree. Use when the work is token-heavy but well specified, and taste requirements are low.
+disable-model-invocation: true
 ---
 
 # codex-implement
 
-Route bounded implementation work to GPT-5.5 through the codex CLI.
+Route bounded implementation work to the codex CLI (model set in ~/.codex/config.toml).
 Good fits: clear-spec implementations, mechanical migrations, data analysis scripts, bulk refactors.
 Bad fits: anything user-facing (UI, copy, API design) or ambiguous - keep those on Claude models.
 

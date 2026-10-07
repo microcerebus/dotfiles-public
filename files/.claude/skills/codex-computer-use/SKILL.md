@@ -1,11 +1,11 @@
 ---
 name: codex-computer-use
-description: Ask the codex CLI (GPT-5.5) to run local app verification that needs computer use - native macOS apps, simulators, screenshots, app launching, or independent runtime inspection beyond the browser. Use when the user asks to test a flow, verify UI behavior, inspect a running app, capture screenshots, or confirm implemented behavior end-to-end. For browser-only work, prefer chrome-devtools-axi.
+description: Ask the codex CLI to run local app verification that needs computer use - native macOS apps, simulators, screenshots, app launching, or independent runtime inspection beyond the browser. Use when the user asks to test a flow, verify UI behavior, inspect a running app, capture screenshots, or confirm implemented behavior end-to-end. For browser-only work, prefer chrome-devtools-axi.
 ---
 
 # codex-computer-use
 
-Route computer-use verification to GPT-5.5 through the codex CLI.
+Route computer-use verification to the codex CLI (model set in ~/.codex/config.toml).
 Codex's desktop computer use covers native macOS surfaces (Xcode, simulators, arbitrary apps) that browser automation cannot reach; screenshots and long visual loops are token-heavy, which is exactly what should not run on Fable.
 
 ## Workflow

@@ -34,10 +34,10 @@ Glossary: "intelligence" = how hard a problem the model can handle unsupervised.
 
 | Model                 | Cost               | Intelligence | Taste |
 |-----------------------|--------------------|--------------|-------|
-| Fable 5               | high               | 10           | 10    |
-| Opus 4.8              | mid                | 8            | 8     |
-| Sonnet 5              | mid (token-hungry) | 6            | 7     |
-| GPT-5.5 via codex CLI | ~free (sub quota)  | 9            | 4     |
+| Fable 5.1             | high               | 10           | 10    |
+| Opus 5.5              | mid                | 8            | 8     |
+| Sonnet 5.5            | mid (token-hungry) | 6            | 7     |
+| GPT via codex CLI     | ~free (sub quota)  | 9            | 4     |
 | Haiku                 | -                  | do not use   | -     |
 
 - These are defaults, not limits.
@@ -45,11 +45,11 @@ Glossary: "intelligence" = how hard a problem the model can handle unsupervised.
   Judge the output, not the price tag.
 - Cost is a tie-breaker only; when the axes conflict for anything that ships, intelligence > taste > cost.
 - Use cheap models to gather information and try things; move the real work to the right model.
-- Bulk mechanical work (clear-spec implementation, log digging, giant docs/PDFs): shell out to GPT-5.5 via `codex exec`.
+- Bulk mechanical work (clear-spec implementation, log digging, giant docs/PDFs): shell out to GPT via `codex exec` (model: ~/.codex/config.toml).
   Anything user-facing needs taste >= 7.
-- Reviews of plans and implementations: Fable 5 or Opus 4.8, optionally GPT-5.5 as an extra independent perspective.
-- Workflows cannot call GPT-5.5 directly: have a Sonnet-on-low stage spawn `codex exec` and report results back.
-  Prefix any subagent/workflow label that runs a non-Claude model with the model name (e.g. `[5.5] parse logs`).
+- Reviews of plans and implementations: Fable 5.1 or Opus 5.5, optionally GPT via codex as an extra independent perspective.
+- Workflows cannot call GPT directly: have a Sonnet-on-low stage spawn `codex exec` and report results back.
+  Prefix any subagent/workflow label that runs a non-Claude model with the model name (e.g. `[gpt] parse logs`).
   Use `schema` on the wrapper stage so the codex report comes back structured instead of as free text.
   Parallel codex implementation wrappers need `isolation: 'worktree'` so their edits don't collide in a shared checkout.
   Workflow token budgets count Claude tokens only - codex work is invisible to `budget.spent()`.

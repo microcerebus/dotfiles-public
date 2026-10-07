@@ -1,11 +1,12 @@
 ---
 name: codex-review
-description: Ask the codex CLI (GPT-5.5) for an independent code review of uncommitted changes, a branch diff, a commit, or a specific implementation. Use when the user wants a second-pass review, an extra independent perspective, or the change is broad enough that another reviewer helps.
+description: Ask the codex CLI for an independent code review of uncommitted changes, a branch diff, a commit, or a specific implementation. Use when the user wants a second-pass review, an extra independent perspective, or the change is broad enough that another reviewer helps.
+disable-model-invocation: true
 ---
 
 # codex-review
 
-Route independent second-pass code review to GPT-5.5 through the codex CLI.
+Route independent second-pass code review to the codex CLI (model set in ~/.codex/config.toml).
 Codex is an outside reviewer: it sees the repo read-only and reports back; you stay the editor of record.
 
 ## Workflow

@@ -310,24 +310,23 @@ in
   # everything user-facing; prompt-only markdown, security-read 2026-08-24.
   # Captain standing instruction: apply by default to all writing.
   home.file.".claude/skills/unslop".source = link "files/.claude/skills/unslop";
-  # mattpocock/skills: grill-with-docs composes grilling (productivity) and
-  # domain-modeling (engineering); relentless plan interviews that write a
-  # glossary and ADRs as decisions land. Prompt-only markdown, security-read 2026-08-24.
-  home.file.".claude/skills/grill-with-docs".source = link "files/.claude/skills/grill-with-docs";
+  # mattpocock/skills: grilling (relentless plan interviews) and
+  # domain-modeling (glossary + ADRs). Prompt-only markdown, security-read
+  # 2026-08-24. Slash-command only (disable-model-invocation) since 2026-10-07:
+  # zero model-triggered uses, so not worth a line in every system prompt.
   home.file.".claude/skills/grilling".source = link "files/.claude/skills/grilling";
   home.file.".claude/skills/domain-modeling".source = link "files/.claude/skills/domain-modeling";
   # Codex delegation (own authorship, inspired by Theo's Fable 5 workflow):
   # route token-heavy review, bounded implementation, and native computer-use
-  # verification to GPT-5.5 via the codex CLI declared above.
+  # verification to the codex CLI declared above. codex-review and codex-implement
+  # are slash-command only (unused as model-triggered skills, 2026-10-07).
   home.file.".claude/skills/codex-review".source = link "files/.claude/skills/codex-review";
   home.file.".claude/skills/codex-implement".source = link "files/.claude/skills/codex-implement";
   home.file.".claude/skills/codex-computer-use".source = link "files/.claude/skills/codex-computer-use";
-  # handoff / claude-handoff (mattpocock/skills): session-lifecycle skills that
-  # shape compactions into handoff documents. Prompt-only markdown,
-  # security-read 2026-07-05. Both are disable-model-invocation, so they stay
-  # out of the model-facing skill listing (slash commands only).
+  # handoff (mattpocock/skills): shapes the session into a handoff document.
+  # Prompt-only markdown, security-read 2026-07-05. claude-handoff (spawn a
+  # fresh agent from it) was dropped 2026-10-07 as a never-used duplicate.
   home.file.".claude/skills/handoff".source = link "files/.claude/skills/handoff";
-  home.file.".claude/skills/claude-handoff".source = link "files/.claude/skills/claude-handoff";
   # Status line (Catppuccin Mocha): ~/.claude/settings.json invokes this via
   # `bash`, so no execute bit is required. Edit files/.claude/statusline.sh,
   # not the symlink target.

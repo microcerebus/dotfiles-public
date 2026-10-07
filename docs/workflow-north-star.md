@@ -77,8 +77,6 @@ harness when reported and inferred from the model id otherwise
 (files/.claude/statusline.sh).
 A PreCompact hook in ~/.claude/settings.json (matcher `manual`) shapes each
 /compact into a handoff document.
-Two vendored session-lifecycle skills from mattpocock/skills support this:
-`/handoff` (write a handoff doc) and `/claude-handoff` (spawn a fresh
-background agent seeded with the handoff).
-Both are `disable-model-invocation` so they stay out of the model-facing skill
-listing.
+The vendored `/handoff` skill (mattpocock/skills) writes a handoff doc on
+demand. `/claude-handoff` (spawn a fresh agent from it) was dropped on
+2026-10-07 after zero uses.

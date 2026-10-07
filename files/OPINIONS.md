@@ -3,7 +3,7 @@
 How I think about building software.
 Baseline adapted from DietrichGebert/ponytail ("lazy senior dev"); local additions below.
 This is a living document - update it when my actual decisions contradict it.
-Last reviewed: 2026-08-24.
+Last reviewed: 2026-10-07.
 
 ## Before writing code, climb this ladder
 
@@ -30,6 +30,7 @@ Understand the problem fully and trace the real flow before picking a rung.
 ## Code taste
 
 - Deletion over addition. Boring over clever.
+  Applies to tooling too: unused skills, commands, plugins and apps get deleted, not kept "just in case".
 - Fewer dependencies over convenient dependencies.
   Every dependency is a liability I have to carry.
 - Question complexity in the request itself - ask what is actually needed before building the elaborate version.
@@ -60,6 +61,9 @@ Prefer the boring, widely-adopted, steadily-maintained option over the flashy fe
 
 - Declarative and reproducible over imperative and drifting.
   My machine is a Nix flake; growth happens as small reviewed commits, not ad-hoc installs.
+- Every installed app is declared, and everything updates itself daily.
+  Update automation must catch up after downtime (Mac asleep or off) and fail loudly, never silently.
+- Anything I review (artifacts, agent sessions) should be reachable from my phone over Tailscale.
 - FOSS-first. Proprietary tools need a strong reason and an exit path.
 - One tool per job, one obvious layer that owns it. No duplicate tooling.
 - Aesthetics are consistent everywhere or not at all: Catppuccin theme, JetBrains Mono Nerd Font, across every tool that can be themed.
