@@ -115,6 +115,13 @@ tool-adoption backlog; check it before adding workflow tooling).
   zap list (`https://formulae.brew.sh/api/cask/<token>.json`); if it touches
   anything still in use, have the human `brew uninstall --cask <token>`
   (no zap) before the next activation (2026-10-07).
+- nix-darwin activation runs `brew bundle` *before* Home Manager, and a
+  bundle failure aborts the rest. From 2026-08-25 to 2026-10-07 every rebuild
+  silently left Home Manager unapplied (stale `~/.zshrc`, links, packages)
+  while `/run/current-system` still advanced. Upgrades now run as a separate
+  `brew upgrade` after the switch. Check HM actually applied with
+  `readlink ~/.zshrc` (store path should change after a rebuild that touches
+  `nix/user.nix`) (2026-10-07).
 - The axi tools (gh-axi, chrome-devtools-axi, lavish-axi, tasks-axi) are pnpm
   globals in `$PNPM_HOME/bin` (~/Library/pnpm/bin), updated daily by
   `dotfiles-autoupdate` (`pnpm update -g --latest`). Their SessionStart hooks
