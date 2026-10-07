@@ -84,6 +84,8 @@ in
     jq
     tree
     wget
+    ffmpeg          # media; with yt-dlp, used by the ig-collection-extract skill
+    yt-dlp          # (ffmpeg replaces an ad-hoc brew install, 2026-10-07)
     # editor + git UX
     neovim          # binary only; config is a plain clone at ~/.config/nvim (Phase 3)
                     # lazygit comes from programs.lazygit below (Catppuccin-themed)
@@ -148,7 +150,7 @@ in
     ];
 
     shellAliases = {
-      rebuild = "sudo darwin-rebuild switch --flake ${dotfiles}";
+      rebuild = "sudo darwin-rebuild switch --flake ${dotfiles} && rm -f ~/Library/Logs/dotfiles-autoupdate.failed";
       vim = "nvim";
       v = "nvim";
       c = "clear";
@@ -192,6 +194,12 @@ in
         # Accept the autosuggestion ghost text from the home row (default is
         # right-arrow/End). ctrl+f is otherwise just forward-char here.
         bindkey '^f' autosuggest-accept
+
+        # Daily auto-update status (launchd daemon in nix/host.nix).
+        if [[ -e ~/Library/Logs/dotfiles-autoupdate.failed ]]; then
+          print -P "%F{red}dotfiles auto-update: $(<~/Library/Logs/dotfiles-autoupdate.failed)%f"
+          print -P "%F{8}  log: ~/Library/Logs/dotfiles-autoupdate.log - fix, then \`rebuild\`%f"
+        fi
 
         # Herdr is the agent cockpit; never auto-wrap it in tmux (AGENTS.md).
         # SSH logins (phone/iPad via Termius) land in the persistent herdr

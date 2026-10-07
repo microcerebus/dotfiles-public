@@ -80,4 +80,4 @@ else
 fi
 
 log "Done. Open a NEW Ghostty window and use \`rebuild\` from now on."
-log "Next: return to Claude Code and continue with PLAN Phase 2."
+log "Next: install Claude Code (self-updating): curl -fsSL https://claude.ai/install.sh | bash"
