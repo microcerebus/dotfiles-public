@@ -299,6 +299,10 @@ in
   home.file."OPINIONS.md".source = link "files/OPINIONS.md";
   home.file."VOICE.md".source = link "files/VOICE.md";
   home.file.".claude/CLAUDE.md".source = link "files/AGENTS.md";
+  # Codex reads ~/.codex/AGENTS.md, not ~/AGENTS.md. Until 2026-10-07 that was
+  # a hand-edited July copy that silently missed every later rule change.
+  # The first rebuild moves the old file aside as AGENTS.md.hm-backup.
+  home.file.".codex/AGENTS.md".source = link "files/AGENTS.md";
 
   # Agent skills (vendored from upstream repos; see docs/workflow-north-star.md
   # for provenance + update procedure). lavish and chrome-devtools-axi run via

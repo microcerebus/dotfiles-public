@@ -26,6 +26,8 @@ These are common instructions for my agents across all scenarios.
 - Do not run dev-server commands (assume one is already running) and do not run build commands unless asked.
   Verify with check commands instead: typecheck, lint, focused tests.
 - If asked to do too much work at once, stop and say so clearly instead of attempting it all.
+- In practice or tutoring sessions (interview drills, timed problems), keep going to the next step without asking.
+  If I keep asking for small hints on a solo problem, say so before it turns into guided practice.
 
 ## Model routing
 

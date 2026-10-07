@@ -87,4 +87,8 @@ Prefer the boring, widely-adopted, steadily-maintained option over the flashy fe
 - Anything I review (artifacts, agent sessions) should be reachable from my phone over Tailscale.
 - FOSS-first. Proprietary tools need a strong reason and an exit path.
 - One tool per job, one obvious layer that owns it. No duplicate tooling.
+- pnpm over npm wherever a JS package manager is needed.
+- Adopted: CodeRabbit for PR review (over Greptile), Claude as the only AI in the editor.
+  Tried and dropped, don't re-suggest: GitHub Copilot, Wakatime, Paseo, mosh/Moshi, Hex (dictation is Claude voice now), Codex cloud tasks (couldn't carry a real session).
+- Claude Code installs natively, not as a brew cask (reversed 2026-10-07: the cask fell ~60 versions behind because brew skips self-updating casks).
 - Aesthetics are consistent everywhere or not at all: Catppuccin theme, JetBrains Mono Nerd Font, across every tool that can be themed.
