@@ -85,7 +85,7 @@ Prefer the boring, widely-adopted, steadily-maintained option over the flashy fe
 - Every installed app is declared, and everything updates itself daily.
   Update automation must catch up after downtime (Mac asleep or off) and fail loudly, never silently.
 - Anything I review (artifacts, agent sessions) should be reachable from my phone over Tailscale.
-- FOSS-first. Proprietary tools need a strong reason and an exit path.
+- Open source for the dev toolchain (terminal, editor, shell, CLIs). Closed GUI and agent apps are fine when declared in `nix/host.nix`; anything my workflow depends on needs an exit path.
 - One tool per job, one obvious layer that owns it. No duplicate tooling.
 - pnpm over npm wherever a JS package manager is needed.
 - Adopted: CodeRabbit for PR review (over Greptile), Claude as the only AI in the editor.
