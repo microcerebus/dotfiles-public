@@ -175,10 +175,18 @@
   system.defaults.CustomSystemPreferences."com.apple.commerce".AutoUpdate = true;
 
   # ── Daily unattended update ──────────────────────────────────────────────
-  # 04:30 daily (or on wake, if asleep then): fast-forward ~/dotfiles to
-  # origin/main (the cloud routine pushes the daily flake.lock bump), update
-  # pnpm globals, then the same switch as the `rebuild` alias - which also
-  # upgrades every Homebrew cask/formula/mas app declared above.
+  # Once per calendar day, at the first hourly tick from 04:00 on (the cloud
+  # routine pushes the flake.lock bump at 02:00): fast-forward ~/dotfiles to
+  # origin/main, update pnpm globals, then the same switch as the `rebuild`
+  # alias - which also upgrades every Homebrew cask/formula/mas app declared
+  # above. Hourly ticks + RunAtLoad instead of a calendar slot because launchd
+  # drops calendar runs missed while the Mac is powered off; this way a Mac
+  # that was off or asleep at 04:00 catches up within an hour of coming back.
+  # A day counts as attempted once the network is up (stamp in /var/db), so a
+  # failing run retries tomorrow, not hourly.
+  # Cloud watchdog: the routine has silently skipped fires before (4 Mondays
+  # in Sep 2026, no run records), so a flake.lock on main older than 3 days
+  # raises the same shell banner.
   # Never applies local work: aborts if nix/ or flake.* are dirty, or if the
   # pull is not a fast-forward. Failures leave ~/Library/Logs/
   # dotfiles-autoupdate.failed, which every new zsh prints (nix/user.nix)
@@ -207,14 +215,29 @@
           }
           fail() { echo "$(ts) FAILED: $*"; echo "$(ts) $*" > "$marker"; exit 1; }
 
-          echo "=== $(ts) dotfiles auto-update"
-          echo "$(ts) running or interrupted" > "$marker"
+          stamp=/var/db/dotfiles-autoupdate.last
+          [ "$(date +%H)" -ge 4 ] || exit 0
+          [ "$(cat "$stamp" 2>/dev/null)" != "$(date +%F)" ] || exit 0
+          # A human `rebuild` in flight (also: this daemon's RunAtLoad fires
+          # mid-activation when a rebuild installs it) - try next hour.
+          pgrep -qf darwin-rebuild && exit 0
+          # A switch already happened today after 04:00 - that was today's run.
+          switched=$(stat -f '%Sm' -t '%F %H' /run/current-system)
+          if [ "''${switched% *}" = "$(date +%F)" ] && [ "''${switched#* }" -ge 4 ]; then
+            date +%F > "$stamp"; exit 0
+          fi
 
-          # Missed 04:30 runs fire right after wake, before Wi-Fi is back.
-          for _ in $(seq 60); do
-            /usr/bin/curl -fsS -o /dev/null --max-time 5 https://github.com && break
+          # Ticks right after wake can beat Wi-Fi; no network = retry next hour.
+          online=
+          for _ in $(seq 30); do
+            /usr/bin/curl -fsS -o /dev/null --max-time 5 https://github.com && { online=1; break; }
             sleep 10
           done
+          [ -n "$online" ] || exit 0
+          date +%F > "$stamp"
+
+          echo "=== $(ts) dotfiles auto-update"
+          echo "$(ts) running or interrupted" > "$marker"
 
           [ "$(as_user git -C "$repo" branch --show-current)" = main ] \
             || fail "$repo is not on main"
@@ -227,11 +250,16 @@
 
           darwin-rebuild switch --flake "$repo" || fail "darwin-rebuild switch failed"
 
+          lock_age=$(( ($(date +%s) - $(as_user git -C "$repo" log -1 --format=%ct -- flake.lock)) / 86400 ))
+          [ "$lock_age" -le 3 ] \
+            || fail "applied OK, but flake.lock on main is $lock_age days old - is the cloud update routine running? (claude.ai/code/routines)"
+
           rm -f "$marker"
           echo "=== $(ts) done"
         ''}"
       ];
-      StartCalendarInterval = [ { Hour = 4; Minute = 30; } ];
+      StartInterval = 3600;
+      RunAtLoad = true;
       AbandonProcessGroup = true;
       StandardOutPath = "/Users/${username}/Library/Logs/dotfiles-autoupdate.log";
       StandardErrorPath = "/Users/${username}/Library/Logs/dotfiles-autoupdate.log";
