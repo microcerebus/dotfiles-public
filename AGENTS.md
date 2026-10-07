@@ -105,6 +105,12 @@ tool-adoption backlog; check it before adding workflow tooling).
   brew formula/cask not declared in `nix/host.nix` - a plain `brew install`
   lasts only until the next `rebuild`. Declare everything; adopt already-present
   apps with `brew install --cask --adopt <cask>` (2026-07-06).
+- Removing a cask from `nix/host.nix` runs its *zap* stanza, which can trash
+  data shared with other installs (claude-code's zap deletes `~/.claude.json*`
+  and the native `~/.local/share/claude`). Before dropping a cask, read its
+  zap list (`https://formulae.brew.sh/api/cask/<token>.json`); if it touches
+  anything still in use, have the human `brew uninstall --cask <token>`
+  (no zap) before the next activation (2026-10-07).
 - The axi tools (gh-axi, chrome-devtools-axi, lavish-axi, tasks-axi) are pnpm
   globals in `$PNPM_HOME/bin` (~/Library/pnpm/bin), updated daily by
   `dotfiles-autoupdate` (`pnpm update -g --latest`). Their SessionStart hooks

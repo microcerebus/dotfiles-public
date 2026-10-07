@@ -171,6 +171,22 @@
     };
   };
 
+  # Zap guard: dropping a cask lets cleanup=zap run its zap stanza. Two
+  # dropped casks would destroy live data: claude-code's zap trashes
+  # ~/.claude.json* and the native ~/.local/{bin,share}/claude install;
+  # codex-app's zap trashes com.openai.codex prefs, which ChatGPT.app now
+  # uses. Abort until they are removed with a plain (non-zap) uninstall.
+  # Delete this block once neither Caskroom dir exists (2026-10-07).
+  system.activationScripts.preActivation.text = ''
+    for c in claude-code codex-app; do
+      if [ -d "/opt/homebrew/Caskroom/$c" ]; then
+        echo "error: cask $c is installed; its zap would delete live data." >&2
+        echo "  Run first:  brew uninstall --cask claude-code codex-app" >&2
+        exit 1
+      fi
+    done
+  '';
+
   # App Store apps (masApps above, plus Tachimanga) update themselves.
   system.defaults.CustomSystemPreferences."com.apple.commerce".AutoUpdate = true;
 
