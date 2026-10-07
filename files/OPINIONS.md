@@ -1,7 +1,7 @@
 # Engineering opinions
 
 How I think about building software.
-Baseline adapted from DietrichGebert/ponytail ("lazy senior dev"); local additions below.
+Baseline adapted from DietrichGebert/ponytail ("lazy senior dev"), with engineering principles from Lauren Tan's pstack (cursor/plugins, `pstack/skills/principle-*`, MIT); local additions below.
 This is a living document - update it when my actual decisions contradict it.
 Last reviewed: 2026-10-07.
 
@@ -26,6 +26,27 @@ Understand the problem fully and trace the real flow before picking a rung.
 - Anything I explicitly asked for.
 - Root causes: fix the disease, not the symptom.
 - Testing non-trivial logic: leave at least one runnable check that fails if the logic breaks.
+
+## Engineering principles (pstack)
+
+Paraphrased from pstack; the name in brackets is the upstream skill to read for the full version.
+
+- Get the data structures and types right first, and the code that uses them gets obvious. Encode the domain in a structure, not in conditionals scattered across files. [foundational-thinking, model-the-domain]
+- Make illegal states unrepresentable. Parse external data once at the boundary, then trust the types inside. No casts or `any` to quiet the compiler. [type-system-discipline, boundary-discipline]
+- Validation and error handling live at system edges (CLI, config, network, external APIs). Business logic stays pure. [boundary-discipline]
+- Remove dead code and redundant checks before building on top. When a new API replaces an old one, migrate every caller and delete the old one in the same change, no compatibility shims. [subtract-before-you-add, migrate-callers-then-delete-legacy-apis]
+- A new requirement gets designed in as if it had been there from day one, not bolted on. [redesign-from-first-principles]
+- Anything that runs amid crashes, restarts, or retries must be idempotent: rerunning converges to the same state. [make-operations-idempotent]
+- If two concurrent actors can write the same thing, remove the sharing before adding locks. [separate-before-serializing-shared-state]
+- When a correction repeats, turn it into a lint, check, or script rather than more instructions. [encode-lessons-in-structure]
+- For non-trivial work, build the tool that does it or proves it (script, codemod, generator), so a reviewer can rerun it. [build-the-lever]
+- Done means checked against the real thing: run it, read the actual value, look at the diff. "It compiles" is not done. [prove-it-works]
+- Tests call code the way users do and assert literal expected values. A test that passes when everything returns undefined gets rewritten or deleted. [test-behavior-not-implementation]
+- Before trusting a measured number, find what limits it and rule out that it measured something else. [explain-the-number]
+- After two failed fixes built on the same assumption, question the assumption instead of writing a third. [attack-the-premise]
+- Fewer polished features over more rough ones; user experience beats implementation convenience. [experience-first]
+- Agents don't stop to ask about reversible work; they do it and show the result. Confirmation is for irreversible actions. [never-block-on-the-human]
+- Big changes ship as small steps that each end in a state you can verify. [sequence-verifiable-units]
 
 ## Code taste
 
