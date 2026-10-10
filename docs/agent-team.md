@@ -19,7 +19,7 @@ So each product repo gets a verification skill and a Feature Map before it gets 
 | Heartbeat | On-call | A fresh scheduled thread every hour | Usage, context and stall checks, `log.md` | Long work, messages without a reason | Opus 5.5 xhigh (low effort is proposed, pending the owner's OK) |
 | Lane coordinator | Tech lead | One T3 thread per lane, rotated at 300k tokens | Briefs, the lane's units, ledger and decisions | Writing code | Opus 5.5 xhigh |
 | Worker | Engineer | One thread and one worktree per unit | One PR, proven with the verification skill | Merging its own PR, touching other units | Opus 5.5 xhigh; Codex `gpt-6.1-sol` for clear-spec bulk work |
-| Verifier | Reviewer and QA | A fresh thread per head SHA, read-only | One verdict row in the ledger | Fixing what it reviews | A different model family (Codex GPT) when available, else Fable 5.1 |
+| Verifier | Reviewer and QA | A fresh thread per review round, read-only | One verdict row in the ledger | Fixing what it reviews | Fable 5.1 for risky PRs, Opus 5.5 xhigh in a fresh context for the rest |
 | Retro | Staff engineer | A fresh scheduled thread each day | Proposals that turn repeated mistakes into rules, checks or skills | Applying them live | Opus 5.5 xhigh |
 
 Subagents inside any role do mechanical reading (logs, CI output, transcripts) at low effort and return summaries.
@@ -39,9 +39,12 @@ Subagents inside any role do mechanical reading (logs, CI output, transcripts) a
   | `verifier-blocked` / `verifier-failed` | Not done |
 
   CI green is an input to a verdict, not a verdict.
-  A new head SHA voids the row.
-- **Review limits**: pending the owner's decision.
-  The proposal is parked on the `parked/review-policy` branch.
+  A new head SHA voids the row, except after a clean update to main: the verdict carries over when `git range-diff` shows the PR's own commits unchanged and CI passes on the new head.
+  After a conflicted update, only the conflict resolution gets a quick fresh review.
+- **Review scales with risk**: Fable 5.1 reviews risky PRs (sign-in, deploy wiring, screens the owner uses) and acts as the verifier.
+  Opus 5.5 at xhigh, in a fresh context, reviews the rest (docs, tooling, pure logic).
+  At most two review rounds per PR, then the coordinator decides.
+  A PR open for 8 hours of active work goes on the board as a stall.
 - **Small units**: a PR a reviewer can read in one sitting.
   Split anything larger before review, not after.
 

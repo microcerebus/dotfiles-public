@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# toolchain-diff: warn when a darwin switch changes the system node or pnpm.
+# On 2026-10-10 a nixpkgs bump moved node 22.23.2 -> 22.23.3 and pnpm 11 -> 12,
+# and job-tracker's commit hooks broke (an exact-version test, a pnpm 12
+# timeout) with nothing at switch time saying the toolchain had moved.
+#
+# Versions come from the store path names, so no tool is executed (pnpm 12
+# can switch versions or hit the network based on the current directory).
+# nix-darwin runs this from postActivation (nix/host.nix), before
+# /run/current-system points at the new generation. It always exits 0:
+# a warning must never block a switch.
+# Usage: toolchain-diff <old-system> <new-system> <user>
+# Tests: tests/toolchain_diff_test.sh
+set -uo pipefail
+old="$1" new="$2" user="$3"
+tools=(node pnpm)
+
+# version <system> <tool>: the version in the tool's store path name, or "none".
+version() {
+  local bin="$1/etc/profiles/per-user/$user/bin/$2" path part name parts
+  [ -e "$bin" ] || { echo none; return; }
+  path="$(readlink -f "$bin")" || { echo none; return; }
+  IFS=/ read -ra parts <<<"$path"
+  for part in "${parts[@]}"; do
+    if [[ $part =~ ^[0-9a-z]{32}-(.*)$ ]]; then
+      name="${BASH_REMATCH[1]}"
+      if [[ $name =~ -([0-9][^/]*)$ ]]; then echo "${BASH_REMATCH[1]}"; else echo unknown; fi
+      return
+    fi
+  done
+  echo unknown
+}
+
+[ -d "$old" ] || exit 0
+summary=() changed=0
+for tool in "${tools[@]}"; do
+  was="$(version "$old" "$tool")" now="$(version "$new" "$tool")"
+  summary+=("$tool $now")
+  [ "$was" = "$now" ] && continue
+  changed=1
+  if [ "$was" = none ]; then
+    echo "warning: system $tool added ($now)" >&2
+  elif [ "$now" = none ]; then
+    echo "warning: system $tool removed (was $was)" >&2
+  else
+    note=""
+    [ "${was%%.*}" != "${now%%.*}" ] && note=" (major version change)"
+    echo "warning: system $tool changed $was -> $now$note" >&2
+  fi
+done
+if [ "$changed" = 1 ]; then
+  echo "  Repos that pin exact versions or rely on old behavior may break." >&2
+  echo "  Run their checks, or pin the toolchain per repo (packageManager, engines, devShell)." >&2
+else
+  echo "toolchain unchanged: ${summary[*]}" >&2
+fi
+exit 0

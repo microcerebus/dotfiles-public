@@ -36,13 +36,13 @@ existing foundation in this repo.
 | Project memory file | AGENTS.md pattern in each repo | have |
 | Voice input | Hex (already in use) | have |
 | Fig-style dropdown | inshellisense OPT-IN only (run `is`) - auto-wrap corrupts TUIs (upstream #411); fzf-tab is the always-on layer | have |
-| Lavish (HTML-artifact planning) | skill vendored at files/.claude/skills/lavish, runs via `pnpm dlx lavish-axi`. CAUTION: its `share` cmd publishes to public ht-ml.app - never without explicit ask | have (rebuild) |
+| Lavish (HTML-artifact planning) | skill vendored at files/.claude/skills/lavish, runs as the pnpm global behind the Chrome-only `scripts/lavish-axi` wrapper. CAUTION: its `share` cmd publishes to public ht-ml.app - never without explicit ask | have (rebuild) |
 | No Mistakes (worktree gate pipeline -> PR w/ evidence) | flake-built from pinned v1.31.2 (telemetry off - upstream bakes Umami ids into release builds); skill vendored; per-repo `no-mistakes init` needed | have (rebuild) |
 | Treehouse (worktree pool) | flake-built from pinned v2.0.0 (vendorHash in user.nix); firstmate crewmate dependency | have (rebuild) |
 | Good Night Have Fun (long loops w/ token+iteration+condition caps) | npm CLI `gnhf` (or pnpm dlx on demand), drives claude/codex; 2.9k stars, MIT | partial (/loop today) |
 | First Mate (orchestrator) | Opted in 2026-07-05 despite youth (849 stars, 63 open issues). Not a binary - a cloned directory you launch a harness inside; ships a herdr backend (`bin/backends/herdr.sh`) so it drives herdr rather than competing with it. Plain clone outside nix store (like nvim config); needs treehouse | adopt (human clones + first launch) |
 | Wheelhouse (IssueOps command center) | GitHub-Actions template repo, nothing local. BLOCKED: no license (8 stars, 84 open issues) - fails dependency criteria; ask upstream for MIT like his other repos | blocked (no license) |
-| Axi CLIs | gh covers GitHub; chrome-devtools-axi skill vendored, runs via pnpm dlx. Launches Google Chrome by channel; the google-chrome cask is declared in nix/host.nix, so no Brave workaround needed - Chrome is the browser for all agent/browser tooling (Brave stays installed for personal use) | have (rebuild) |
+| Axi CLIs | gh covers GitHub; chrome-devtools-axi skill vendored, runs as the pnpm global behind `scripts/chrome-devtools-axi`, which points it at the agent Chrome (launchd agent, 127.0.0.1:9333) and refuses the owner's own Chrome without an opt-in. Its server, chrome-devtools-mcp, is pinned in nix/user.nix instead of `npx ...@latest`. Brave stays installed for personal use only | have (rebuild) |
 
 ## Adoption principles already locked in
 
@@ -58,7 +58,9 @@ existing foundation in this repo.
 Vendored skills live in files/.claude/skills/<name>/SKILL.md, fetched from the
 upstream repos (lavish-axi, no-mistakes at its pinned tag, chrome-devtools-axi).
 To update: re-fetch the raw SKILL.md, diff it, security-read it (they instruct
-agents), commit. Bump no-mistakes by changing the flake input tag + vendorHash.
+agents), commit. Local edits to keep: lavish and chrome-devtools-axi call the
+bare command (the scripts/ wrappers), never `pnpm dlx`, and chrome-devtools-axi
+keeps its "Which browser" and "Sharing the agent Chrome" sections. Bump no-mistakes by changing the flake input tag + vendorHash.
 pstack skills (correct, show-me-your-work, create-verification-skill,
 maintain-verification-skill, tdd, blast-radius) are pinned to cursor/plugins
 df581122 (2026-10-05). To update: sparse-clone cursor/plugins, diff

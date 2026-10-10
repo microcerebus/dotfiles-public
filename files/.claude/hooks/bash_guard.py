@@ -9,6 +9,8 @@
    to ~/.claude/containers-approved-until, e.g.
    `date -v+2H +%s > ~/.claude/containers-approved-until`.
 2. Em dashes in commit messages (AGENTS.md, repeated correction since July).
+   Only the message counts: -m/--message values, -F/--file files, and heredoc
+   bodies fed to git commit. Grep patterns and other text pass.
 Exit 2 blocks the call and shows stderr to the agent. Unparseable commands
 pass: this is a guardrail, not a sandbox."""
 import json, os, re, shlex, sys, time
@@ -54,11 +56,17 @@ def segments(cmd):
         yield seg
 
 
-def starts_container(seg):
+def command_words(seg):
+    """Drop env assignments, wrappers and their flags before the command word."""
     words = [w.lstrip('`$') for w in seg]
     while words and (re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*=.*', words[0]) or words[0] in WRAPPERS
                      or (words[0].startswith('-') and len(words) > 1)):
         words.pop(0)
+    return words
+
+
+def starts_container(seg):
+    words = command_words(seg)
     if not words:
         return False
     head = os.path.basename(words[0])
@@ -71,6 +79,72 @@ def starts_container(seg):
     return False
 
 
+GIT_COMMIT_LINE = re.compile(r'(^|[\s;&|(])git\s+(?:-[Cc]\s+\S+\s+|--\S+\s+)*commit\b')
+
+
+def commit_args(seg):
+    """Arguments after `git [global options] commit`, or None for any other command."""
+    words = command_words(seg)
+    if not words or os.path.basename(words[0]) != 'git':
+        return None
+    i = 1
+    while i < len(words) and words[i].startswith('-'):
+        i += 2 if words[i] in ('-C', '-c') else 1
+    return words[i + 1:] if i < len(words) and words[i] == 'commit' else None
+
+
+def message_parts(args):
+    """Yield ('text', message) for -m/--message and ('file', path) for -F/--file."""
+    it = iter(args)
+    for a in it:
+        for long, kind in (('--message', 'text'), ('--file', 'file')):
+            if a == long:
+                yield kind, next(it, '')
+            elif a.startswith(long + '='):
+                yield kind, a[len(long) + 1:]
+        if a.startswith('-') and not a.startswith('--'):
+            flags = a[1:]
+            pos = min((flags.find(f) for f in 'mF' if f in flags), default=-1)
+            if pos >= 0:
+                rest = flags[pos + 1:]
+                yield ('text' if flags[pos] == 'm' else 'file'), rest or next(it, '')
+
+
+def heredoc_bodies(cmd):
+    """Yield (opening line, body) for each heredoc."""
+    lines, i = cmd.split('\n'), 0
+    while i < len(lines):
+        m = HEREDOC.search(lines[i])
+        if not m:
+            i += 1
+            continue
+        j = i + 1
+        while j < len(lines) and lines[j].strip() != m.group(2):
+            j += 1
+        yield lines[i], '\n'.join(lines[i + 1:j])
+        i = j + 1
+
+
+def commit_messages(cmd, cwd):
+    """Every piece of commit message text in a command line."""
+    for opener, body in heredoc_bodies(cmd):
+        if GIT_COMMIT_LINE.search(opener):
+            yield body
+    try:
+        segs = list(segments(cmd))
+    except ValueError:
+        segs = []
+    for seg in segs:
+        for kind, value in message_parts(commit_args(seg) or []):
+            if kind == 'text':
+                yield value
+            elif value != '-':
+                try:
+                    yield open(os.path.join(cwd, os.path.expanduser(value))).read()
+                except OSError:
+                    pass
+
+
 def approved():
     try:
         return time.time() < float(open(APPROVAL).read().strip())
@@ -79,8 +153,10 @@ def approved():
 
 
 try:
-    cmd = (json.load(sys.stdin).get('tool_input') or {}).get('command') or ''
-except ValueError:
+    payload = json.load(sys.stdin)
+    cmd = (payload.get('tool_input') or {}).get('command') or ''
+    cwd = payload.get('cwd') or os.getcwd()
+except (ValueError, AttributeError):
     sys.exit(0)
 
 try:
@@ -91,6 +167,6 @@ if blocked and not approved():
     print("Blocked: starting containers, OrbStack or VMs needs the owner's explicit OK (AGENTS.md). "
           'Reproduce Linux-only failures on a GitHub Actions run, or ask the owner.', file=sys.stderr)
     sys.exit(2)
-if re.search(r'\bgit\b[^\n]*\bcommit\b', cmd) and EM_DASH in cmd:
+if any(EM_DASH in m for m in commit_messages(cmd, cwd)):
     print('Blocked: the commit message contains an em dash. Use "-" instead (AGENTS.md).', file=sys.stderr)
     sys.exit(2)

@@ -1,6 +1,6 @@
 # System layer: macOS settings + declarative Homebrew.
 # Layer ownership (AGENTS.md): Homebrew owns GUI/macOS-native apps ONLY.
-{ pkgs, username, ... }:
+{ lib, pkgs, username, ... }:
 
 {
   # Required by nix-darwin for user-scoped options (homebrew, defaults, ...).
@@ -83,6 +83,11 @@
       "cursor"          # Cursor editor
       "discord"
       "google-chrome"
+      # Agent Chrome (launchd agent in nix/user.nix). A separate app, so macOS
+      # never routes Chrome links (open-chrome, lavish-axi) into the agent's
+      # window. Its zap also trashes Google's shared updater: read it before
+      # ever dropping this cask (AGENTS.md).
+      "google-chrome@beta"
       "google-drive"         # Google Drive desktop sync client
       "logi-options+"        # Logitech Options+ (mouse/keyboard driver)
       "lunar"                # adaptive brightness for external displays
@@ -199,6 +204,18 @@
     done
   '';
 
+  # Toolchain drift warning: a nixpkgs bump on 2026-10-10 moved the system
+  # node (22.23.2 -> 22.23.3) and pnpm (11 -> 12) and broke job-tracker's
+  # commit hooks with no warning at switch time. postActivation runs before
+  # /run/current-system moves to $systemConfig, so this compares the running
+  # generation with the new one, for `rebuild` and the daily daemon alike.
+  # Warns only, never fails the switch. Tests: tests/toolchain_diff_test.sh.
+  system.activationScripts.postActivation.text = lib.mkAfter ''
+    PATH=${pkgs.coreutils}/bin:$PATH \
+      ${pkgs.writeShellScript "toolchain-diff" (builtins.readFile ../scripts/toolchain-diff)} \
+      /run/current-system "$systemConfig" ${username} || true
+  '';
+
   # App Store apps (masApps above, plus Tachimanga) update themselves.
   system.defaults.CustomSystemPreferences."com.apple.commerce".AutoUpdate = true;
 
@@ -274,7 +291,24 @@
           as_user git -C "$repo" pull --ff-only --quiet \
             || fail "git pull --ff-only failed (diverged from origin/main?)"
 
-          as_user pnpm update -g --latest || echo "$(ts) warn: pnpm update -g failed"
+          # pnpm globals float to their latest release, except the pins, which
+          # move only by reviewed commit: chrome-devtools-axi is tested against
+          # the chrome-devtools-mcp pin in nix/user.nix, and agent-device ships
+          # several releases a week from one publisher. pnpm 12's `--latest`
+          # moves exact pins too, and a '!pkg' filter turns the whole update
+          # into a no-op, so update the rest by name, then re-assert the pins
+          # (which also installs a missing one).
+          pins="chrome-devtools-axi@0.1.39 agent-device@0.21.23"
+          floating=$(as_user pnpm ls -g --depth 0 --json \
+            | ${pkgs.jq}/bin/jq -r --arg pins "$pins" \
+                '($pins | split(" ") | map(sub("@[^@]*$"; ""))) as $p
+                 | .[0].dependencies // {} | keys[] | select(IN($p[]) | not)')
+          if [ -n "$floating" ]; then
+            as_user pnpm update -g --latest $floating || echo "$(ts) warn: pnpm update -g failed"
+          fi
+          for pin in $pins; do
+            as_user pnpm add -g -E "$pin" || echo "$(ts) warn: pinning $pin failed"
+          done
 
           darwin-rebuild switch --flake "$repo" || fail "darwin-rebuild switch failed"
 

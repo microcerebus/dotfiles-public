@@ -134,6 +134,18 @@ tool-adoption backlog; check it before adding workflow tooling).
   versioned store (`~/Library/pnpm/global/v11/<hash>/...`), which went stale
   after each update - if a hook path looks like that again, re-run
   `<tool> setup hooks` (2026-07-09, rechecked 2026-10-07).
+  Bare `chrome-devtools-axi` and `lavish-axi` resolve to the wrappers in
+  `scripts/` (earlier on PATH), which run the pnpm globals (2026-10-10).
+- chrome-devtools-axi and agent-device are pinned pnpm globals: the daily
+  update skips them and re-asserts the versions in `pins=` (nix/host.nix).
+  pnpm 12's `update -g --latest` moves exact pins too, and a `'!pkg'` filter
+  makes it update nothing, so the daemon names the floating globals instead.
+  axi's server (chrome-devtools-mcp) is pinned in nix/user.nix, and the two
+  must match: axi 0.1.30 against server 1.10 (page-ID routing on by default)
+  failed every page command with "pageId: Invalid input: expected number,
+  received undefined"; axi 0.1.39 fixed it. After bumping either, run
+  `chrome-devtools-axi open https://example.com` and `eval document.title`
+  against the agent Chrome (2026-10-10).
 - Driving plugin-heavy nvim via `tmux send-keys`: key bursts in one call
   (e.g. `send-keys "dd"`) get eaten by the plugin UI (noice/which-key) while
   it settles - send one key per call with ~1s gaps, and allow ~9s for nvim
@@ -141,3 +153,7 @@ tool-adoption backlog; check it before adding workflow tooling).
   `tmux -t dojo` fuzzy-matches a *window* named dojo over the session - use
   ids (`$N`/`@N`/`%N`) from `#{session_id}` etc. for unambiguous targeting
   (2026-07-05).
+- System node and pnpm come from nixpkgs, so a flake bump can move them. On
+  2026-10-10 node 22.23.2 -> 22.23.3 and pnpm 11 -> 12 broke job-tracker's
+  commit hooks. Every switch now prints `scripts/toolchain-diff` warnings for
+  node and pnpm changes; projects should pin their own toolchain (2026-10-10).

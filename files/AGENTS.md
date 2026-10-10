@@ -19,6 +19,8 @@ These are common instructions for my agents across all scenarios.
   If you see one, even if it is not caused by what you are working on right now, still get it fixed.
 - For anything browser-related - opening URLs, OAuth/login flows, browser automation, testing web pages - always use Google Chrome.
   Never launch or automate Brave; it is my personal browser and off limits to agents.
+  Agents drive the agent Chrome: Google Chrome Beta with its own signed-in profile on 127.0.0.1:9333, which `chrome-devtools-axi` uses by default (see its skill).
+  Never attach to the owner's own Chrome (autoConnect, or its port 9222) unless he asks in the thread, because it makes him click "Allow" for every session.
   Lavish's upstream browser opener ignores BROWSER on macOS.
   Use the Chrome-only `lavish-axi` wrapper in `~/dotfiles/scripts`, or pass `--no-open` and open the view explicitly in Chrome.
   Never call the upstream Lavish executable without `--no-open` or `LAVISH_AXI_NO_OPEN=1`.
@@ -131,8 +133,8 @@ Each rule below is a correction the owner had to give more than once, or a failu
 - Coordinators coordinate: they write briefs, read results and decide.
   Code, restacks and conflicted merges go to workers in their own worktrees.
 - When Codex is out of quota, continue on Claude Opus 5.5 at xhigh without asking.
-  While Codex is out of quota, Claude agents also drive Chrome themselves with chrome-devtools-axi, in Google Chrome only and never Brave.
-  codex-computer-use stays the route for native apps and simulators.
+  While Codex is out of quota, Claude agents also drive the agent Chrome themselves with chrome-devtools-axi, never Brave.
+  Native macOS apps and iOS Simulators go through the agent-device skill the same way; codex-computer-use is the route again once Codex is back.
   Before any provider or model switch, or when a usage-limit warning appears, commit work in progress.
   Never delete a worktree that has uncommitted edits.
 - Collect everything that needs the owner into one "Needs the owner" list at the top of the reply or page.
@@ -154,5 +156,6 @@ Each rule below is a correction the owner had to give more than once, or a failu
 | No containers or VMs | `bash_guard.py` blocks them unless the owner wrote an unexpired `~/.claude/containers-approved-until` |
 | Context limits | `turn_context.py` nudge, `pause-safely` skill |
 | Nothing personal in the public dotfiles mirror | `scripts/public-sync` leak gate |
-| Chrome, never Brave | `lavish-axi` Chrome wrapper; rule only elsewhere |
+| Chrome, never Brave | `lavish-axi` and `chrome-devtools-axi` wrappers in `scripts/`; rule only elsewhere |
+| Agent Chrome, not the owner's own | `chrome-devtools-axi` wrapper refuses autoConnect and port 9222 unless `CHROME_DEVTOOLS_AXI_MAIN_CHROME=1` |
 | Everything else in this section | Rule only, until it repeats |

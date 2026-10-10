@@ -48,6 +48,39 @@ let
     doCheck = false;
     ldflags = [ "-X main.version=v2.1.1" ];
   };
+  # chrome-devtools-mcp: the automation server behind chrome-devtools-axi.
+  # Left alone, axi runs `npx chrome-devtools-mcp@latest` on every bridge
+  # start, an unpinned download (OPINIONS.md). Pinned instead to the npm
+  # tarball, hash = npm's published dist.integrity; the package is
+  # self-contained (no runtime dependencies). Update = bump version + hash
+  # from `npm view chrome-devtools-mcp@<v> dist.integrity`, and check the
+  # installed chrome-devtools-axi still drives it.
+  # axi spawns `node $CHROME_DEVTOOLS_AXI_MCP_PATH`, so the entry shim below
+  # (not a wrapper script) turns off Google usage statistics, npm update
+  # checks, and sending trace URLs to the CrUX API.
+  chrome-devtools-mcp = pkgs.stdenvNoCC.mkDerivation rec {
+    pname = "chrome-devtools-mcp";
+    version = "1.10.1";
+    src = pkgs.fetchurl {
+      url = "https://registry.npmjs.org/chrome-devtools-mcp/-/chrome-devtools-mcp-${version}.tgz";
+      hash = "sha512-Klw6HWDqHC/XS1JwZldd2r49aUhbUJN9m9Mvcx4SEueIPXtzuQX+QelxAViobv8YUkDZ7HWDrmViR6LeYK0wAw==";
+    };
+    nativeBuildInputs = [ pkgs.makeWrapper ];
+    installPhase = ''
+      lib=$out/lib/chrome-devtools-mcp
+      mkdir -p $lib $out/bin
+      cp -r . $lib
+      cat > $lib/axi-entry.mjs <<'EOF'
+      process.env.CHROME_DEVTOOLS_MCP_NO_USAGE_STATISTICS = "1";
+      process.env.CHROME_DEVTOOLS_MCP_NO_UPDATE_CHECKS = "1";
+      process.argv.push("--no-performance-crux");
+      await import("./build/src/bin/chrome-devtools-mcp.js");
+      EOF
+      makeWrapper ${pkgs.nodejs_22}/bin/node $out/bin/chrome-devtools-mcp \
+        --add-flags $lib/axi-entry.mjs
+    '';
+  };
+  chromeDevtoolsMcpEntry = "${chrome-devtools-mcp}/lib/chrome-devtools-mcp/axi-entry.mjs";
 in
 {
   home.username = username;
@@ -68,6 +101,22 @@ in
   # (firstmate's gh-axi / chrome-devtools-axi / lavish-axi / tasks-axi) are
   # installed here instead - mutable like ~/.local/bin, PATH wired below.
   home.sessionVariables.PNPM_HOME = "${config.home.homeDirectory}/Library/pnpm";
+
+  # chrome-devtools-axi attaches to the agent Chrome (launchd agent below)
+  # instead of launching a throwaway browser or attaching to the owner's own
+  # Chrome, whose chrome://inspect toggle asks "Allow" for every session.
+  # scripts/chrome-devtools-axi enforces the same default and refuses his own
+  # Chrome without an opt-in; these cover anything that bypasses it. The
+  # server is the pinned build above, never `npx ...@latest`. T3 Code hands
+  # agents only PATH from the login shell, but every agent Bash command runs
+  # zsh and ~/.zshenv sources these, so T3 threads get them.
+  home.sessionVariables.CHROME_DEVTOOLS_AXI_BROWSER_URL = "http://127.0.0.1:9333";
+  home.sessionVariables.CHROME_DEVTOOLS_AXI_MCP_PATH = chromeDevtoolsMcpEntry;
+  # agent-device: drive macOS apps through accessibility actions in the
+  # background (no pointer takeover or Automation Mode), and skip its npm
+  # update check so the pin in nix/host.nix stays the only upgrade path.
+  home.sessionVariables.AGENT_DEVICE_MACOS_APP_BACKEND = "native";
+  home.sessionVariables.AGENT_DEVICE_NO_UPDATE_NOTIFIER = "1";
 
   programs.home-manager.enable = true;
 
@@ -97,6 +146,7 @@ in
     inshellisense-patched  # `is`: Fig-style dropdown; OPT-IN only (see zsh notes)
     no-mistakes     # validation-gate pipeline + /no-mistakes skill (north star)
     treehouse       # worktree pool; firstmate crewmate dependency (north star)
+    chrome-devtools-mcp  # pinned server for chrome-devtools-axi (see let block)
     shellcheck      # shell lint; firstmate bin/fm-lint.sh pins 0.11.0 (nixpkgs matches). Replaces an ad-hoc brew install (2026-08-24)
     actionlint      # GitHub workflow lint; firstmate bin/fm-lint-workflows.sh pins 1.7.12 (nixpkgs matches)
     # agents (PLAN Phase 4)
@@ -315,11 +365,15 @@ in
   home.file.".codex/AGENTS.md".source = link "files/AGENTS.md";
 
   # Agent skills (vendored from upstream repos; see docs/workflow-north-star.md
-  # for provenance + update procedure). lavish and chrome-devtools-axi run via
-  # `pnpm dlx`, no install; no-mistakes uses the flake-built binary above.
+  # for provenance + update procedure). lavish-axi and chrome-devtools-axi are
+  # pnpm globals reached through the wrappers in scripts/ (Chrome only, agent
+  # Chrome by default); no-mistakes uses the flake-built binary above.
   home.file.".claude/skills/lavish".source = link "files/.claude/skills/lavish";
   home.file.".claude/skills/no-mistakes".source = link "files/.claude/skills/no-mistakes";
   home.file.".claude/skills/chrome-devtools-axi".source = link "files/.claude/skills/chrome-devtools-axi";
+  # agent-device (own authorship): native macOS apps and iOS Simulators via the
+  # pinned callstack/agent-device CLI (pnpm global, pinned in nix/host.nix).
+  home.file.".claude/skills/agent-device".source = link "files/.claude/skills/agent-device";
   # unslop (cursor/plugins, pstack/skills/unslop): strips AI writing tells from
   # everything user-facing; prompt-only markdown, security-read 2026-08-24.
   # Captain standing instruction: apply by default to all writing.
@@ -398,6 +452,37 @@ in
       KeepAlive = true;
       StandardOutPath = "${config.home.homeDirectory}/Library/Logs/lavish-tailscale-proxy.log";
       StandardErrorPath = "${config.home.homeDirectory}/Library/Logs/lavish-tailscale-proxy.log";
+    };
+  };
+
+  # Agent Chrome: Google Chrome Beta (never Brave) with its own profile, which
+  # agents drive through chrome-devtools-axi on 127.0.0.1:9333 without an
+  # "Allow" prompt. Chrome 136+ refuses a debugging port on the default
+  # profile, so the separate --user-data-dir is what makes this work. Beta is a
+  # separate app: a second copy of Google Chrome would share its app identity,
+  # and macOS would route Chrome links into whichever copy started first
+  # (chrome-devtools-axi#166). The port binds 127.0.0.1 by default; headed
+  # Chrome ignores --remote-debugging-address. Sign-ins persist across
+  # restarts. Restarted only after a crash: a clean
+  # quit (Cmd-Q) stays quit, and restarting a clean exit would loop, because
+  # a second Chrome on the same profile hands off to the first and exits 0.
+  # scripts/chrome-devtools-axi starts it again on demand (launchctl kickstart).
+  launchd.agents.agent-chrome = {
+    enable = true;
+    config = {
+      Label = "com.myuser.agent-chrome";
+      ProgramArguments = [
+        "/Applications/Google Chrome Beta.app/Contents/MacOS/Google Chrome Beta"
+        "--user-data-dir=${config.home.homeDirectory}/Library/Application Support/AgentChrome"
+        "--remote-debugging-port=9333"
+        "--no-first-run"
+        "--no-default-browser-check"
+      ];
+      RunAtLoad = true;
+      KeepAlive.SuccessfulExit = false;
+      ProcessType = "Interactive";
+      StandardOutPath = "${config.home.homeDirectory}/Library/Logs/agent-chrome.log";
+      StandardErrorPath = "${config.home.homeDirectory}/Library/Logs/agent-chrome.log";
     };
   };
 

@@ -1,0 +1,99 @@
+#!/usr/bin/env node
+// Agents drive the agent Chrome: Google Chrome Beta with its own signed-in
+// profile on 127.0.0.1:9333 (launchd agent in nix/user.nix). Attaching to
+// the owner's own Chrome (autoConnect, or its chrome://inspect port 9222) makes him
+// click "Allow" for every session, so it needs a named opt-in.
+// Tests: tests/chrome_devtools_axi_test.cjs.
+const { spawnSync } = require("node:child_process");
+const { existsSync } = require("node:fs");
+const { homedir } = require("node:os");
+const { join } = require("node:path");
+
+const AGENT_CHROME_URL = "http://127.0.0.1:9333";
+const AGENT_CHROME_LABEL = "com.myuser.agent-chrome";
+const MAIN_CHROME_PORT = "9222";
+const NO_BROWSER = new Set(["stop", "setup", "update", "--help", "-v", "-V", "--version"]);
+
+const MAIN_CHROME_REFUSAL = `chrome-devtools-axi: refusing to attach to the owner's own Chrome, which asks him to click "Allow" for every session.
+Unset CHROME_DEVTOOLS_AXI_AUTO_CONNECT and any :${MAIN_CHROME_PORT} CHROME_DEVTOOLS_AXI_BROWSER_URL; axi then drives the agent Chrome on ${AGENT_CHROME_URL}, which is signed in to the sites agents need.
+Only if the owner asked for his own Chrome in this thread, set CHROME_DEVTOOLS_AXI_MAIN_CHROME=1.
+`;
+
+function targetsMainChrome(url) {
+  try { return new URL(url).port === MAIN_CHROME_PORT; } catch { return false; }
+}
+
+function resolveEnv(env) {
+  const out = { ...env };
+  // One bridge and one selected tab per Claude thread instead of one shared
+  // default session, and bridges that exit after 30 idle minutes instead of
+  // piling up for days.
+  if (env.CHROME_DEVTOOLS_AXI_SESSION === undefined && env.CLAUDE_CODE_SESSION_ID) {
+    out.CHROME_DEVTOOLS_AXI_SESSION = `claude-${env.CLAUDE_CODE_SESSION_ID.slice(0, 8)}`;
+  }
+  out.CHROME_DEVTOOLS_AXI_IDLE_TIMEOUT_MS ??= String(30 * 60 * 1000);
+  if (env.CHROME_DEVTOOLS_AXI_MAIN_CHROME === "1") {
+    delete out.CHROME_DEVTOOLS_AXI_BROWSER_URL;
+    out.CHROME_DEVTOOLS_AXI_AUTO_CONNECT = "1";
+    return { env: out, target: "main" };
+  }
+  if (env.CHROME_DEVTOOLS_AXI_AUTO_CONNECT === "1" || targetsMainChrome(env.CHROME_DEVTOOLS_AXI_BROWSER_URL ?? "")) {
+    return { error: MAIN_CHROME_REFUSAL };
+  }
+  delete out.CHROME_DEVTOOLS_AXI_AUTO_CONNECT;
+  const url = env.CHROME_DEVTOOLS_AXI_BROWSER_URL;
+  // An explicit other URL, "" (axi launches a throwaway browser) or an own
+  // profile dir is a deliberate choice and passes through.
+  if ((url === undefined && env.CHROME_DEVTOOLS_AXI_USER_DATA_DIR === undefined) || url === AGENT_CHROME_URL) {
+    out.CHROME_DEVTOOLS_AXI_BROWSER_URL = AGENT_CHROME_URL;
+    return { env: out, target: "agent" };
+  }
+  return { env: out, target: "other" };
+}
+
+function ensureAgentChrome(env, deps, io) {
+  if (deps.probe(AGENT_CHROME_URL)) return env;
+  if (!deps.agentInstalled()) {
+    io.stderr.write("chrome-devtools-axi: the agent Chrome is not set up yet (it arrives with the next `rebuild`), so this session uses a throwaway headless Chrome without sign-ins.\n");
+    const out = { ...env };
+    delete out.CHROME_DEVTOOLS_AXI_BROWSER_URL;
+    return out;
+  }
+  deps.kickstart();
+  for (let i = 0; i < 30; i += 1) {
+    if (deps.probe(AGENT_CHROME_URL)) return env;
+    deps.sleep(500);
+  }
+  io.stderr.write(`chrome-devtools-axi: the agent Chrome did not come up on ${AGENT_CHROME_URL} within 15s. See ~/Library/Logs/agent-chrome.log, or restart it with \`launchctl kickstart -k gui/$(id -u)/${AGENT_CHROME_LABEL}\`.\n`);
+  return null;
+}
+
+const defaultDeps = {
+  spawn: spawnSync,
+  probe: (url) => spawnSync("/usr/bin/curl", ["-fsS", "-o", "/dev/null", "--max-time", "1", `${url}/json/version`],
+    { stdio: "ignore" }).status === 0,
+  agentInstalled: () => existsSync(join(homedir(), "Library/LaunchAgents", `${AGENT_CHROME_LABEL}.plist`)),
+  kickstart: () => spawnSync("/bin/launchctl", ["kickstart", `gui/${process.getuid()}/${AGENT_CHROME_LABEL}`], { stdio: "ignore" }),
+  sleep: (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms),
+};
+
+function run(args, env, deps = defaultDeps, io = process) {
+  const resolved = resolveEnv(env);
+  if (resolved.error) {
+    io.stderr.write(resolved.error);
+    return 2;
+  }
+  let childEnv = resolved.env;
+  const needsBrowser = args.length > 0 && !NO_BROWSER.has(args[0]) && !args.includes("--help");
+  if (resolved.target === "agent" && needsBrowser) {
+    childEnv = ensureAgentChrome(childEnv, deps, io);
+    if (!childEnv) return 1;
+  }
+  const binary = join(homedir(), "Library/pnpm/bin/chrome-devtools-axi");
+  const result = deps.spawn(binary, args, { env: childEnv, stdio: "inherit" });
+  if (result.error) io.stderr.write(`chrome-devtools-axi: ${result.error.message}\n`);
+  return result.status ?? 1;
+}
+
+module.exports = { run, resolveEnv, AGENT_CHROME_URL, AGENT_CHROME_LABEL };
+if (require.main === module) process.exitCode = run(process.argv.slice(2), process.env);
