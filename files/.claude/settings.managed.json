@@ -1,0 +1,15 @@
+{
+  "cleanupPeriodDays": 365,
+  "autoCompactEnabled": false,
+  "hooks": {
+    "UserPromptSubmit": [
+      { "hooks": [{ "type": "command", "command": "python3 -I ~/.claude/hooks/turn_context.py", "timeout": 5 }] }
+    ],
+    "PreToolUse": [
+      { "matcher": "Bash", "hooks": [{ "type": "command", "command": "python3 -I ~/.claude/hooks/bash_guard.py", "timeout": 5 }] }
+    ],
+    "PostToolUse": [
+      { "matcher": "Write|Edit|MultiEdit", "hooks": [{ "type": "command", "command": "python3 -I ~/.claude/hooks/write_guard.py", "timeout": 5 }] }
+    ]
+  }
+}

@@ -18,7 +18,7 @@ Codex's desktop computer use covers native macOS surfaces (Xcode, simulators, ar
    `-s danger-full-access` is required: codex exec's default read-only sandbox blocks screencapture, app launching, and writes to $DIR, which is the entire job here.
 
    ```sh
-   CODEX=/Applications/ChatGPT.app/Contents/Resources/codex
+   CODEX="/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex"
    "$CODEX" exec -s danger-full-access "Verify this flow on my Mac: <steps>. Capture screenshots of each key state into $DIR. Finish with a PASS or FAIL verdict and one line per step describing what you observed."
    ```
 

@@ -28,14 +28,14 @@ let
   # from the release tag pinned in flake.nix. Update = bump tag + vendorHash.
   no-mistakes = pkgs.buildGoModule {
     pname = "no-mistakes";
-    version = "1.57.0";
+    version = "1.84.0";
     src = inputs.no-mistakes-src;
-    vendorHash = "sha256-NZOYxNYvt4192uqKBdKRxdgrKFvWx3585psdCnRdPSM=";
+    vendorHash = "sha256-maAVBptEtdrGanJHwAPAmuGBorzIMUgK6T+NmIz1kS0=";
     subPackages = [ "cmd/no-mistakes" ];
     doCheck = false;
     # Version only. Upstream's Makefile also bakes in Umami telemetry ids
     # here - leaving them unset keeps telemetry off in our build.
-    ldflags = [ "-X github.com/kunchenguid/no-mistakes/internal/buildinfo.Version=v1.57.0" ];
+    ldflags = [ "-X github.com/kunchenguid/no-mistakes/internal/buildinfo.Version=v1.84.0" ];
   };
   # treehouse (workflow north star): worktree pool for parallel agent
   # sessions; firstmate's crewmates depend on it. Built from the release tag
@@ -121,7 +121,9 @@ in
       pull.rebase = true;
       push.autoSetupRemote = true;
     };
-    ignores = [ ".DS_Store" ".direnv/" ];
+    # .resume/: pause-safely resume notes stay local in every repo (they
+    # carry thread ids and would ride along in a `wip:` commit otherwise).
+    ignores = [ ".DS_Store" ".direnv/" ".resume/" ];
   };
 
   # ── Zsh (FOSS autocomplete stack, polished but not slow) ─────────────────
@@ -322,27 +324,64 @@ in
   # everything user-facing; prompt-only markdown, security-read 2026-08-24.
   # Captain standing instruction: apply by default to all writing.
   home.file.".claude/skills/unslop".source = link "files/.claude/skills/unslop";
-  # mattpocock/skills: grilling (relentless plan interviews) and
-  # domain-modeling (glossary + ADRs). Prompt-only markdown, security-read
-  # 2026-08-24. Slash-command only (disable-model-invocation) since 2026-10-07:
-  # zero model-triggered uses, so not worth a line in every system prompt.
+  # mattpocock/skills: grilling (relentless plan interviews). Prompt-only
+  # markdown, security-read 2026-08-24. Slash-command only since 2026-10-07.
+  # domain-modeling was dropped 2026-10-10: zero uses, and pstack's
+  # model-the-domain principle (folded into OPINIONS.md) covers it.
   home.file.".claude/skills/grilling".source = link "files/.claude/skills/grilling";
-  home.file.".claude/skills/domain-modeling".source = link "files/.claude/skills/domain-modeling";
   # Codex delegation (own authorship, inspired by Theo's Fable 5 workflow):
-  # route token-heavy review, bounded implementation, and native computer-use
-  # verification to the codex CLI (Homebrew cask, nix/host.nix). codex-review and codex-implement
-  # are slash-command only (unused as model-triggered skills, 2026-10-07).
+  # independent review and native computer-use verification via the codex CLI
+  # (Homebrew cask, nix/host.nix). codex-review is slash-command only and is
+  # the cross-family reviewer for show-me-your-work. codex-implement was
+  # dropped 2026-10-10: unused, and T3's delegate_task now hands bounded work
+  # to Codex directly (AGENTS.md, T3 Code fallback routing).
   home.file.".claude/skills/codex-review".source = link "files/.claude/skills/codex-review";
-  home.file.".claude/skills/codex-implement".source = link "files/.claude/skills/codex-implement";
   home.file.".claude/skills/codex-computer-use".source = link "files/.claude/skills/codex-computer-use";
-  # handoff (mattpocock/skills): shapes the session into a handoff document.
-  # Prompt-only markdown, security-read 2026-07-05. claude-handoff (spawn a
-  # fresh agent from it) was dropped 2026-10-07 as a never-used duplicate.
-  home.file.".claude/skills/handoff".source = link "files/.claude/skills/handoff";
+  # Own skills adapted from pstack playbooks (MIT, Lauren Tan) for T3 Code:
+  # recall (mine Claude, Codex and T3 history; scripts/recall.py, read-only,
+  # stdlib Python), pause-safely and session-pickup (auto-compact is off, so
+  # threads hand off through resume notes), standing-orders (lane rules and
+  # authorizations that survive thread death). They replace mattpocock's
+  # handoff skill (dropped 2026-10-10).
+  home.file.".claude/skills/recall".source = link "files/.claude/skills/recall";
+  home.file.".claude/skills/pause-safely".source = link "files/.claude/skills/pause-safely";
+  home.file.".claude/skills/session-pickup".source = link "files/.claude/skills/session-pickup";
+  home.file.".claude/skills/standing-orders".source = link "files/.claude/skills/standing-orders";
+  # pstack (cursor/plugins, pstack/skills, MIT, Lauren Tan), vendored at
+  # df581122cde17e6e27686b5a448bde23e4ad4318 (2026-10-05) and security-read
+  # 2026-10-10: prompt-only markdown plus one append-only TSV helper
+  # (show-me-your-work/scripts/log.sh), no network. Edits from upstream are
+  # limited to Cursor paths (.cursor/skills -> .claude/skills, transcript
+  # location), the cross-family reviewer, and making correct and
+  # show-me-your-work model-invocable. The rest stay slash-command only, as
+  # upstream ships them. Update procedure: docs/workflow-north-star.md.
+  home.file.".claude/skills/correct".source = link "files/.claude/skills/correct";
+  home.file.".claude/skills/show-me-your-work".source = link "files/.claude/skills/show-me-your-work";
+  home.file.".claude/skills/create-verification-skill".source = link "files/.claude/skills/create-verification-skill";
+  home.file.".claude/skills/maintain-verification-skill".source = link "files/.claude/skills/maintain-verification-skill";
+  home.file.".claude/skills/tdd".source = link "files/.claude/skills/tdd";
+  home.file.".claude/skills/blast-radius".source = link "files/.claude/skills/blast-radius";
   # Status line (Catppuccin Mocha): ~/.claude/settings.json invokes this via
   # `bash`, so no execute bit is required. Edit files/.claude/statusline.sh,
   # not the symlink target.
   home.file.".claude/statusline.sh".source = link "files/.claude/statusline.sh";
+  # Guardrail hooks (2026-10-10), each encoding a correction that rules alone
+  # did not stop: turn_context.py prints the SGT time and the thread's context
+  # size every turn; bash_guard.py blocks container/VM starts and em dashes in
+  # commit messages; write_guard.py flags em dashes in prose files. Tests:
+  # tests/claude_hooks_test.sh.
+  home.file.".claude/hooks/turn_context.py".source = link "files/.claude/hooks/turn_context.py";
+  home.file.".claude/hooks/bash_guard.py".source = link "files/.claude/hooks/bash_guard.py";
+  home.file.".claude/hooks/write_guard.py".source = link "files/.claude/hooks/write_guard.py";
+  # ~/.claude/settings.json stays a plain file because Claude Code, herdr and
+  # the axi tools write to it at runtime. Each switch deep-merges the keys
+  # this repo owns (files/.claude/settings.managed.json: transcript retention,
+  # auto-compact off, the hooks above) and leaves everything else alone.
+  home.activation.claudeManagedSettings = lib.hm.dag.entryAfter [ "writeBoundary" ] ''
+    run ${pkgs.bash}/bin/bash ${dotfiles}/files/.claude/merge-settings.sh \
+      ${pkgs.jq}/bin/jq "$HOME/.claude/settings.json" \
+      ${dotfiles}/files/.claude/settings.managed.json
+  '';
 
   # Lavish over Tailscale: Lavish binds 127.0.0.1:4387 and rejects non-localhost
   # Host headers, so a small node proxy on 127.0.0.1:4389 rewrites Host and

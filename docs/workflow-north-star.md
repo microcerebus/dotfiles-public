@@ -59,9 +59,20 @@ Vendored skills live in files/.claude/skills/<name>/SKILL.md, fetched from the
 upstream repos (lavish-axi, no-mistakes at its pinned tag, chrome-devtools-axi).
 To update: re-fetch the raw SKILL.md, diff it, security-read it (they instruct
 agents), commit. Bump no-mistakes by changing the flake input tag + vendorHash.
+pstack skills (correct, show-me-your-work, create-verification-skill,
+maintain-verification-skill, tdd, blast-radius) are pinned to cursor/plugins
+df581122 (2026-10-05). To update: sparse-clone cursor/plugins, diff
+`pstack/skills/<name>` against files/.claude/skills/<name>, re-apply the
+Claude Code edits listed in nix/user.nix, keep each dir's MIT LICENSE, and
+record the new commit there. Install only skills whose failure mode has shown
+up twice in real sessions (pstack guide 09).
+unslop is an older pstack copy with local additions; keep it as a fork.
 gnhf was evaluated and skipped for now (/loop covers most of it).
 Treehouse and firstmate came off hold 2026-07-05 (owner's call; firstmate's herdr backend resolves the overlap concern).
 Wheelhouse is blocked until upstream adds a license.
+The kun skill (kunchenguid/kun, installed 2026-10-07 with the skills CLI into ~/.agents/skills, outside this repo) was removed 2026-10-10 on the owner's call.
+Every use downloaded and ran an unpinned script from kun@main, and it was never used.
+Don't reinstall it.
 
 ## Context discipline (2026-07-05, revised 2026-07-08)
 
@@ -82,6 +93,9 @@ window fills. Habits: `/clear` at task boundaries, `Esc Esc` rewind instead of
 "that failed, try X", noisy work in subagents.
 A PreCompact hook in ~/.claude/settings.json (matcher `manual`) shapes each
 /compact into a handoff document.
-The vendored `/handoff` skill (mattpocock/skills) writes a handoff doc on
-demand. `/claude-handoff` (spawn a fresh agent from it) was dropped on
-2026-10-07 after zero uses.
+Since 2026-10-10 handoffs follow pstack: the `pause-safely` skill commits a
+`wip:` checkpoint and writes a resume note to `<worktree>/.resume/`, and a
+fresh thread resumes through `session-pickup`. A UserPromptSubmit hook prints
+the SGT time and the thread's context size every turn, so agents see the
+300k/500k thresholds instead of guessing. mattpocock's `/handoff` was
+replaced by these on 2026-10-10.

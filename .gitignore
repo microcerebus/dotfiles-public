@@ -27,3 +27,6 @@ files/.config/karabiner/assets/
 
 # Claude Code local (per-machine) settings
 .claude/settings.local.json
+
+# pause-safely resume notes; also in the global ignores (nix/user.nix) after a rebuild
+.resume/

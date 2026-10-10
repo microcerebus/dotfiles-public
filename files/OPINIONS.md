@@ -47,6 +47,7 @@ Paraphrased from pstack; the name in brackets is the upstream skill to read for 
 - Fewer polished features over more rough ones; user experience beats implementation convenience. [experience-first]
 - Agents don't stop to ask about reversible work; they do it and show the result. Confirmation is for irreversible actions. [never-block-on-the-human]
 - Big changes ship as small steps that each end in a state you can verify. [sequence-verifiable-units]
+- Verification comes before parallelism: add agents only once their work can be checked without me. [create-verification-skill]
 
 ## Code taste
 
@@ -60,6 +61,7 @@ Paraphrased from pstack; the name in brackets is the upstream skill to read for 
 ## Choosing dependencies and libraries
 
 Security is the number one priority; popularity is not evidence of quality.
+Never run code from a moving branch or an unpinned URL; pin a version or commit.
 Before adopting any library, plugin, or tool, check the actual repo data (gh api, not vibes):
 
 1. Security surface: no prebuilt binaries or opaque blobs, minimal transitive dependencies, no unnecessary network access.
@@ -87,8 +89,17 @@ Prefer the boring, widely-adopted, steadily-maintained option over the flashy fe
 - Anything I review (artifacts, agent sessions) should be reachable from my phone over Tailscale.
 - Open source for the dev toolchain (terminal, editor, shell, CLIs). Closed GUI and agent apps are fine when declared in `nix/host.nix`; anything my workflow depends on needs an exit path.
 - One tool per job, one obvious layer that owns it. No duplicate tooling.
+- Skills only help when they get used: make them model-invocable or name them in the brief.
 - pnpm over npm wherever a JS package manager is needed.
-- Adopted: CodeRabbit for PR review (over Greptile), Claude as the only AI in the editor.
+- Adopted: CodeRabbit for PR review (over Greptile), Claude as the preferred AI in the editor.
+  In T3 Code, use Codex when Claude hits usage limits, following the fallback routing table in ~/AGENTS.md.
   Tried and dropped, don't re-suggest: GitHub Copilot, Wakatime, Paseo, mosh/Moshi, Hex (dictation is Claude voice now), Codex cloud tasks (couldn't carry a real session).
 - Claude Code installs natively, not as a brew cask (reversed 2026-10-07: the cask fell ~60 versions behind because brew skips self-updating casks).
-- Aesthetics are consistent everywhere or not at all: Catppuccin theme, JetBrains Mono Nerd Font, across every tool that can be themed.
+- Catppuccin for the dev toolchain (terminal, editor, shell), with JetBrains Mono Nerd Font; products I build get their own design system.
+
+## Product design blacklist
+
+- No decorative colored left-edge accent rails on navigation, cards, alerts, dialogs or other panels.
+  Use neutral selection fills, clear text hierarchy or subtle whole-surface status tint instead.
+  Keep meaningful structural separators, timeline lines and accessible focus indicators.
+  Added from job-tracker design feedback on 2026-10-08.

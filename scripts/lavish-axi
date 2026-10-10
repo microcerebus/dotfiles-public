@@ -1,0 +1,60 @@
+#!/usr/bin/env node
+// Lavish's upstream opener ignores BROWSER on macOS. Always target Chrome.
+const { spawnSync } = require("node:child_process");
+const { homedir } = require("node:os");
+const { join } = require("node:path");
+
+function isArtifactOpen(args) {
+  return args.some((arg) => !arg.startsWith("-") && /\.html?$/i.test(arg));
+}
+
+function sessionUrl(output) {
+  const match = output.match(/^\s*url:\s*"([^"\n]+)"/m);
+  if (!match) return undefined;
+  const url = new URL(match[1]);
+  const hostAllowed = ["127.0.0.1", "localhost", "[::1]"].includes(url.hostname)
+    || url.hostname.endsWith(".ts.net");
+  if (!hostAllowed || !["http:", "https:"].includes(url.protocol)
+    || !/^\/session\/[a-f0-9]+\/?$/.test(url.pathname)) return undefined;
+  return url.href;
+}
+
+function run(args, env, spawn = spawnSync, io = process) {
+  const binary = join(homedir(), "Library/pnpm/bin/lavish-axi");
+  const commands = new Set(["poll", "reply", "export", "share", "end", "stop", "server",
+    "design", "playbook", "setup", "sessions", "update"]);
+  const artifact = isArtifactOpen(args) && !commands.has(args[0]);
+  if (!artifact) {
+    const result = spawn(binary, args, { env: { ...env, LAVISH_AXI_NO_OPEN: "1" }, stdio: "inherit" });
+    if (result.error) io.stderr.write(`lavish-axi: ${result.error.message}\n`);
+    return result.status ?? 1;
+  }
+  const result = spawn(binary, args, {
+    env: { ...env, LAVISH_AXI_NO_OPEN: "1" }, encoding: "utf8", maxBuffer: 10 * 1024 * 1024,
+  });
+  io.stderr.write(result.stderr ?? "");
+  if (result.error) io.stderr.write(`lavish-axi: ${result.error.message}\n`);
+  if (result.status !== 0) {
+    io.stdout.write(result.stdout ?? "");
+    return result.status ?? 1;
+  }
+  let url;
+  try { url = sessionUrl(result.stdout ?? ""); }
+  catch { io.stderr.write("lavish-axi: Invalid session URL; browser was not opened.\n"); return 1; }
+  if (url && !new URL(url).hostname.endsWith(".ts.net")) {
+    io.stderr.write("lavish-axi: Lavish returned a local-only URL. Phone access requires a Tailscale MagicDNS URL. Check Tailscale and remove any LAVISH_AXI_HOST override, then retry.\n");
+    return 1;
+  }
+  io.stdout.write(result.stdout ?? "");
+  if (!url || /status:\s*user-ended/.test(result.stdout ?? "")) return 0;
+  if (args.includes("--no-open") || env.LAVISH_AXI_NO_OPEN === "1") return 0;
+  const opened = spawn("/usr/bin/open", ["-b", "com.google.Chrome", url], { stdio: "inherit" });
+  if (opened.status !== 0) {
+    io.stderr.write("lavish-axi: Google Chrome could not open the review. No default-browser fallback.\n");
+    return opened.status ?? 1;
+  }
+  return 0;
+}
+
+module.exports = { isArtifactOpen, sessionUrl, run };
+if (require.main === module) process.exitCode = run(process.argv.slice(2), process.env);

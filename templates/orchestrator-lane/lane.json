@@ -1,0 +1,8 @@
+{
+  "lane": "<lane>",
+  "repo": "<owner>/<repo>",
+  "base": "main",
+  "verification_skill": "control-<app>",
+  "orchestrator_thread": "<t3 thread id>",
+  "coordinator_thread": "<t3 thread id>"
+}

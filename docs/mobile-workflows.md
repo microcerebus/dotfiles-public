@@ -1,7 +1,12 @@
 # Mobile access (iPad Mini / iPhone)
 
-One tool for the job: Termius (SSH client) over Tailscale (mesh VPN).
-A shell on the Mac from mobile covers everything, including driving agents via tmux/Herdr.
+T3 Connect is the current mobile interface for T3 Code.
+Termius over Tailscale provides a separate SSH route into terminal sessions, including Herdr.
+
+On 2026-10-07, the mobile access thread traced "Client not supported" to a protocol mismatch with the Mac nightly.
+the owner confirmed that the TestFlight mobile build works.
+Keep the phone and Mac protocol versions compatible when updating either app.
+T3 Connect and Tailscale are separate access paths; Tailscale being healthy does not prove that T3 Connect works.
 
 History: Paseo (agent-control relay) and Moshi/mosh were both tried in 2026-07 and scrapped in favor of this simpler stack.
 Their brew entries were removed from `nix/host.nix`; `cleanup = "zap"` uninstalls them on rebuild.
@@ -25,3 +30,66 @@ To verify isolation: comment out one device's line in `authorized_keys` - reconn
 Tailscale encrypts at the network layer (WireGuard): no open inbound ports, devices authenticate to the tailnet, free personal tier.
 Scope is device-level - the whole Mac is reachable from tailnet devices - so keep the tailnet's device list tight.
 SSH auth on top is key-only per device.
+
+
+## MacBook-first agent trial
+
+Decision recorded 2026-10-07: use the existing MacBook before buying a dedicated Mac mini.
+Review on 2026-10-21; extend to 2026-11-04 if there is too little usage to judge.
+These are review dates in the backlog, not scheduled notifications.
+Track the trial with `tasks-axi show macbook-agent-trial --full` from this repo.
+
+### Verified baseline on 2026-10-07
+
+- Both Amphetamine and Tailscale are already declared in `nix/host.nix`.
+- `pmset -g custom` reports AC system sleep disabled, with display sleep set to 10 minutes.
+- Battery system sleep remains set to 1 minute, but an active Amphetamine session can override idle sleep.
+- `pmset -g assertions` confirms Amphetamine currently prevents both system and display idle sleep.
+- Amphetamine preferences disable closed-display sleep, enable starting a session at launch, and contain no enabled triggers.
+- Tailscale reports `Running`, this device online, and no health warnings.
+- Mobile T3 Connect works according to the owner's confirmation in the mobile-access thread.
+
+### Small settings adjustments
+
+No new hardware, VPS, remote server, or package installation is needed to begin.
+In Amphetamine, allow display sleep while keeping the system awake.
+Use a power-adapter-connected trigger for unattended sessions, and avoid a separate indefinite session that keeps running after unplugging.
+The existing settings are enough for a plugged-in desk trial; the power trigger prevents that habit from carrying over into battery use.
+These are recommended adjustments, not changes applied by this audit.
+Do not disable the screen lock or FileVault to make the trial pass.
+Keep the laptop ventilated while awake and end wake sessions before putting it in a bag.
+
+### Acceptance checks
+
+- [x] Confirm local power settings, wake assertions, and Tailscale health.
+- [x] Confirm the prior mobile-access fix from the user's report.
+- [ ] From the phone on cellular, start and finish a harmless T3 task after the Mac display sleeps.
+- [ ] Repeat with the lid closed while connected to power; the preference alone is not proof that this works.
+- [ ] Test a terminal task and a Chrome computer-use task separately with the screen locked, and record which can proceed.
+- [ ] At a convenient break, restart and sign in, then verify that remote access and the intended wake session return.
+- [ ] Complete an overnight task and check its result the next morning.
+
+Do not close the lid, lock the screen, or restart during other active threads just to run these checks.
+The phone, lid, and restart checks remain unverified by this audit.
+
+### Purchase criteria
+
+Consider a separate machine when desktop automation repeatedly interferes with normal laptop use, work must continue at home while the laptop travels, or agent workloads cause persistent resource contention.
+Review after several such interruptions in a week, or when one important recurring job needs availability this laptop cannot provide.
+Fix configuration and client-version failures before treating them as evidence for buying hardware.
+If the trial works, keep using the MacBook and defer the purchase.
+Recheck current models and prices at purchase time; the earlier chat's hardware prices are not a buying baseline.
+
+### Incident log
+
+Record actual failures here; no automated incident collection is running.
+
+| Date | Task and access path | Failure or interference | Time lost | Cause and outcome | Would a separate Mac help? |
+|---|---|---|---|---|---|
+
+### Work ownership
+
+- This thread owns the MacBook trial, setup audit, and purchase criteria.
+- The T3 model-routing thread owns global routing instructions and new-chat defaults.
+- The Firstmate workflow thread owns tool upgrades, quota tooling, and its workflow adoption plan.
+- The completed mobile-access thread owns the evidence for the TestFlight fix; do not repeat its setup.
