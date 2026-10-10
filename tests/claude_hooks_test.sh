@@ -61,6 +61,18 @@ check "flags em dash in multiedit"   2 write_guard.py "{\"tool_input\":{\"file_p
 check "ignores code files"           0 write_guard.py "{\"tool_input\":{\"file_path\":\"/x/a.py\",\"content\":\"'${em}'\"}}"
 check "passes clean prose"           0 write_guard.py "{\"tool_input\":{\"file_path\":\"/x/a.md\",\"content\":\"a - b\"}}"
 
+# Handoff notes must not leave work "hosted" in a thread that is about to end.
+# The real line from orchestrator 4's resume note, 10 Oct 14:19; the native worker died at 14:22.
+c6='Coordinator 6 is renamed and still hosts #36s resolution review and hosted acceptance.'
+check "flags still-hosts in resume note" 2 write_guard.py "{\"tool_input\":{\"file_path\":\"/h/orchestrator/orchestrator-resume-2026-10-10-o4.md\",\"content\":\"$c6\"}}"
+check "flags still-running-in in .resume" 2 write_guard.py "{\"tool_input\":{\"file_path\":\"/w/.resume/n.md\",\"new_string\":\"acceptance still running in-thread\"}}"
+check "flags still-hosts in orchestrator log" 2 write_guard.py "{\"tool_input\":{\"file_path\":\"$HOME/orchestrator/overnight.md\",\"content\":\"c6 still hosts the review\"}}"
+check "passes still-hosts in other docs" 0 write_guard.py "{\"tool_input\":{\"file_path\":\"/x/docs/a.md\",\"content\":\"the box still hosts the site\"}}"
+check "blocks still-hosts heredoc into .resume" 2 bash_guard.py "$(bash_cmd $'cat >> .resume/trail.md <<\'EOF\'\n- '"$c6"$'\nEOF')"
+check "blocks still-running-in echo into resume" 2 bash_guard.py "$(bash_cmd "echo '- review still running in coordinator 6' >> ~/orchestrator/orchestrator-resume-x.md")"
+check "allows grep for still hosts"  0 bash_guard.py "$(bash_cmd "grep -rn 'still hosts' .resume/ ~/orchestrator")"
+check "allows still-hosts heredoc elsewhere" 0 bash_guard.py "$(bash_cmd $'cat > docs/a.md <<EOF\nthe box still hosts the site\nEOF')"
+
 # Turn context: always the SGT time; context size read from the transcript's last usage record.
 printf '%s\n' '{"type":"user","message":{"content":"hi"}}' \
   '{"type":"assistant","message":{"usage":{"input_tokens":5,"cache_creation_input_tokens":1000,"cache_read_input_tokens":349000}}}' >"$tmp/t.jsonl"

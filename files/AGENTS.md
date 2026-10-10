@@ -131,6 +131,7 @@ Each rule below is a correction the owner had to give more than once, or a failu
 - Auto-compact is off.
   Past about 300k tokens at a phase boundary, and always before 500k, use the `pause-safely` skill.
   A fresh thread resumes with `session-pickup`.
+  The resume note lists every in-flight native worker with its brief path; they die with the thread, so the successor respawns them first.
 - Coordinators coordinate: they write briefs, read results and decide.
   Code, restacks and conflicted merges go to workers in their own worktrees.
 - When Codex is out of quota, continue on Claude Opus 5.5 at xhigh without asking.
@@ -156,6 +157,7 @@ Each rule below is a correction the owner had to give more than once, or a failu
 | Real time, context size | `turn_context.py` prints both every turn |
 | No containers or VMs | `bash_guard.py` blocks them unless the owner wrote an unexpired `~/.claude/containers-approved-until` |
 | Context limits | `turn_context.py` nudge, `pause-safely` skill |
+| Handoffs list native workers, never "still hosts" | `write_guard.py` and `bash_guard.py` flag the wording in resume notes and `~/orchestrator`; `pause-safely` and `session-pickup` skills |
 | Nothing personal in the public dotfiles mirror | `scripts/public-sync` leak gate |
 | Chrome, never Brave | `lavish-axi` and `chrome-devtools-axi` wrappers in `scripts/`; rule only elsewhere |
 | Agent Chrome, not the owner's own | `chrome-devtools-axi` wrapper refuses autoConnect and port 9222 unless `CHROME_DEVTOOLS_AXI_MAIN_CHROME=1` |

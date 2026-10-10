@@ -21,7 +21,9 @@ A thread that fills its context dies mid-command and loses whatever lived only i
 
 1. **Stop at a safe boundary.**
    Finish the current atomic step or back out of it.
-   Start nothing new and let running subagents finish or cancel them.
+   Start nothing new.
+   Let running native subagents and workflow stages finish, or stop them and list them in the note.
+   They die with this session, and nothing reports the death: they have no T3 run rows.
 2. **Take no irreversible action to pause.**
    No merge, no new PR, no push unless the branch is already pushed.
 3. **Make the work durable.**
@@ -32,6 +34,10 @@ A thread that fills its context dies mid-command and loses whatever lived only i
    `.resume/` is in the global gitignore, so the note never rides along in a commit; check with `git check-ignore .resume`.
    Get the time from `TZ=Asia/Singapore date`.
    If a show-me-your-work decision log exists, point at it instead of repeating it.
+   List every worker this thread started that has not reported, under "Workers".
+   A native worker's brief must be on disk: if it lived only in the spawn prompt, save it to `.resume/briefs/<name>.md`.
+   Never write that this thread "still hosts" or has work "still running in" it; after the pause nothing runs there.
+   `write_guard.py` and `bash_guard.py` flag that wording in resume notes and `~/orchestrator`.
 5. **Hand over.**
    In an orchestrated lane, send the orchestrator one message with `t3_thread_send`: thread title, resume note path, wip commit SHA, and the first action on resume.
    The orchestrator owns the lane files and records the pointer there.
@@ -58,6 +64,11 @@ Transcript: <path from `recall.py self`>
 
 ## In flight, not verified
 - <item> - what is left to prove
+
+## Workers
+- native | <task> | brief: <path on disk> | passed so far: <checks, commits, artifacts> - dies with this thread; the successor respawns it first
+- T3 task <taskId> (thread <childThreadId>) | <task> | brief: <path> | passed so far: <...> - survives; read its result with `t3_thread_read` on the child thread
+- none
 
 ## the owner's decisions and confirmations
 - <HH:MM SGT> <what he approved, said is done, or ruled out> (so the successor never re-asks)

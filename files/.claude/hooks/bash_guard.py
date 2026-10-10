@@ -11,6 +11,9 @@
 2. Em dashes in commit messages (AGENTS.md, repeated correction since July).
    Only the message counts: -m/--message values, -F/--file files, and heredoc
    bodies fed to git commit. Grep patterns and other text pass.
+3. Handoff notes that leave work "still hosted" in a thread about to end
+   (write_guard.py has the story). Only heredocs and echo/printf lines that
+   write into a resume note or ~/orchestrator count; greps pass.
 Exit 2 blocks the call and shows stderr to the agent. Unparseable commands
 pass: this is a guardrail, not a sandbox."""
 import json, os, re, shlex, sys, time
@@ -22,6 +25,8 @@ HARMLESS_ARGS = {'--version', '-v', 'version', '--help', '-h', 'help'}
 WRAPPERS = {'sudo', 'exec', 'env', 'nohup', 'time', 'command', 'builtin'}
 APPROVAL = os.path.expanduser('~/.claude/containers-approved-until')
 HEREDOC = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
+STILL_HOSTED = re.compile(r'(?i)\bstill (?:hosts|hosted (?:by|in)|running in)\b')  # same as write_guard.py
+HANDOFF_TARGET = re.compile(r'>\s*\S*(?:/\.resume/|\.resume/|resume[^/\s]*$|resume[^/\s]*\s|/orchestrator/)')
 
 
 def strip_heredocs(cmd):
@@ -145,6 +150,16 @@ def commit_messages(cmd, cwd):
                     pass
 
 
+def handoff_writes(cmd):
+    """Text written into a resume note or orchestrator file: heredoc bodies and echo/printf lines."""
+    for opener, body in heredoc_bodies(cmd):
+        if HANDOFF_TARGET.search(opener + ' '):
+            yield body
+    for line in strip_heredocs(cmd).split('\n'):
+        if re.search(r'(^|[\s;&|(])(echo|printf)\s', line) and HANDOFF_TARGET.search(line + ' '):
+            yield line
+
+
 def approved():
     try:
         return time.time() < float(open(APPROVAL).read().strip())
@@ -169,4 +184,10 @@ if blocked and not approved():
     sys.exit(2)
 if any(EM_DASH in m for m in commit_messages(cmd, cwd)):
     print('Blocked: the commit message contains an em dash. Use "-" instead (AGENTS.md).', file=sys.stderr)
+    sys.exit(2)
+if any(STILL_HOSTED.search(t) for t in handoff_writes(cmd)):
+    print('Blocked: this handoff note says work is still hosted or running in a thread. Native subagents '
+          'die when their session ends, and nothing reports it. List the worker under "Workers" (task, '
+          'brief path, what it passed) so the successor respawns it; a T3 delegated task or thread '
+          'survives, so name its ID (pause-safely skill).', file=sys.stderr)
     sys.exit(2)

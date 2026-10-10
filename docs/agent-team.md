@@ -75,6 +75,9 @@ Rule of thumb from pstack: when an agent does the same thing by hand twice, have
 - Threads never compact.
   Past about 300k tokens at a phase boundary, they `pause-safely`: a `wip:` commit, a resume note, a message to the orchestrator.
 - A fresh thread starts with `session-pickup`, reads the standing orders, `authorizations.md` and the resume note, and re-establishes PR watches.
+- The resume note lists every in-flight worker: task, brief path, and what it passed so far.
+  Native subagents die with their thread and have no T3 run rows, so the successor respawns them first; only T3 delegated tasks and threads outlive their parent.
+  "The old thread still hosts X" is never true after a pause, and the write and Bash guards flag that wording (10 Oct: #36 lost about an hour to it).
 - `owners.md` says which thread owns what, so nobody messages a dead thread.
 - `authorizations.md` records what the owner approved or finished, so nobody asks twice.
 
