@@ -146,6 +146,14 @@ tool-adoption backlog; check it before adding workflow tooling).
   received undefined"; axi 0.1.39 fixed it. After bumping either, run
   `chrome-devtools-axi open https://example.com` and `eval document.title`
   against the agent Chrome (2026-10-10).
+- Signing in to Google inside a Chrome profile also signs the browser in,
+  and Chrome then installs the account's synced extensions there. the owner's
+  Gmail sign-in in the agent Chrome pulled in Dashlane, AdBlock, AI sidebars
+  and four more; Dashlane's content script broke Greenhouse form fields under
+  automation. The agent Chrome therefore launches with `--disable-extensions
+  --disable-sync`, and the wrapper refuses it without them. Never uninstall
+  extensions in a profile while sync runs: the uninstall syncs to his own
+  Chrome (2026-10-10).
 - Driving plugin-heavy nvim via `tmux send-keys`: key bursts in one call
   (e.g. `send-keys "dd"`) get eaten by the plugin UI (noice/which-key) while
   it settles - send one key per call with ~1s gaps, and allow ~9s for nvim

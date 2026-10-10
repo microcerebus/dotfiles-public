@@ -20,6 +20,7 @@ These are common instructions for my agents across all scenarios.
 - For anything browser-related - opening URLs, OAuth/login flows, browser automation, testing web pages - always use Google Chrome.
   Never launch or automate Brave; it is my personal browser and off limits to agents.
   Agents drive the agent Chrome: Google Chrome Beta with its own signed-in profile on 127.0.0.1:9333, which `chrome-devtools-axi` uses by default (see its skill).
+  It runs with no extensions and no Chrome sync; never add either to it.
   Never attach to the owner's own Chrome (autoConnect, or its port 9222) unless he asks in the thread, because it makes him click "Allow" for every session.
   Lavish's upstream browser opener ignores BROWSER on macOS.
   Use the Chrome-only `lavish-axi` wrapper in `~/dotfiles/scripts`, or pass `--no-open` and open the view explicitly in Chrome.
@@ -158,4 +159,5 @@ Each rule below is a correction the owner had to give more than once, or a failu
 | Nothing personal in the public dotfiles mirror | `scripts/public-sync` leak gate |
 | Chrome, never Brave | `lavish-axi` and `chrome-devtools-axi` wrappers in `scripts/`; rule only elsewhere |
 | Agent Chrome, not the owner's own | `chrome-devtools-axi` wrapper refuses autoConnect and port 9222 unless `CHROME_DEVTOOLS_AXI_MAIN_CHROME=1` |
+| Agent Chrome has no extensions or sync | launchd flags `--disable-extensions --disable-sync` (`nix/user.nix`); the `chrome-devtools-axi` wrapper refuses an agent Chrome running without them |
 | Everything else in this section | Rule only, until it repeats |

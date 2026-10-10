@@ -467,6 +467,12 @@ in
   # quit (Cmd-Q) stays quit, and restarting a clean exit would loop, because
   # a second Chrome on the same profile hands off to the first and exits 0.
   # scripts/chrome-devtools-axi starts it again on demand (launchctl kickstart).
+  # No extensions and no Chrome sync, whatever the profile says: signing in to
+  # Google here once synced in the owner's own extensions (Dashlane, AI sidebars,
+  # ad blockers). That put his password vault one click from agents, and
+  # Dashlane's content script broke Greenhouse form fields mid-application
+  # (2026-10-10). --disable-sync also keeps his passwords, cards and history
+  # out. Site sign-ins are cookies, so they are unaffected.
   launchd.agents.agent-chrome = {
     enable = true;
     config = {
@@ -475,6 +481,8 @@ in
         "/Applications/Google Chrome Beta.app/Contents/MacOS/Google Chrome Beta"
         "--user-data-dir=${config.home.homeDirectory}/Library/Application Support/AgentChrome"
         "--remote-debugging-port=9333"
+        "--disable-extensions"
+        "--disable-sync"
         "--no-first-run"
         "--no-default-browser-check"
       ];

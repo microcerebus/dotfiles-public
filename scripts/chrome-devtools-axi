@@ -3,6 +3,10 @@
 // profile on 127.0.0.1:9333 (launchd agent in nix/user.nix). Attaching to
 // the owner's own Chrome (autoConnect, or its chrome://inspect port 9222) makes him
 // click "Allow" for every session, so it needs a named opt-in.
+// The agent Chrome must run with no extensions and no Chrome sync (launchd
+// flags in nix/user.nix): a Google sign-in there once synced the owner's own
+// extensions in, Dashlane included. An agent Chrome started any other way,
+// such as from an old plist after a reboot, is refused, not driven.
 // Tests: tests/chrome_devtools_axi_test.cjs.
 const { spawnSync } = require("node:child_process");
 const { existsSync } = require("node:fs");
@@ -11,6 +15,8 @@ const { join } = require("node:path");
 
 const AGENT_CHROME_URL = "http://127.0.0.1:9333";
 const AGENT_CHROME_LABEL = "com.myuser.agent-chrome";
+const AGENT_CHROME_BINARY = "/Applications/Google Chrome Beta.app/Contents/MacOS/Google Chrome Beta";
+const AGENT_CHROME_FLAGS = ["--disable-extensions", "--disable-sync"];
 const MAIN_CHROME_PORT = "9222";
 const NO_BROWSER = new Set(["stop", "setup", "update", "--help", "-v", "-V", "--version"]);
 
@@ -19,8 +25,8 @@ Unset CHROME_DEVTOOLS_AXI_AUTO_CONNECT and any :${MAIN_CHROME_PORT} CHROME_DEVTO
 Only if the owner asked for his own Chrome in this thread, set CHROME_DEVTOOLS_AXI_MAIN_CHROME=1.
 `;
 
-function targetsMainChrome(url) {
-  try { return new URL(url).port === MAIN_CHROME_PORT; } catch { return false; }
+function targetsPort(url, port) {
+  try { return new URL(url).port === port; } catch { return false; }
 }
 
 function resolveEnv(env) {
@@ -37,14 +43,15 @@ function resolveEnv(env) {
     out.CHROME_DEVTOOLS_AXI_AUTO_CONNECT = "1";
     return { env: out, target: "main" };
   }
-  if (env.CHROME_DEVTOOLS_AXI_AUTO_CONNECT === "1" || targetsMainChrome(env.CHROME_DEVTOOLS_AXI_BROWSER_URL ?? "")) {
+  if (env.CHROME_DEVTOOLS_AXI_AUTO_CONNECT === "1" || targetsPort(env.CHROME_DEVTOOLS_AXI_BROWSER_URL ?? "", MAIN_CHROME_PORT)) {
     return { error: MAIN_CHROME_REFUSAL };
   }
   delete out.CHROME_DEVTOOLS_AXI_AUTO_CONNECT;
   const url = env.CHROME_DEVTOOLS_AXI_BROWSER_URL;
   // An explicit other URL, "" (axi launches a throwaway browser) or an own
   // profile dir is a deliberate choice and passes through.
-  if ((url === undefined && env.CHROME_DEVTOOLS_AXI_USER_DATA_DIR === undefined) || url === AGENT_CHROME_URL) {
+  if ((url === undefined && env.CHROME_DEVTOOLS_AXI_USER_DATA_DIR === undefined)
+    || targetsPort(url ?? "", new URL(AGENT_CHROME_URL).port)) {
     out.CHROME_DEVTOOLS_AXI_BROWSER_URL = AGENT_CHROME_URL;
     return { env: out, target: "agent" };
   }
@@ -68,6 +75,16 @@ function ensureAgentChrome(env, deps, io) {
   return null;
 }
 
+function agentChromeFlagsError(deps) {
+  const lines = deps.browserCommandLines();
+  const unsafe = lines.length === 0
+    || lines.some((line) => AGENT_CHROME_FLAGS.some((flag) => !line.split(" ").includes(flag)));
+  if (!unsafe) return null;
+  return `chrome-devtools-axi: the agent Chrome on ${AGENT_CHROME_URL} is not running with ${AGENT_CHROME_FLAGS.join(" ")}, so the owner's synced extensions (Dashlane included) can load into agent sessions. Not driving it.
+It was started from an old launchd plist (no \`rebuild\` since the flags landed) or by hand. If \`rebuild\` has run, restart it: \`launchctl kickstart -k gui/$(id -u)/${AGENT_CHROME_LABEL}\`. Otherwise ask the owner to run \`rebuild\`.
+`;
+}
+
 const defaultDeps = {
   spawn: spawnSync,
   probe: (url) => spawnSync("/usr/bin/curl", ["-fsS", "-o", "/dev/null", "--max-time", "1", `${url}/json/version`],
@@ -75,6 +92,13 @@ const defaultDeps = {
   agentInstalled: () => existsSync(join(homedir(), "Library/LaunchAgents", `${AGENT_CHROME_LABEL}.plist`)),
   kickstart: () => spawnSync("/bin/launchctl", ["kickstart", `gui/${process.getuid()}/${AGENT_CHROME_LABEL}`], { stdio: "ignore" }),
   sleep: (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms),
+  // Browser processes of the agent Chrome (helpers carry --type=).
+  browserCommandLines: () => {
+    const port = new URL(AGENT_CHROME_URL).port;
+    const out = spawnSync("/usr/bin/pgrep", ["-lf", `remote-debugging-port=${port}`], { encoding: "utf8" }).stdout ?? "";
+    return out.split("\n").map((line) => line.replace(/^\d+ /, ""))
+      .filter((line) => line.startsWith(`${AGENT_CHROME_BINARY} `) && !line.includes("--type="));
+  },
 };
 
 function run(args, env, deps = defaultDeps, io = process) {
@@ -88,6 +112,11 @@ function run(args, env, deps = defaultDeps, io = process) {
   if (resolved.target === "agent" && needsBrowser) {
     childEnv = ensureAgentChrome(childEnv, deps, io);
     if (!childEnv) return 1;
+    const flagsError = childEnv.CHROME_DEVTOOLS_AXI_BROWSER_URL === AGENT_CHROME_URL && agentChromeFlagsError(deps);
+    if (flagsError) {
+      io.stderr.write(flagsError);
+      return 1;
+    }
   }
   const binary = join(homedir(), "Library/pnpm/bin/chrome-devtools-axi");
   const result = deps.spawn(binary, args, { env: childEnv, stdio: "inherit" });
@@ -95,5 +124,5 @@ function run(args, env, deps = defaultDeps, io = process) {
   return result.status ?? 1;
 }
 
-module.exports = { run, resolveEnv, AGENT_CHROME_URL, AGENT_CHROME_LABEL };
+module.exports = { run, resolveEnv, AGENT_CHROME_URL, AGENT_CHROME_LABEL, AGENT_CHROME_FLAGS };
 if (require.main === module) process.exitCode = run(process.argv.slice(2), process.env);

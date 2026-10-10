@@ -2,9 +2,16 @@ const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const { readFileSync } = require("node:fs");
 const { join } = require("node:path");
-const { run, AGENT_CHROME_URL, AGENT_CHROME_LABEL } = require("../scripts/chrome-devtools-axi");
+const { run, AGENT_CHROME_URL, AGENT_CHROME_LABEL, AGENT_CHROME_FLAGS } = require("../scripts/chrome-devtools-axi");
 
-function harness({ up = [true], installed = true } = {}) {
+const CHROME_BETA = "/Applications/Google Chrome Beta.app/Contents/MacOS/Google Chrome Beta";
+const PROFILE = "--user-data-dir=/Users/myuser/Library/Application Support/AgentChrome";
+// The agent Chrome as launchd started it on 2026-10-10 before the fix, when
+// the owner's synced extensions (Dashlane included) loaded into agent sessions.
+const UNFLAGGED = `${CHROME_BETA} ${PROFILE} --remote-debugging-port=9333 --no-first-run --no-default-browser-check`;
+const FLAGGED = `${CHROME_BETA} ${PROFILE} --remote-debugging-port=9333 --disable-extensions --disable-sync --no-first-run --no-default-browser-check`;
+
+function harness({ up = [true], installed = true, browser = [FLAGGED] } = {}) {
   const calls = { spawn: [], probe: 0, kickstart: 0, stderr: "" };
   const deps = {
     spawn: (command, args, options) => { calls.spawn.push({ command, args, env: options.env }); return { status: 0 }; },
@@ -12,6 +19,7 @@ function harness({ up = [true], installed = true } = {}) {
     agentInstalled: () => installed,
     kickstart: () => { calls.kickstart += 1; },
     sleep: () => {},
+    browserCommandLines: () => { calls.browserChecks = (calls.browserChecks ?? 0) + 1; return browser; },
   };
   const io = { stderr: { write: (s) => { calls.stderr += s; } } };
   return { calls, deps, io };
@@ -104,10 +112,37 @@ test("each Claude thread gets its own session, and idle bridges exit", () => {
   assert.equal(explicit.calls.spawn[0].env.CHROME_DEVTOOLS_AXI_IDLE_TIMEOUT_MS, "0");
 });
 
+test("refuses an agent Chrome started without the no-extensions flags", () => {
+  for (const [browser, env] of [
+    [[UNFLAGGED], {}],
+    [[`${CHROME_BETA} ${PROFILE} --remote-debugging-port=9333 --disable-sync`], {}],
+    [[], {}],
+    [[UNFLAGGED], { CHROME_DEVTOOLS_AXI_BROWSER_URL: "http://localhost:9333" }],
+  ]) {
+    const { calls, deps, io } = harness({ browser });
+    assert.equal(run(["open", "https://example.com"], env, deps, io), 1);
+    assert.equal(calls.spawn.length, 0);
+    assert.match(calls.stderr, /--disable-extensions/);
+    assert.match(calls.stderr, /launchctl kickstart -k/);
+  }
+});
+
+test("the flag check only runs for the agent Chrome", () => {
+  const fallback = harness({ up: [false], installed: false, browser: [UNFLAGGED] });
+  assert.equal(run(["open", "https://example.com"], {}, fallback.deps, fallback.io), 0);
+  const other = harness({ browser: [UNFLAGGED] });
+  assert.equal(run(["snapshot"], { CHROME_DEVTOOLS_AXI_BROWSER_URL: "http://127.0.0.1:9555" }, other.deps, other.io), 0);
+  const noBrowser = harness({ browser: [UNFLAGGED] });
+  assert.equal(run(["stop"], {}, noBrowser.deps, noBrowser.io), 0);
+  for (const h of [fallback, other, noBrowser]) assert.equal(h.calls.browserChecks, undefined);
+});
+
 test("the launchd agent and session env match the wrapper", () => {
   const nix = readFileSync(join(__dirname, "../nix/user.nix"), "utf8");
   const port = new URL(AGENT_CHROME_URL).port;
   assert.match(nix, new RegExp(`"--remote-debugging-port=${port}"`));
   assert.match(nix, new RegExp(`Label = "${AGENT_CHROME_LABEL.replace(/\./g, "\\.")}";`));
   assert.match(nix, new RegExp(`CHROME_DEVTOOLS_AXI_BROWSER_URL = "${AGENT_CHROME_URL}";`));
+  assert.deepEqual(AGENT_CHROME_FLAGS, ["--disable-extensions", "--disable-sync"]);
+  for (const flag of AGENT_CHROME_FLAGS) assert.match(nix, new RegExp(`^\\s+"${flag}"$`, "m"));
 });
