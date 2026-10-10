@@ -161,5 +161,7 @@ Each rule below is a correction the owner had to give more than once, or a failu
 | Nothing personal in the public dotfiles mirror | `scripts/public-sync` leak gate |
 | Chrome, never Brave | `lavish-axi` and `chrome-devtools-axi` wrappers in `scripts/`; rule only elsewhere |
 | Agent Chrome, not the owner's own | `chrome-devtools-axi` wrapper refuses autoConnect and port 9222 unless `CHROME_DEVTOOLS_AXI_MAIN_CHROME=1` |
+| Agent Chrome tabs stay behind the owner's windows and are sized per tab | `chrome-devtools-axi` wrapper opens tabs in the background and refuses `resize` |
+| Lavish tables never split words | `write_guard.py` flags `overflow-wrap: anywhere` and `word-break: break-all` on body or table cells in HTML |
 | Agent Chrome has no extensions or sync | launchd flags `--disable-extensions --disable-sync` (`nix/user.nix`); the `chrome-devtools-axi` wrapper refuses an agent Chrome running without them |
 | Everything else in this section | Rule only, until it repeats |

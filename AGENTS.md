@@ -154,6 +154,15 @@ tool-adoption backlog; check it before adding workflow tooling).
   --disable-sync`, and the wrapper refuses it without them. Never uninstall
   extensions in a profile while sync runs: the uninstall syncs to his own
   Chrome (2026-10-10).
+- The agent Chrome is one headed window on the owner's main screen, in the same
+  spot as his own Chrome and T3 Code, and every agent shares it. `resize`
+  reshaped it for all of them (macOS floors it at 500px, so "390" phone
+  shots came out 500 wide), and foreground tabs raised it over his windows
+  with other agents' emulated tabs in front. He read that as Lavish pages
+  "cut off, or showing in a mobile sized view only". `scripts/chrome-devtools-axi`
+  now opens agent tabs in the background, refuses `resize` in favour of
+  per-tab `emulate --viewport`, and takes `--foreground` for a page he must
+  click (2026-10-11).
 - Driving plugin-heavy nvim via `tmux send-keys`: key bursts in one call
   (e.g. `send-keys "dd"`) get eaten by the plugin UI (noice/which-key) while
   it settles - send one key per call with ~1s gaps, and allow ~9s for nvim

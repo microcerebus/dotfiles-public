@@ -7,12 +7,23 @@
 // flags in nix/user.nix): a Google sign-in there once synced the owner's own
 // extensions in, Dashlane included. An agent Chrome started any other way,
 // such as from an old plist after a reboot, is refused, not driven.
+// Every agent shares the agent Chrome's one window, and it sits where the owner's
+// own Chrome and T3 Code do. A tab opened in the foreground raises that
+// window over his work and takes the keyboard. `resize` reshapes it for every
+// agent's tabs at once and stops at macOS's 500px floor, so "390" phone shots
+// came out 500 wide. On 2026-10-11 he saw Lavish pages there boxed into other
+// agents' 390x844 and 1440x900 viewports. So agent tabs open in the
+// background, sizes come from per-tab `emulate --viewport`, and --foreground
+// is the opt-in for a page the owner has to see or click.
 // Tests: tests/chrome_devtools_axi_test.cjs.
 const { spawnSync } = require("node:child_process");
+const { randomBytes } = require("node:crypto");
 const { existsSync } = require("node:fs");
 const { homedir } = require("node:os");
 const { join } = require("node:path");
 
+const AXI_BINARY = join(homedir(), "Library/pnpm/bin/chrome-devtools-axi");
+const FOREGROUND = "--foreground";
 const AGENT_CHROME_URL = "http://127.0.0.1:9333";
 const AGENT_CHROME_LABEL = "com.myuser.agent-chrome";
 const AGENT_CHROME_BINARY = "/Applications/Google Chrome Beta.app/Contents/MacOS/Google Chrome Beta";
@@ -85,6 +96,37 @@ It was started from an old launchd plist (no \`rebuild\` since the flags landed)
 `;
 }
 
+function resizeRefusal(args) {
+  const [width, height] = args.slice(1, 3).map((arg) => Number.parseInt(arg, 10));
+  const size = width > 0 && height > 0 ? `${width}x${height}` : "390x844";
+  return `chrome-devtools-axi: refusing \`resize\`. It reshapes the agent Chrome's one window, which every agent's tabs and the owner's view share, and macOS stops it at 500px wide.
+Size only your own tab: \`chrome-devtools-axi emulate --viewport "${size}x3,mobile,touch"\` for a phone, or --viewport "${size}x1" for a desktop.
+When you are done, run \`chrome-devtools-axi emulate\` with no flags to clear it. the owner sees a tab left emulated as a cut-off page.
+`;
+}
+
+// axi's `open` (and `page.open` in `run`) navigates the session's own tab, and
+// with none it opens a new foreground tab. Give the session a background tab
+// first. axi marks a session's own tab `selected` in `pages`, and adopts a
+// new tab when exactly one tab has its URL, hence the unique blank URL.
+function ensureOwnTab(env, spawn) {
+  const pages = spawn(AXI_BINARY, ["pages"], { env, encoding: "utf8" }).stdout ?? "";
+  if (/^\s*\d+,.*,true\s*$/m.test(pages)) return;
+  const blank = `about:blank#${env.CHROME_DEVTOOLS_AXI_SESSION ?? "agent"}-${randomBytes(4).toString("hex")}`;
+  spawn(AXI_BINARY, ["newpage", blank, "--background"], { env, stdio: "ignore" });
+}
+
+function placeTabs(args, env, spawn) {
+  const [command, ...rest] = args;
+  if (command === "newpage" || command === "open") {
+    const flags = rest.filter((arg) => arg !== FOREGROUND);
+    if (flags.length < rest.length) return ["newpage", ...flags];
+    if (command === "newpage") return flags.includes("--background") ? args : [...args, "--background"];
+  }
+  if (command === "open" || command === "run") ensureOwnTab(env, spawn);
+  return args;
+}
+
 const defaultDeps = {
   spawn: spawnSync,
   probe: (url) => spawnSync("/usr/bin/curl", ["-fsS", "-o", "/dev/null", "--max-time", "1", `${url}/json/version`],
@@ -109,6 +151,13 @@ function run(args, env, deps = defaultDeps, io = process) {
   }
   let childEnv = resolved.env;
   const needsBrowser = args.length > 0 && !NO_BROWSER.has(args[0]) && !args.includes("--help");
+  // The agent Chrome and the owner's own are shared, headed windows; an explicit
+  // other browser is the caller's own.
+  const shared = resolved.target !== "other" && needsBrowser;
+  if (shared && args[0] === "resize") {
+    io.stderr.write(resizeRefusal(args));
+    return 2;
+  }
   if (resolved.target === "agent" && needsBrowser) {
     childEnv = ensureAgentChrome(childEnv, deps, io);
     if (!childEnv) return 1;
@@ -118,8 +167,8 @@ function run(args, env, deps = defaultDeps, io = process) {
       return 1;
     }
   }
-  const binary = join(homedir(), "Library/pnpm/bin/chrome-devtools-axi");
-  const result = deps.spawn(binary, args, { env: childEnv, stdio: "inherit" });
+  const finalArgs = shared ? placeTabs(args, childEnv, deps.spawn) : args;
+  const result = deps.spawn(AXI_BINARY, finalArgs, { env: childEnv, stdio: "inherit" });
   if (result.error) io.stderr.write(`chrome-devtools-axi: ${result.error.message}\n`);
   return result.status ?? 1;
 }

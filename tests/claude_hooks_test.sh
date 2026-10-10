@@ -71,6 +71,17 @@ check "passes still-hosts in other docs" 0 write_guard.py "{\"tool_input\":{\"fi
 check "blocks still-hosts heredoc into .resume" 2 bash_guard.py "$(bash_cmd $'cat >> .resume/trail.md <<\'EOF\'\n- '"$c6"$'\nEOF')"
 check "blocks still-running-in echo into resume" 2 bash_guard.py "$(bash_cmd "echo '- review still running in coordinator 6' >> ~/orchestrator/orchestrator-resume-x.md")"
 check "allows grep for still hosts"  0 bash_guard.py "$(bash_cmd "grep -rn 'still hosts' .resume/ ~/orchestrator")"
+
+# HTML must not let tables split ordinary words. The body rule is the 11 Oct design review page's
+# ("Surfa ce"); the :where list is the July Lavish pages' pattern.
+write_json() { python3 -I -c 'import json,sys; print(json.dumps({"tool_input": {"file_path": sys.argv[1], "content": sys.argv[2]}}))' "$1" "$2"; }
+check "flags anywhere on body"       2 write_guard.py "$(write_json /x/review.html '<style>*{box-sizing:border-box}body{margin:0;font:15px/1.55 sans-serif;overflow-wrap:anywhere}</style>')"
+check "flags anywhere on th,td"      2 write_guard.py "$(write_json /x/a.html '<style>th,td{text-align:left;overflow-wrap:anywhere}</style>')"
+check "flags a :where list with td"  2 write_guard.py "$(write_json /x/a.htm $'<style>\n:where(p, h1, li, td, th) {\n  overflow-wrap: anywhere;\n}\n</style>')"
+check "flags break-all inline on td" 2 write_guard.py "$(write_json /x/a.html '<td style="color:red; word-break: break-all">x</td>')"
+check "allows anywhere on code"      0 write_guard.py "$(write_json /x/a.html '<style>code{overflow-wrap:anywhere}</style>')"
+check "allows break-word on body"    0 write_guard.py "$(write_json /x/a.html '<style>body{overflow-wrap:break-word}</style>')"
+check "ignores CSS quoted in markdown" 0 write_guard.py "$(write_json /x/a.md 'never write body{overflow-wrap:anywhere}')"
 check "allows still-hosts heredoc elsewhere" 0 bash_guard.py "$(bash_cmd $'cat > docs/a.md <<EOF\nthe box still hosts the site\nEOF')"
 
 # Turn context: always the SGT time; context size read from the transcript's last usage record.
