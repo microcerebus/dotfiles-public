@@ -85,6 +85,9 @@ Rule of thumb from pstack: when an agent does the same thing by hand twice, have
 
 - Per thread: `turn_context.py` shows the agent its own time and context size every turn; the statusline shows the owner the same.
 - Per lane: `orch status` writes `status.md` with each thread's state, context size, last activity and PR verdicts.
+- For the owner's phone: the agent board (`files/bin/agent-board.mjs`, port 4790 on the Mac's MagicDNS name) lists every open T3 thread.
+  It puts the threads waiting on him first, then running threads with their context use, flagging any run with no log write for 10 minutes.
+  It is read-only and has no hooks; it was chosen over agenttrail on 2026-10-11 (`docs/agent-observability/proposal.html`).
 - System: the heartbeat checks the 5-hour and weekly usage windows and pauses lanes at 85% of the window or 40% of the week.
 
 ## Automation

@@ -47,6 +47,8 @@ Paraphrased from pstack; the name in brackets is the upstream skill to read for 
 - Fewer polished features over more rough ones; user experience beats implementation convenience. [experience-first]
 - Agents don't stop to ask about reversible work; they do it and show the result. Confirmation is for irreversible actions. [never-block-on-the-human]
 - Big changes ship as small steps that each end in a state you can verify. [sequence-verifiable-units]
+- Small, independent PRs over stacks: each branches from main and merges on its own, so one stuck review never holds up the rest.
+- Pre-commit hooks finish in under a minute; heavy suites (E2E, full test runs, builds) run in CI.
 - Verification comes before parallelism: add agents only once their work can be checked without me. [create-verification-skill]
 
 ## Code taste
@@ -93,7 +95,7 @@ Prefer the boring, widely-adopted, steadily-maintained option over the flashy fe
 - pnpm over npm wherever a JS package manager is needed.
 - Adopted: CodeRabbit for PR review (over Greptile), Claude as the preferred AI in the editor.
   In T3 Code, use Codex when Claude hits usage limits, following the fallback routing table in ~/AGENTS.md.
-  Tried and dropped, don't re-suggest: GitHub Copilot, Wakatime, Paseo, mosh/Moshi, Hex (dictation is Claude voice now), Codex cloud tasks (couldn't carry a real session).
+  Tried and dropped, don't re-suggest: GitHub Copilot, Wakatime, Paseo, mosh/Moshi, Hex (dictation is Claude voice now), Codex cloud tasks (couldn't carry a real session), agenttrail (a 3D view of one repo; can't show T3 threads, who waits on me or context, so the agent board does that).
 - Claude Code installs natively, not as a brew cask (reversed 2026-10-07: the cask fell ~60 versions behind because brew skips self-updating casks).
 - Catppuccin for the dev toolchain (terminal, editor, shell), with JetBrains Mono Nerd Font; products I build get their own design system.
 

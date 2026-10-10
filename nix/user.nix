@@ -455,6 +455,23 @@ in
     };
   };
 
+  # Agent board: read-only phone view of open T3 threads (who waits on the owner,
+  # what runs, context use, quiet runs) at http://<mac>.<tailnet>.ts.net:4790.
+  # Binds 127.0.0.1 and the Tailscale address only, never all interfaces, and
+  # writes nothing. Chosen over agenttrail on 2026-10-11
+  # (docs/agent-observability/proposal.html). Test: tests/agent_board_test.mjs.
+  launchd.agents.agent-board = {
+    enable = true;
+    config = {
+      Label = "com.myuser.agent-board";
+      ProgramArguments = [ "${pkgs.nodejs_22}/bin/node" "--no-warnings" "${config.home.homeDirectory}/dotfiles/files/bin/agent-board.mjs" ];
+      RunAtLoad = true;
+      KeepAlive = true;
+      StandardOutPath = "${config.home.homeDirectory}/Library/Logs/agent-board.log";
+      StandardErrorPath = "${config.home.homeDirectory}/Library/Logs/agent-board.log";
+    };
+  };
+
   # Agent Chrome: Google Chrome Beta (never Brave) with its own profile, which
   # agents drive through chrome-devtools-axi on 127.0.0.1:9333 without an
   # "Allow" prompt. Chrome 136+ refuses a debugging port on the default

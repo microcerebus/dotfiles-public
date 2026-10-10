@@ -117,6 +117,16 @@
       "Dynamic Wallpaper" = 1582358382;
       "Telegram" = 747648890;
       "WhatsApp" = 310633997;
+      # iOS Simulators for agents (agent-device skill, T3 Device panel).
+      # App Store Xcode 27.0 needs macOS 26.6+ and a ~3.1 GB download that
+      # expands well past that; a failed install aborts activation before
+      # Home Manager. The App Store keeps it current (mas cannot pin).
+      # One-time human steps after the first install:
+      #   sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+      #   sudo xcodebuild -license accept && sudo xcodebuild -runFirstLaunch
+      #   sudo DevToolsSecurity -enable      # no debugger auth prompt mid-run
+      #   xcodebuild -downloadPlatform iOS   # simulator runtime, several GB
+      "Xcode" = 497799835;
     };
 
     taps = [

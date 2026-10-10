@@ -1,0 +1,225 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>agenttrail trial and an agent board proposal</title>
+<style>
+  /* Catppuccin Mocha with JetBrains Mono, as in docs/term-wiki.html (AGENTS.md theme rule). No external assets. */
+  :root{
+    --base:#1e1e2e; --mantle:#181825; --crust:#11111b;
+    --surface0:#313244; --surface1:#45475a; --surface2:#585b70;
+    --overlay0:#6c7086; --overlay1:#7f849c;
+    --text:#cdd6f4; --subtext:#a6adc8;
+    --mauve:#cba6f7; --blue:#89b4fa; --sapphire:#74c7ec; --teal:#94e2d5;
+    --green:#a6e3a1; --yellow:#f9e2af; --peach:#fab387; --red:#f38ba8;
+    --lavender:#b4befe;
+    --mono:'JetBrains Mono','JetBrainsMono Nerd Font',ui-monospace,SFMono-Regular,Menlo,monospace;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--crust);color:var(--text);font-family:var(--mono);font-size:14px;line-height:1.6;padding:0 14px 64px}
+  .wrap{max-width:980px;margin:0 auto;min-width:0}
+  header{margin:28px 0 18px}
+  h1{font-size:20px;letter-spacing:-.3px;line-height:1.35}
+  .meta{color:var(--overlay1);font-size:12px;margin-top:6px}
+  h2{font-size:15px;margin:30px 0 10px;color:var(--lavender)}
+  h3{font-size:13.5px;margin:0 0 6px}
+  p+p{margin-top:8px}
+  .card{background:var(--base);border:1px solid var(--surface0);border-radius:12px;padding:16px 18px;min-width:0}
+  .needs{border-color:var(--peach)}
+  .needs h2{margin-top:0;color:var(--peach)}
+  ol.asks{padding-left:22px}
+  ol.asks li{margin:8px 0}
+  .rec{color:var(--green);font-weight:700}
+  .verdict{font-size:15px;line-height:1.55}
+  .verdict strong{color:var(--red)}
+  .muted{color:var(--subtext)}
+  .small{font-size:12px}
+  code{background:var(--mantle);border:1px solid var(--surface0);border-radius:5px;padding:0 5px;font-size:12.5px;overflow-wrap:break-word}
+  figure{margin:0}
+  figure img{display:block;width:100%;height:auto;border-radius:10px;border:1px solid var(--surface1)}
+  figcaption{font-size:12px;color:var(--subtext);margin-top:6px}
+  .shots{display:grid;grid-template-columns:minmax(0,3fr) minmax(0,1fr);gap:14px;align-items:start}
+  @media (max-width:720px){.shots{grid-template-columns:minmax(0,1fr)}.shots figure.phone{max-width:300px}}
+  table{width:100%;border-collapse:collapse;font-size:12.5px}
+  th,td{text-align:left;vertical-align:top;padding:8px 10px;border-bottom:1px solid var(--surface0)}
+  th{color:var(--overlay1);font-weight:500}
+  td:first-child{color:var(--text);width:30%}
+  .no{color:var(--red)} .yes{color:var(--green)} .part{color:var(--yellow)}
+  .tablewrap{overflow-x:auto}
+  .grid2{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:14px}
+  @media (max-width:720px){.grid2{grid-template-columns:minmax(0,1fr)}}
+  ul.facts{list-style:none}
+  ul.facts li{padding:5px 0;border-bottom:1px dashed var(--surface0)}
+  ul.facts li:last-child{border-bottom:0}
+  ul.facts b{color:var(--sapphire);font-weight:500}
+  details{margin-top:12px}
+  summary{cursor:pointer;color:var(--blue)}
+  /* Board mockup */
+  .mock-wrap{display:grid;grid-template-columns:minmax(0,320px) minmax(0,1fr);gap:18px;align-items:start}
+  @media (max-width:720px){.mock-wrap{grid-template-columns:minmax(0,1fr)}}
+  .phone{background:var(--mantle);border:1px solid var(--surface1);border-radius:22px;padding:14px 12px 18px;min-width:0}
+  .phone .bar{display:flex;justify-content:space-between;font-size:11px;color:var(--overlay1);padding:0 4px 8px}
+  .sec{font-size:11px;letter-spacing:.6px;text-transform:uppercase;margin:12px 4px 6px;color:var(--overlay1)}
+  .sec.attn{color:var(--peach)}
+  .t{background:var(--base);border:1px solid var(--surface0);border-radius:10px;padding:9px 10px;margin-bottom:7px;min-width:0}
+  .t.attn{background:#2b2530;border-color:#5a4652}
+  .t .row{display:flex;justify-content:space-between;gap:8px;min-width:0}
+  .t .name{font-weight:700;font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+  .t .state{font-size:11px;white-space:nowrap}
+  .t .sub{font-size:11px;color:var(--subtext);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .ctx{height:5px;background:var(--surface0);border-radius:3px;margin-top:6px;overflow:hidden}
+  .ctx i{display:block;height:100%;background:var(--teal)}
+  .ctx i.warn{background:var(--yellow)} .ctx i.hot{background:var(--red)}
+  .flow{width:100%;height:auto}
+  .flow text{font-family:var(--mono);fill:var(--text);font-size:12px}
+  .flow .lbl{fill:var(--subtext);font-size:10.5px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>agenttrail for our workflow: trial result, and what I'd set up instead</h1>
+  <div class="meta">Sun 11 Oct 2026, 03:02 SGT · dotfiles worktree <code>feat/agenttrail-observability</code> · nothing installed yet</div>
+</header>
+
+<section class="card" id="built" style="border-color:var(--green);margin-bottom:14px">
+  <h2 style="margin-top:0;color:var(--green)">Update, 03:30 SGT: approved and built</h2>
+  <p>the owner chose all three recommendations at 03:04. The board is <code>files/bin/agent-board.mjs</code>, with a launchd agent in <code>nix/user.nix</code> and five fixture tests in <code>tests/agent_board_test.mjs</code>. It goes live at port 4790 on the Mac's MagicDNS name after the next <code>rebuild</code>.</p>
+  <p class="small muted">Below is the real board at 03:26 on live T3 data, shown in the agent Chrome. Thread titles, repos and branches are replaced with placeholders; states, timings, context and models are real. Measured cost: about 0.15% CPU and 66 MB of memory over a minute of 15-second refreshes, 14 ms per page.</p>
+  <div class="shots" style="margin-top:12px">
+    <figure><img src="board-desktop.jpg" alt="Agent board at desktop size with placeholder titles"><figcaption>Desktop</figcaption></figure>
+    <figure class="phone"><img src="board-phone.jpg" alt="Agent board at phone size with placeholder titles"><figcaption>Phone</figcaption></figure>
+  </div>
+</section>
+
+<section class="card needs" id="needs-myuser">
+  <h2>Needs the owner</h2>
+  <ol class="asks">
+    <li>Run <code>rebuild</code> once this branch is merged to main. That starts the board's launchd agent.</li>
+    <li>Say "push" when you want it on origin.</li>
+  </ol>
+  <p class="small muted" style="margin-top:8px">Decided at 03:04: build the board instead of agenttrail, bind it to the Tailscale address, and add agenttrail to the OPINIONS "tried and dropped" line.</p>
+</section>
+
+<h2>Verdict</h2>
+<div class="card verdict">
+  <p><strong>No to agenttrail.</strong> Its Kitchen view is carefully built, stays local, and passed every safety check I ran. It answers a different question, though: what roles and todos exist inside one repo, drawn as a 3D cooking game. It cannot tell you which T3 threads are running, which are waiting on you, or how full their context is.</p>
+  <p class="muted small">The Map view is worse for us. It runs one daemon per repo and needs a PLAN.md convention. Any web page you visit can trigger its setup endpoint, which edits CLAUDE.md and AGENTS.md and installs hooks.</p>
+</div>
+
+<h2>What the trial showed</h2>
+<div class="shots">
+  <figure>
+    <img src="kitchen-all-worktrees.jpg" alt="Agenttrail Kitchen watching all worktrees: 4 chefs, 57 sessions, 1 working">
+    <figcaption>Live, pointed at <code>~/.t3/worktrees</code>. 57 Claude sessions from the last 24 hours collapse into 4 inferred "chefs": "Head chef · Claude +22", "Researcher · Claude +33". No thread names, no lanes, no context.</figcaption>
+  </figure>
+  <figure class="phone">
+    <img src="kitchen-phone.jpg" alt="Kitchen example mode at iPhone size">
+    <figcaption>Example mode at iPhone size. The todo rail scrolls sideways, controls wrap, and a WebGL scene runs the whole time.</figcaption>
+  </figure>
+</div>
+
+<div class="card" style="margin-top:14px">
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>What you need</th><th>agenttrail Kitchen</th><th>Proposed agent board</th></tr></thead>
+    <tbody>
+      <tr><td>Which agents run, by thread and lane</td><td class="no">Role chefs per repo. A session shows as "Claude", with no T3 title.</td><td class="yes">T3 thread title, lane, branch and model</td></tr>
+      <tr><td>Waiting on you</td><td class="no">An agent waiting on an input card shows as "working". Hooks in every repo would help only partly.</td><td class="yes">Pending T3 input cards and approvals, listed first</td></tr>
+      <tr><td>Stuck</td><td class="no">Not tracked</td><td class="yes">Running, but no log write for 10+ minutes</td></tr>
+      <tr><td>Context size</td><td class="no">Not tracked</td><td class="yes">T3 already records used and max tokens per thread</td></tr>
+      <tr><td>Usage windows (5-hour, weekly)</td><td class="no">Not tracked</td><td class="part">Not in v1. T3 sessions expose no local source; see risks.</td></tr>
+      <tr><td>Many worktrees</td><td class="no">12 roots at most. We have 53 worktrees, and orchestrators run from <code>~/.t3/scratch</code>.</td><td class="yes">Every open T3 thread, wherever it runs</td></tr>
+      <tr><td>From the phone</td><td class="no">Hardcoded to 127.0.0.1, and it rejects any proxied Host header</td><td class="yes">Plain list page at a MagicDNS URL</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p class="small muted" style="margin-top:10px">What already exists: T3 shows run state one thread at a time, and <code>~/orchestrator/status.mjs</code> prints running threads and pending approvals as Markdown for the orchestrator. Neither puts every thread, with context and staleness, on one phone screen. <code>docs/agent-team.md</code> already plans exactly that as <code>orch status</code>; it hasn't been built. Other tools I checked: disler's hooks dashboard (no license, untouched since February, needs hooks in every repo) and ccusage (good token reports, but a CLI, not a board).</p>
+</div>
+
+<h2>Proposal: the agent board</h2>
+<div class="mock-wrap">
+  <div class="phone" aria-label="Mockup of the agent board on a phone, with invented data">
+    <div class="bar"><span>agent board</span><span>updated 12s ago</span></div>
+    <div class="sec attn">Needs you · 2</div>
+    <div class="t attn"><div class="row"><span class="name">job-tracker · UI owner</span><span class="state" style="color:var(--peach)">input card</span></div><div class="sub">ui-polish-list · Opus 5.5 · asked 6 min ago</div></div>
+    <div class="t attn"><div class="row"><span class="name">dotfiles · macOS update</span><span class="state" style="color:var(--peach)">approval</span></div><div class="sub">macos-26-7-1 · Opus 5.5 · 2 min ago</div></div>
+    <div class="sec">Running · 3</div>
+    <div class="t"><div class="row"><span class="name">orchestrator 6</span><span class="state" style="color:var(--green)">Bash · 20s</span></div><div class="sub">scratch · Opus 5.5 · 182k / 1M</div><div class="ctx"><i style="width:18%"></i></div></div>
+    <div class="t"><div class="row"><span class="name">job-tracker · reviewer</span><span class="state" style="color:var(--green)">Read · 1 min</span></div><div class="sub">review-pr-212 · Fable 5.1 · 310k / 1M</div><div class="ctx"><i class="warn" style="width:31%"></i></div></div>
+    <div class="t"><div class="row"><span class="name">interviews · drill worker</span><span class="state" style="color:var(--red)">stuck · 14 min</span></div><div class="sub">system-design-3 · Opus 5.5 · 96k / 1M</div><div class="ctx"><i style="width:10%"></i></div></div>
+    <div class="sec">Idle · 9</div>
+    <div class="t"><div class="row"><span class="name">job-tracker · coordinator</span><span class="state muted">done 25 min ago</span></div><div class="sub">main · Opus 5.5 · 240k / 1M</div></div>
+  </div>
+  <div class="card">
+    <h3>What it is</h3>
+    <ul class="facts">
+      <li><b>One script.</b> <code>scripts/agent-board</code>, Node 22 from the flake, no npm packages. It uses <code>node:sqlite</code> and <code>node:http</code>.</li>
+      <li><b>Read-only.</b> It opens T3's <code>statev2.sqlite</code> read-only and selects explicit columns, never the webhook token or secret. It tails Claude logs only to get the last activity time, or context size when T3 has none. It writes nothing anywhere.</li>
+      <li><b>Runs as</b> a launchd agent declared in <code>nix/user.nix</code>, next to the agent Chrome. It starts at login and restarts if it dies. It is live after your next <code>rebuild</code>.</li>
+      <li><b>Network.</b> It listens on 127.0.0.1 and the Tailscale 100.x address only, never all interfaces. It answers GET only and accepts only the MagicDNS and loopback Host names.</li>
+      <li><b>Hooks and settings:</b> none.</li>
+      <li><b>Pinning:</b> there's no third-party code to pin. It moves with the flake's Node, and the daily updater stays as it is.</li>
+      <li><b>Cost:</b> it renders on request, so idle CPU is about zero, with tens of MB of memory and no disk writes. I'll measure the real numbers before reporting done.</li>
+    </ul>
+    <details>
+      <summary>How the data flows</summary>
+      <svg class="flow" viewBox="0 0 560 170" role="img" aria-label="T3 state and Claude logs feed the agent board, which serves the phone and the orchestrator">
+        <rect x="6" y="14" width="176" height="52" rx="8" fill="#313244" stroke="#585b70"/>
+        <text x="18" y="36">T3 statev2.sqlite</text><text class="lbl" x="18" y="54">threads, runs, input cards</text>
+        <rect x="6" y="100" width="176" height="52" rx="8" fill="#313244" stroke="#585b70"/>
+        <text x="18" y="122">~/.claude/projects</text><text class="lbl" x="18" y="140">last activity, fallback context</text>
+        <rect x="222" y="56" width="140" height="56" rx="8" fill="#45475a" stroke="#b4befe"/>
+        <text x="238" y="80">agent-board</text><text class="lbl" x="238" y="98">read-only, no deps</text>
+        <rect x="402" y="14" width="152" height="52" rx="8" fill="#313244" stroke="#a6e3a1"/>
+        <text x="414" y="36">phone (MagicDNS)</text><text class="lbl" x="414" y="54">HTML list, auto-refresh</text>
+        <rect x="402" y="100" width="152" height="52" rx="8" fill="#313244" stroke="#585b70" stroke-dasharray="4 3"/>
+        <text x="414" y="122">orchestrator</text><text class="lbl" x="414" y="140">later: same data as orch status</text>
+        <path d="M182 40 L222 74 M182 126 L222 96 M362 74 L402 40 M362 96 L402 126" stroke="#7f849c" stroke-width="1.5" fill="none"/>
+      </svg>
+    </details>
+  </div>
+</div>
+
+<div class="grid2" style="margin-top:14px">
+  <div class="card">
+    <h3>Risks</h3>
+    <ul class="facts small">
+      <li>T3's database schema is internal and can change on any T3 update. The board shows a plain "schema changed" error instead of wrong data, and a fixture test pins the queries.</li>
+      <li>Every device on the tailnet can read thread titles and branches. That means only your devices, which I'll confirm before it goes live.</li>
+      <li>Usage windows stay out until there's a real local source. Only the CLI statusline gets them, and T3 sessions don't run it.</li>
+    </ul>
+  </div>
+  <div class="card">
+    <h3>Done means</h3>
+    <ul class="facts small">
+      <li>A fixture test (<code>node --test</code>) passes with a sample database and log.</li>
+      <li>A phone-viewport screenshot of the live MagicDNS page shows real running threads. It stays local, because it contains thread titles.</li>
+      <li>Measured CPU and memory over 10 minutes.</li>
+      <li>Committed the same day. Only you run <code>rebuild</code>, and I push only after you say "push".</li>
+    </ul>
+  </div>
+</div>
+
+<h2>Audit record</h2>
+<div class="card">
+  <ul class="facts small">
+    <li><b>Versions.</b> <code>agenttrail-kitchen@0.1.0-alpha.3</code> and <code>agenttrail@0.2.0</code>. Both npm tarballs match registry integrity. Source read at commit <code>e4ba2da</code>.</li>
+    <li><b>Project health.</b> MIT license, one maintainer, last commit 9 Sep 2026, 6 open issues. Kitchen is labeled experimental.</li>
+    <li><b>Network.</b> It only talks to its own ports on 127.0.0.1. No telemetry, CDN or update check, and the page's CSP limits it to <code>connect-src 'self'</code>. While it ran, it held no sockets except its listener.</li>
+    <li><b>Bundle.</b> I rebuilt Kitchen's 680 KB <code>app.js</code> from the pinned source and lockfile, and it came out byte-identical, fonts included.</li>
+    <li><b>Ports.</b> Kitchen uses 4780 and up, Map 5330 and up, both bound to 127.0.0.1 with no flag to change it. Kitchen also rejects requests whose Host isn't 127.0.0.1 or localhost.</li>
+    <li><b>Reads.</b> Every 5 seconds it reads the first 64 KB of up to 240 logs changed in the last day, under <code>~/.claude/projects</code> and <code>~/.codex/sessions</code>. Full event bodies, the last 2 MiB, only for watched folders. It skips subagent logs.</li>
+    <li><b>Writes.</b> Kitchen writes <code>~/.agent-office/</code> (mode 0600), plus repo hooks only through "Connect agents". Map writes <code>~/.agenttrail/</code>, and its <code>init</code> writes PLAN.md, CLAUDE.md, AGENTS.md, .gitignore and hooks.</li>
+    <li><b>Browser.</b> Both call macOS <code>open</code>, which means the default browser, unless given <code>--no-open</code>. The trial used <code>--no-open</code> and a logging stub for <code>open</code>, which was never called. I viewed it only in the agent Chrome.</li>
+    <li><b>Security.</b> Kitchen checks Host and Origin, needs a token for every POST, and sends only allowlisted fields. Map checks nothing: <code>POST /setup</code> and <code>/spawn</code> accept requests from any web page.</li>
+    <li><b>Cost.</b> With 57 sessions watched: about 2% CPU on average, 108 MB of memory, and a 940 KB package.</li>
+    <li><b>Footprint.</b> State lived in <code>/tmp</code>. Nothing was left in my home folder or any repo, and no hooks or settings changed.</li>
+  </ul>
+</div>
+
+</div>
+</body>
+</html>
