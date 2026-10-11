@@ -1,0 +1,173 @@
+#!/usr/bin/env bash
+# telegram-alert: send the owner one plain-text Telegram message from his alert bot.
+# It is the backup channel for alerts that must reach him at any hour: T3's
+# PushNotification is skipped while his session counts as active, so on
+# 11 Oct 2026 two merge-blocker alerts came back "not sent".
+#
+# The secrets are two generic passwords in the login keychain:
+#   telegram-alert-bot   the bot token from @BotFather, stored by the owner:
+#                        security add-generic-password -a "$USER" -s telegram-alert-bot -w
+#   telegram-alert-chat  the chat to message, stored by `telegram-alert --setup`
+#                        after he sends /start to the bot
+# Neither is printed or put on a command line, where `ps` could show it: the
+# token reaches curl in a config on stdin, the chat ID reaches `security` as a
+# `security -i` command on stdin, and error text is redacted before printing.
+#
+# Usage: telegram-alert [--] "text"   send one plain-text message (no markup)
+#        telegram-alert --setup       link the chat that sent /start to the bot
+# Exit:  0 sent or linked; 1 the Bot API failed or was unreachable; 2 usage;
+#        3 not set up (keychain item missing or malformed, or no /start found)
+# Env:   TELEGRAM_ALERT_API  Bot API base URL: https://api.telegram.org (the
+#                            default) or a loopback http:// URL for tests. Any
+#                            other host would receive the token, so it is refused.
+# Tests: tests/telegram_alert_test.mjs
+
+# Tracing would print the token, and an inherited SHELLOPTS=xtrace, a BASH_ENV
+# with set -x, or `bash -x telegram-alert` turn it on before this line runs.
+set +x
+set -uo pipefail
+api="${TELEGRAM_ALERT_API:-https://api.telegram.org}"
+api="${api%/}"
+token_item=telegram-alert-bot
+chat_item=telegram-alert-chat
+linked_text="telegram-alert linked this chat. Agent alerts will arrive here."
+token="" chat="" body=""
+
+usage() {
+  cat <<'EOF'
+Usage: telegram-alert [--] "text"   send one plain-text message to the owner
+       telegram-alert --setup       link the chat that sent /start to the bot
+Keep messages free of personal data: no names, emails, tokens or booking refs.
+EOF
+}
+
+# die <exit> <message>: print the message with the token and chat redacted, then exit.
+die() {
+  local code="$1" message="$2"
+  if [ -n "$token" ]; then
+    message="${message//"$token"/[redacted]}"
+    message="${message//"${token#*:}"/[redacted]}"
+  fi
+  if [ -n "$chat" ]; then
+    message="${message//"$chat"/[redacted]}"
+  fi
+  printf 'telegram-alert: %s\n' "$message" >&2
+  exit "$code"
+}
+
+# keychain <item> <var>: read a generic password from the login keychain into
+# var. Returns 1 when the item does not exist; dies on any other failure.
+keychain() {
+  local value status
+  value="$(security find-generic-password -s "$1" -w 2>/dev/null)"
+  status=$?
+  case "$status" in
+    0) printf -v "$2" '%s' "$value" ;;
+    44) return 1 ;;
+    *) die 3 "could not read keychain item $1 (security exit $status). Unlock the login keychain; if it is unlocked, the item was made outside \`security add-generic-password\` and needs recreating with it." ;;
+  esac
+}
+
+load_token() {
+  keychain "$token_item" token || die 3 "no bot token in the login keychain. Create the bot with @BotFather, then store its token (security prompts; nothing is echoed):
+  security add-generic-password -a \"\$USER\" -s $token_item -w"
+  if ! [[ $token =~ ^[0-9]+:[A-Za-z0-9_-]+$ ]]; then
+    token=""
+    die 3 "keychain item $token_item does not look like a bot token (digits, a colon, then letters). Replace it:
+  security add-generic-password -U -a \"\$USER\" -s $token_item -w"
+  fi
+}
+
+load_chat() {
+  keychain "$chat_item" chat || die 3 "no chat linked. Send /start to the bot in Telegram, then run: telegram-alert --setup"
+  if ! [[ $chat =~ ^-?[0-9]+$ ]]; then
+    chat=""
+    die 3 "keychain item $chat_item does not hold a chat ID. Send /start to the bot again, then run: telegram-alert --setup"
+  fi
+}
+
+# call <method> <config> [curl args...]: call a Bot API method. The URL (which
+# carries the token) and any extra config lines go to curl on stdin, never in
+# its argv. Sets body; dies unless the reply is HTTP 200 with "ok": true.
+call() {
+  local method="$1" config="$2" response status http description line=""
+  shift 2
+  response="$(printf 'url = "%s/bot%s/%s"\n%s\n' "$api" "$token" "$method" "$config" \
+    | curl -q --silent --show-error --connect-timeout 10 --max-time 30 \
+        --config - --write-out '\n%{http_code}' "$@" 2>"$err")"
+  status=$?
+  if [ "$status" != 0 ]; then
+    IFS= read -r line <"$err"
+    die 1 "could not reach the Bot API: ${line:-curl exit $status}"
+  fi
+  http="${response##*$'\n'}"
+  body="${response%$'\n'*}"
+  if [ "$http" != 200 ] || [ "$(printf '%s' "$body" | jq -r '.ok' 2>/dev/null)" != true ]; then
+    description="$(printf '%s' "$body" | jq -r 'if type == "object" then .description // empty else empty end' 2>/dev/null)"
+    die 1 "$method failed: HTTP $http${description:+ ($description)}"
+  fi
+}
+
+# post <text>: send text to the chat as plain text (no parse_mode).
+post() {
+  call sendMessage "data-urlencode = \"chat_id=$chat\"" --data-urlencode "text=$1"
+}
+
+send() {
+  load_token
+  load_chat
+  post "$1"
+  echo "telegram-alert: sent"
+}
+
+# setup: link the one private chat that sent /start in the bot's recent
+# updates. It messages that chat before storing it, so a stranger's /start
+# could not be linked without the owner missing the confirmation; nothing is stored
+# if the message fails. Rerunning converges: the item is replaced, not duplicated.
+setup() {
+  local chats id ids=() line=""
+  load_token
+  call getUpdates ""
+  chats="$(printf '%s' "$body" | jq -r '[.result[]? | .message // empty
+      | select(.chat.type == "private" and ((.text // "") | test("^/start(\\s|@|$)")))
+      | .chat.id] | unique | .[]')" || die 1 "getUpdates returned an unexpected reply"
+  while IFS= read -r id; do
+    [ -n "$id" ] && ids+=("$id")
+  done <<<"$chats"
+  case "${#ids[@]}" in
+    0) die 3 "no /start in the bot's recent updates. Open the bot in Telegram, send /start, then rerun telegram-alert --setup (Telegram keeps updates for 24 hours)." ;;
+    1) ;;
+    *) die 3 "${#ids[@]} chats sent /start to the bot in the last 24 hours; refusing to guess which one is the owner's." ;;
+  esac
+  [[ ${ids[0]} =~ ^[0-9]+$ ]] || die 1 "getUpdates returned a chat ID that is not a number"
+  chat="${ids[0]}"
+  post "$linked_text"
+  # One command per `security -i` run: it exits with the last command's status.
+  if ! printf 'add-generic-password -U -a "%s" -s %s -w %s\n' "${USER:-$(id -un)}" "$chat_item" "$chat" \
+      | security -i >/dev/null 2>"$err"; then
+    IFS= read -r line <"$err"
+    die 3 "could not store keychain item $chat_item: ${line:-security failed}"
+  fi
+  echo "telegram-alert: linked the chat that sent /start and sent it a confirmation (keychain item $chat_item)"
+}
+
+mode=send
+case "${1-}" in
+  --setup) mode=setup; shift ;;
+  -h|--help) usage; exit 0 ;;
+  --) shift ;;
+  -?*) usage >&2; exit 2 ;;
+esac
+if [ "$mode" = setup ]; then
+  [ $# = 0 ] || { usage >&2; exit 2; }
+elif [ $# != 1 ] || [ -z "$1" ]; then
+  usage >&2
+  exit 2
+fi
+[[ $api =~ ^(https://api\.telegram\.org|http://(127\.0\.0\.1|localhost)(:[0-9]+)?)$ ]] ||
+  die 2 "TELEGRAM_ALERT_API must be https://api.telegram.org or a loopback http:// URL"
+command -v jq >/dev/null || die 1 "jq is not on PATH"
+err="$(mktemp)" || exit 1
+trap 'rm -f "$err"' EXIT
+
+if [ "$mode" = setup ]; then setup; else send "$1"; fi
