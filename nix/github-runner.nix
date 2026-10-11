@@ -8,12 +8,19 @@
 # which Determinate Nix rules out (AGENTS.md), so this covers the same ground.
 #
 # Isolation: a hidden, non-admin user owns everything under /var/lib/github-runner.
-# On every start the service checks that this user cannot read the owner's
-# home, ~/.ssh or keychains, use sudo, or act as a trusted Nix user, and runs
-# no jobs if any of that fails. After every job a hook wipes the job's HOME,
-# TMPDIR and work dir, the way a hosted runner starts each job on a fresh VM.
-# Not covered: any local user can reach localhost ports, including the agent
-# Chrome's DevTools port.
+# It cannot list or enter the owner's home, whatever groups macOS puts it in:
+# a deny ACL that every activation re-applies. pf lets it reach no other
+# user's listener on this Mac (the agent Chrome's DevTools, T3 Code, Lavish,
+# anything started later) and nothing on the LAN or tailnet but DNS:
+# nix/github-runner.pf, kept loaded by the github-runner-firewall daemon. On
+# every start and before every job the runner proves all that, plus no sudo
+# and no trusted Nix, and runs no jobs if any of it fails. After every job a
+# hook wipes the job's HOME, TMPDIR and work dir, the way a hosted runner
+# starts each job on a fresh VM.
+# Not covered: Unix sockets and world-readable files outside the owner's home
+# keep their own modes (a few sockets in /tmp are world-writable).
+# Firewall off by hand, if it ever gets in the owner's way:
+#   sudo pfctl -a com.apple/github-runner -F rules
 #
 # Registration: run `github-runner-register` as the owner, once after the first
 # rebuild, and again if GitHub drops the runner (14 days offline). It mints a
@@ -21,7 +28,7 @@
 # it and deletes it. Lifecycle and tests: scripts/github-runner,
 # tests/github_runner_test.sh.
 #
-# Log: /var/log/github-runner/github-runner.log (readable by admin users).
+# Logs: /var/log/github-runner/{github-runner,firewall}.log (readable by admin users).
 { lib, pkgs, username, hostname, ... }:
 
 let
@@ -30,6 +37,8 @@ let
   root = "/var/lib/github-runner";
   inbox = "${root}/inbox";
   logDir = "/var/log/github-runner";
+  pfRules = pkgs.writeText "github-runner.pf"
+    (builtins.replaceStrings [ "@uid@" ] [ (toString id) ] (builtins.readFile ./github-runner.pf));
 
   conf = pkgs.writeText "github-runner.conf" ''
     url=https://github.com/microcerebus/job-tracker
@@ -42,9 +51,15 @@ let
     tmp=${root}/tmp
     inbox=${inbox}
     protected=/Users/${username}
+    anchor=com.apple/github-runner
+    rules=${pfRules}
+    loaded=/var/run/github-runner-firewall.loaded
   '';
   script = pkgs.writeShellScript "github-runner" (builtins.readFile ../scripts/github-runner);
   # The runner runs hooks as `bash -e <file>`, and only files named *.sh.
+  jobStarted = pkgs.writeScript "github-runner-job-started.sh" ''
+    exec ${script} job-started ${conf}
+  '';
   jobCompleted = pkgs.writeScript "github-runner-job-completed.sh" ''
     exec ${script} job-completed ${conf}
   '';
@@ -87,6 +102,14 @@ in
     chmod 0770 ${inbox}
     chown ${user}:admin ${logDir}
     chmod 0750 ${logDir}
+    # The owner's home is 750 with group staff, and ~/.t3 and ~/orchestrator
+    # are world-readable below it. The runner is not in staff today, but this
+    # holds whatever groups it lands in. Replace, never stack, the entry.
+    # /bin/chmod: coreutils' chmod, first on PATH here, knows no ACLs.
+    ace="user:${user} deny list,search,add_file,add_subdirectory,delete_child,readattr,writeattr,readextattr,writeextattr,readsecurity,writesecurity,chown,delete"
+    /bin/chmod -a "$ace" /Users/${username} 2>/dev/null || true
+    /bin/chmod +a "$ace" /Users/${username} \
+      || echo "warning: could not deny ${user} the home directory; the runner's check will refuse jobs if it can enter it" >&2
   '';
 
   launchd.daemons.github-runner = {
@@ -107,6 +130,7 @@ in
       # nixpkgs ships the runner with Node 24 only (Node 20 is EOL), so
       # node20 actions such as checkout@v4 and setup-node@v4 run on it.
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24 = "true";
+      ACTIONS_RUNNER_HOOK_JOB_STARTED = "${jobStarted}";
       ACTIONS_RUNNER_HOOK_JOB_COMPLETED = "${jobCompleted}";
     };
     serviceConfig = {
@@ -124,6 +148,21 @@ in
       ProcessType = "Interactive"; # no background CPU and I/O throttling for builds
       StandardOutPath = "${logDir}/github-runner.log";
       StandardErrorPath = "${logDir}/github-runner.log";
+    };
+  };
+
+  # As root, every minute: load nix/github-runner.pf into its anchor and keep
+  # pf enabled, so a reboot, a flush or `pfctl -d` heals within a minute.
+  # Logs only what it changes.
+  launchd.daemons.github-runner-firewall = {
+    command = "${script} firewall ${conf}";
+    path = [ "/usr/bin" "/bin" "/usr/sbin" "/sbin" ];
+    serviceConfig = {
+      Label = "com.${username}.github-runner-firewall";
+      RunAtLoad = true;
+      StartInterval = 60;
+      StandardOutPath = "${logDir}/firewall.log";
+      StandardErrorPath = "${logDir}/firewall.log";
     };
   };
 }

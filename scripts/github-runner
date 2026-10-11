@@ -6,21 +6,29 @@
 #   start          launchd entry point, as the runner user: refuse to run if
 #                  the isolation check fails, wipe all job state, register if a
 #                  token is queued, then run the listener.
+#   job-started    runner hook before every job: the isolation check again, so
+#                  a job fails rather than run without it.
 #   job-completed  runner hook after every job: wipe everything the job wrote,
 #                  so one PR's run cannot leave state for the next.
-#   check          isolation check: the runner user must not read the owner's
-#                  home, ~/.ssh or keychains, use sudo, or be a trusted Nix user.
+#   check          isolation check: the runner user must not list or enter the
+#                  owner's home, use sudo, be a trusted Nix user, or connect to
+#                  any other user's listener on this Mac, and must still reach
+#                  its own servers on loopback.
+#   firewall       launchd entry point, as root, every minute: keep the pf
+#                  rules behind that last part (nix/github-runner.pf) loaded
+#                  and pf enabled.
 #   register       run by the owner (github-runner-register): mint a one-hour
 #                  registration token with gh and queue it for the runner,
 #                  never printing it.
 #
 # <config> is the store file nix/github-runner.nix writes (url name labels bin
-# state work home tmp inbox protected). Paths come from it, never from the
-# environment: a job can rewrite HOME or TMPDIR for later steps through
-# GITHUB_ENV, and the completed hook must not follow that.
+# state work home tmp inbox protected anchor rules loaded). Paths come from it,
+# never from the environment: a job can rewrite HOME or TMPDIR for later steps
+# through GITHUB_ENV, and the completed hook must not follow that.
 # Tests: tests/github_runner_test.sh
+# shellcheck disable=SC2154 # url, name and the paths come from <config>
 set -euo pipefail
-[ $# = 2 ] || { echo "usage: github-runner start|job-completed|check|register <config>" >&2; exit 64; }
+[ $# = 2 ] || { echo "usage: github-runner start|job-started|job-completed|check|firewall|register <config>" >&2; exit 64; }
 cmd="$1"
 # shellcheck source=/dev/null
 . "$2"
@@ -40,6 +48,62 @@ empty() {
   done < <(/usr/bin/find "$dir" -mindepth 1 -maxdepth 1 ${args[@]+"${args[@]}"} -print0)
 }
 
+# listeners: "address port" for every TCP listener of another user on this
+# Mac. netstat sees every user's sockets; lsof, unprivileged, sees only this
+# user's, whose ports are left out. A wildcard listener is probed on loopback,
+# which is also the path (lo0) to this Mac's LAN addresses.
+listeners() {
+  local own
+  # One line: BSD awk rejects a -v value with a newline in it.
+  own="$(lsof -nP -a -u "$(id -u)" -iTCP -sTCP:LISTEN -Fn 2>/dev/null | sed -n 's/^n.*://p' | tr '\n' ' ')" || true
+  netstat -an -p tcp | awk -v own="$own" '
+    BEGIN { n = split(own, ports, " "); for (i = 1; i <= n; i++) mine[ports[i]] = 1 }
+    $6 == "LISTEN" && $1 ~ /^tcp/ {
+      dot = match($4, /\.[^.]*$/)
+      addr = substr($4, 1, dot - 1)
+      port = substr($4, dot + 1)
+      if (port in mine) next
+      if (addr != "*") { found(addr, port); next }
+      if ($1 ~ /4/) found("127.0.0.1", port)
+      if ($1 ~ /6/) found("::1", port)
+    }
+    function found(addr, port) { if (!seen[addr " " port]++) print addr, port }'
+}
+
+# unreachable_listeners: no listener of another user may accept a connection
+# from the runner user. Finding none to probe fails too: there is always at
+# least launchd's sshd, so an empty list means the probe itself broke.
+unreachable_listeners() {
+  local addr port target probed=() reached=()
+  while read -r addr port; do
+    case "$addr" in *:*) target="[$addr]:$port" ;; *) target="$addr:$port" ;; esac
+    probed+=("$target")
+    if nc -z -G 2 -w 2 "$addr" "$port" >/dev/null 2>&1; then reached+=("$target"); fi
+  done < <(listeners)
+  if [ "${#probed[@]}" = 0 ]; then
+    echo "isolation FAILED: found no listeners of other users to probe" >&2
+    return 1
+  fi
+  if [ "${#reached[@]}" != 0 ]; then
+    echo "isolation FAILED: the runner user can connect to listeners of other users: ${reached[*]}" >&2
+    return 1
+  fi
+  echo "isolation ok: cannot connect to ${#probed[@]} listeners of other users: ${probed[*]}"
+}
+
+# own_servers: the runner's own test servers must still work, on both
+# loopback addresses.
+own_servers() {
+  python3 -c '
+import socket
+for family, host in ((socket.AF_INET, "127.0.0.1"), (socket.AF_INET6, "::1")):
+    with socket.socket(family) as server:
+        server.bind((host, 0))
+        server.listen()
+        socket.create_connection(server.getsockname()[:2], timeout=2).close()
+'
+}
+
 check() {
   local failed=0
   # deny <what> <command...>: the command must fail for the runner user.
@@ -53,12 +117,25 @@ check() {
       echo "isolation ok: cannot $what"
     fi
   }
-  nix_trusted() { nix store info --json 2>/dev/null | grep -Eq '"trusted": ?(true|1)'; }
+  enter() ( cd "$1" )
+  # Read before matching: grep -q exiting early would fail nix with SIGPIPE,
+  # and pipefail would turn a trusted user into "ok".
+  nix_trusted() {
+    local info
+    info="$(nix store info --json 2>/dev/null)" && grep -Eq '"trusted": ?(true|1)' <<<"$info"
+  }
   deny "list $protected" ls "$protected"
-  deny "read $protected/.ssh" ls "$protected/.ssh"
-  deny "read $protected/Library/Keychains" ls "$protected/Library/Keychains"
+  # Entering is what reaching anything below takes, world-readable or not.
+  deny "enter $protected" enter "$protected"
   deny "run sudo" sudo -n true
   deny "act as a trusted Nix user" nix_trusted
+  unreachable_listeners || failed=1
+  if own_servers >/dev/null 2>&1; then
+    echo "isolation ok: can still reach its own servers on 127.0.0.1 and [::1]"
+  else
+    echo "isolation FAILED: the runner user cannot reach its own servers on 127.0.0.1 and [::1]" >&2
+    failed=1
+  fi
   [ "$failed" = 0 ] || { echo "refusing to run jobs until this is fixed" >&2; return 1; }
 }
 
@@ -104,6 +181,9 @@ case "$cmd" in
     fi
     exec "$bin/Runner.Listener" run --startuptype service
     ;;
+  job-started)
+    check
+    ;;
   job-completed)
     PATH=/usr/bin:/bin
     empty "$home"
@@ -114,6 +194,29 @@ case "$cmd" in
     ;;
   check)
     check
+    ;;
+  firewall)
+    # Loads the rules into $anchor, a child of the com.apple anchor that the
+    # stock /etc/pf.conf evaluates, and never touches the main ruleset, which
+    # system services add anchors to at runtime. Says nothing unless it
+    # changes something.
+    main="$(pfctl -s rules 2>/dev/null)" || true
+    if ! grep -qF 'anchor "com.apple/*"' <<<"$main"; then
+      echo "$(date '+%F %T') pf's main ruleset has no com.apple anchor (still booting?); not loading" >&2
+      exit 1
+    fi
+    current="$(pfctl -a "$anchor" -s rules 2>/dev/null)" || true
+    if [ -z "$current" ] || [ "$(cat "$loaded" 2>/dev/null)" != "$rules" ]; then
+      pfctl -q -a "$anchor" -f "$rules"
+      echo "$rules" >"$loaded"
+      echo "$(date '+%F %T') loaded $rules into pf anchor $anchor"
+    fi
+    info="$(pfctl -s info 2>/dev/null)" || true
+    if ! grep -q '^Status: Enabled' <<<"$info"; then
+      # Takes an enable reference, as /etc/pf.conf asks every pf user to.
+      pfctl -q -E
+      echo "$(date '+%F %T') enabled pf"
+    fi
     ;;
   register)
     if [ ! -d "$inbox" ] || [ ! -w "$inbox" ]; then

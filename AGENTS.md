@@ -180,3 +180,10 @@ tool-adoption backlog; check it before adding workflow tooling).
   admin prompt: `rebuild` must run in a GUI session, not over SSH (nix-darwin
   aborts there). Registration needs no sudo: `github-runner-register` queues a
   one-hour token the service consumes (2026-10-11).
+- pf: never reload the main ruleset (`pfctl -f /etc/pf.conf`); system services
+  add anchors to it at runtime. Load a child of the `com.apple` anchor instead
+  (`pfctl -a com.apple/<name> -f`), which Apple's pf.conf already evaluates.
+  A pf tag set on the way out survives lo0 back in, which is how
+  `nix/github-runner.pf` lets the runner reach only its own listeners. It does
+  not survive Tailscale's utun, and this Mac's tailnet address routes there,
+  not via lo0 (2026-10-11).
