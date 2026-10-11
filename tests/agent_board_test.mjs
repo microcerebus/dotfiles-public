@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { hostAllowed, render, snapshot, tailnetAddress } from '../files/bin/agent-board.mjs';
+import { hostAllowed, readUpdates, render, snapshot, tailnetAddress } from '../files/bin/agent-board.mjs';
 
 const NOW = Date.parse('2026-10-11T03:30:00Z');
 const iso = (minutesAgo) => new Date(NOW - minutesAgo * 60_000).toISOString();
@@ -75,7 +75,15 @@ function fixture() {
     assistant([{ type: 'text', text: 'checking' }], { input_tokens: 10, cache_creation_input_tokens: 2_000, cache_read_input_tokens: 150_000 }),
     assistant([{ type: 'tool_use', name: 'Edit' }], { input_tokens: 5, cache_creation_input_tokens: 1_000, cache_read_input_tokens: 160_000 }),
   ], 14);
-  return { dbPath, logsDir };
+  return { dbPath, logsDir, autoupdate: updater(HEALTHY) };
+}
+
+// updater(output, exit): a stand-in for `dotfiles-autoupdate status` that prints `output`.
+const HEALTHY = 'info: sync: macOS 27.0.1 is available (a major upgrade, not planned)\nok: sync: last succeeded 2 h ago\n';
+function updater(output, exit = 0) {
+  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'agent-board-updater-')), 'status');
+  fs.writeFileSync(file, `printf '%s' '${output.replaceAll("'", "'\\''")}'\nexit ${exit}\n`);
+  return file;
 }
 
 test('groups open threads into needs-you, running and idle', () => {
@@ -116,6 +124,28 @@ test('renders escaped titles, states and context bands', () => {
   assert.ok(html.includes('macOS update &lt;script&gt;alert(1)&lt;/script&gt;'));
   assert.ok(!html.includes('<script>'));
   assert.ok(!html.includes('Settled thread') && !html.includes('Deleted thread') && !html.includes('Finished child'));
+});
+
+test('shows auto-update alarms above the threads and counts them as needing the owner', () => {
+  const autoupdate = updater('alarm: sync: git fetch from origin failed: <stderr>\nalarm: switch: no successful run for 2 d\n'
+    + 'info: sync: local main is 1 commits ahead of origin/main, waiting for push\nok: switch: last succeeded 2 d ago\n');
+  const html = render(snapshot({ ...fixture(), now: NOW, autoupdate }));
+  assert.match(html, /<title>\(2\) agent board<\/title>/);
+  assert.ok(html.indexOf('Auto-update · 2') < html.indexOf('Needs you · 1'));
+  assert.match(html, /<div class="t needs"><div class="name">dotfiles auto-update<\/div><div class="line red">sync: git fetch from origin failed: &lt;stderr&gt;<\/div>/);
+  assert.match(html, /<div class="line ">sync: local main is 1 commits ahead/);
+  assert.match(html, /<div class="line muted">switch: last succeeded 2 d ago<\/div>/);
+});
+
+test('a healthy updater is one quiet card below the threads', () => {
+  const html = render(snapshot({ ...fixture(), now: NOW }));
+  assert.ok(html.indexOf('<h2 class="">Auto-update</h2>') > html.indexOf('Idle · 1'));
+  assert.match(html, /<div class="t"><div class="name">dotfiles auto-update<\/div><div class="line ">sync: macOS 27\.0\.1 is available/);
+});
+
+test('an auto-update status that cannot be read is an alarm', () => {
+  assert.deepEqual(readUpdates(updater('', 3)), { alarms: ['could not read the auto-update status: exit 3'], infos: [], oks: [] });
+  assert.match(readUpdates('/nonexistent/status').alarms[0], /^could not read the auto-update status: .*No such file/);
 });
 
 test('accepts only loopback, the tailnet IP and this Mac\'s MagicDNS names on its port', () => {

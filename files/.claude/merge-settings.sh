@@ -3,10 +3,10 @@
 # ~/.claude/settings.json. Claude Code, herdr and the axi tools all write to
 # that file at runtime, so it cannot be a symlink.
 # - Plain keys: deep merge, managed values win.
-# - Hooks: entries whose command runs `python3 -I ~/.claude/hooks/...` belong
-#   to this repo. They are removed and re-added from the managed file, so a
-#   hook dropped here disappears on the next switch. Every other entry, for
-#   any event, is kept in place.
+# - Hooks: entries whose command runs `python3 -I ~/.claude/hooks/...` or
+#   `~/dotfiles/scripts/...` belong to this repo. They are removed and
+#   re-added from the managed file, so a hook dropped here disappears on the
+#   next switch. Every other entry, for any event, is kept in place.
 # Idempotent. A failed merge warns and exits 0: aborting would skip the rest
 # of Home Manager activation (see the brew bundle sharp edge in AGENTS.md).
 # Usage: merge-settings.sh <jq> <settings.json> <settings.managed.json>
@@ -17,7 +17,7 @@ mkdir -p "$(dirname "$settings")"
 tmp="$(mktemp "${settings}.XXXXXX")"
 trap 'rm -f "$tmp"' EXIT
 filter='
-  def owned: any(.hooks[]?; (.command // "") | startswith("python3 -I ~/.claude/hooks/"));
+  def owned: any(.hooks[]?; (.command // "") | startswith("python3 -I ~/.claude/hooks/") or startswith("~/dotfiles/scripts/"));
   .[0] as $s | .[1] as $m
   | ($s * ($m | del(.hooks)))
   | .hooks = (

@@ -2,8 +2,10 @@
 // Agent board: a read-only phone view of every open T3 thread - who is waiting on the owner, what is running, how full each
 // context is, and which runs have gone quiet. It reads T3's statev2.sqlite (read-only, explicit columns only; never the
 // scheduled_tasks webhook token or secret) and tails Claude Code logs for last activity, and writes nothing anywhere.
+// It also shows the dotfiles auto-updater's alarms, from that updater's own reader (scripts/dotfiles-autoupdate status).
 // Listens on 127.0.0.1 and this Mac's Tailscale address only, never all interfaces, and answers GET for allowlisted
 // Host names only. Run by a Home Manager launchd agent (see nix/user.nix); logs go to ~/Library/Logs.
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
@@ -14,6 +16,7 @@ import { fileURLToPath } from 'node:url';
 const PORT = Number(process.env.AGENT_BOARD_PORT ?? 4790);
 const T3_DB = process.env.AGENT_BOARD_T3_DB ?? path.join(os.homedir(), '.t3/userdata/statev2.sqlite');
 const CLAUDE_PROJECTS = process.env.AGENT_BOARD_CLAUDE_PROJECTS ?? path.join(os.homedir(), '.claude/projects');
+const AUTOUPDATE = path.join(path.dirname(fileURLToPath(import.meta.url)), '../../scripts/dotfiles-autoupdate');
 const QUIET_MS = 10 * 60_000; // a running thread with no log write for this long is flagged
 const REFRESH_S = 15;
 const TAIL_BYTES = 512 * 1024;
@@ -101,7 +104,23 @@ export function readLog(file, { parse = true } = {}) {
   }
 }
 
-export function snapshot({ dbPath = T3_DB, logsDir = CLAUDE_PROJECTS, now = Date.now() } = {}) {
+// The updater's reader decides what is an alarm; the board only sorts its lines. macOS's bash 3.2 runs it, as launchd
+// gives this agent no other PATH.
+export function readUpdates(script = AUTOUPDATE) {
+  const run = spawnSync('/bin/bash', [script, 'status'], { encoding: 'utf8', timeout: 5000 });
+  if (run.status !== 0) {
+    const why = (run.stderr || run.error?.message || `exit ${run.status}`).trim().split('\n').pop();
+    return { alarms: [`could not read the auto-update status: ${why}`], infos: [], oks: [] };
+  }
+  const updates = { alarms: [], infos: [], oks: [] };
+  for (const line of run.stdout.split('\n')) {
+    const match = /^(alarm|info|ok): (.*)$/.exec(line);
+    if (match) updates[{ alarm: 'alarms', info: 'infos', ok: 'oks' }[match[1]]].push(match[2]);
+  }
+  return updates;
+}
+
+export function snapshot({ dbPath = T3_DB, logsDir = CLAUDE_PROJECTS, now = Date.now(), autoupdate = AUTOUPDATE } = {}) {
   const rows = readThreads(dbPath);
   const logs = indexLogs(logsDir);
   const titles = new Map(rows.map((r) => [r.id, r.title]));
@@ -134,6 +153,7 @@ export function snapshot({ dbPath = T3_DB, logsDir = CLAUDE_PROJECTS, now = Date
   const shown = threads.filter((t) => !t.parentTitle || t.state !== 'idle');
   return {
     now,
+    updates: readUpdates(autoupdate),
     needs: shown.filter((t) => t.state === 'needs'),
     running: shown.filter((t) => t.state === 'running'),
     idle: shown.filter((t) => t.state === 'idle'),
@@ -187,19 +207,30 @@ function card(t, now) {
     + `<div class="sub"><span class="state ${tone}">${escape(label)}</span>${meta ? ` · ${meta}` : ''}</div>${bar}</div>`;
 }
 
+// Alarms go above the threads with the needs-you colours; a healthy updater is one quiet card below them.
+function updatesSection(u) {
+  const lines = [...u.alarms.map((t) => ['red', t]), ...u.infos.map((t) => ['', t]), ...u.oks.map((t) => ['muted', t])];
+  return `<h2 class="${u.alarms.length ? 'attn' : ''}">Auto-update${u.alarms.length ? ` · ${u.alarms.length}` : ''}</h2>`
+    + `<div class="t${u.alarms.length ? ' needs' : ''}"><div class="name">dotfiles auto-update</div>`
+    + lines.map(([tone, text]) => `<div class="line ${tone}">${escape(text)}</div>`).join('') + '</div>';
+}
+
 export function render(snap) {
   const time = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Singapore', hour: '2-digit', minute: '2-digit', second: '2-digit' }).format(snap.now);
   const section = (title, list, cls = '', limit = Infinity) => (list.length
     ? `<h2 class="${cls}">${title} · ${list.length}</h2>${list.slice(0, limit).map((t) => card(t, snap.now)).join('')}`
       + (list.length > limit ? `<p class="more">+${list.length - limit} more</p>` : '')
     : '');
-  const body = section('Needs you', snap.needs, 'attn') + section('Running', snap.running)
+  const threads = section('Needs you', snap.needs, 'attn') + section('Running', snap.running)
     + section('Idle', snap.idle, '', IDLE_SHOWN);
+  const alarmed = snap.updates.alarms.length > 0;
+  const updates = updatesSection(snap.updates);
+  const attention = snap.needs.length + (alarmed ? 1 : 0);
   return `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1"><meta http-equiv="refresh" content="${REFRESH_S}">
-<title>${snap.needs.length ? `(${snap.needs.length}) ` : ''}agent board</title><style>${STYLE}</style></head><body><main>
+<title>${attention ? `(${attention}) ` : ''}agent board</title><style>${STYLE}</style></head><body><main>
 <header><h1>agent board</h1><span>${time} SGT · refreshes every ${REFRESH_S}s</span></header>
-${body || '<p class="more">No open T3 threads.</p>'}
+${alarmed ? updates : ''}${threads || '<p class="more">No open T3 threads.</p>'}${alarmed ? '' : updates}
 <footer>Read-only view of T3 state. Nothing here can change an agent.</footer></main></body></html>`;
 }
 
@@ -226,6 +257,7 @@ h2.attn{color:var(--peach)}
 .t.needs{background:#2b2530;border-color:#5a4652}
 .name{font-weight:700;font-size:13.5px;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;overflow-wrap:anywhere}
 .sub{font-size:12px;color:var(--subtext);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:3px}
+.line{font-size:12px;color:var(--subtext);margin-top:3px;overflow-wrap:break-word}
 .green{color:var(--green)}.red{color:var(--red)}.peach{color:var(--peach)}.muted{color:var(--overlay1)}
 .ctx{height:5px;background:var(--surface0);border-radius:3px;margin-top:8px;overflow:hidden}
 .ctx i{display:block;height:100%;background:var(--teal)}.ctx i.warn{background:var(--yellow)}.ctx i.hot{background:var(--red)}

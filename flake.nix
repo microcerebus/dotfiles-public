@@ -60,6 +60,11 @@
         modules = [
           ./nix/host.nix
           ./nix/github-runner.nix
+          # The commit each generation was built from ("<sha>-dirty" with
+          # uncommitted edits). The auto-update daemon reads it from
+          # /run/current-system/darwin-version.json to tell pushed work from
+          # local work.
+          { system.configurationRevision = self.rev or self.dirtyRev or null; }
 
           home-manager.darwinModules.home-manager
           {

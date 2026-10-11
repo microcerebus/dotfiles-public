@@ -1,6 +1,6 @@
 # System layer: macOS settings + declarative Homebrew.
 # Layer ownership (AGENTS.md): Homebrew owns GUI/macOS-native apps ONLY.
-{ lib, pkgs, username, ... }:
+{ lib, pkgs, username, hostname, ... }:
 
 {
   # Required by nix-darwin for user-scoped options (homebrew, defaults, ...).
@@ -40,7 +40,7 @@
     onActivation = {
       # Activation only installs what is missing and zaps what is undeclared.
       # Upgrades run as a separate `brew upgrade` AFTER activation (daily
-      # dotfiles-autoupdate daemon below, and the `rebuild` alias), because
+      # dotfiles-sync agent in nix/user.nix, and the `rebuild` alias), because
       # inside activation one failed download aborts everything after it:
       # on 2026-10-07 the chatgpt cask pointed at a 404 and blocked the whole
       # Home Manager switch. Outside activation a bad cask fails alone.
@@ -226,119 +226,54 @@
       /run/current-system "$systemConfig" ${username} || true
   '';
 
-  # App Store apps (masApps above, plus Tachimanga) update themselves.
-  system.defaults.CustomSystemPreferences."com.apple.commerce".AutoUpdate = true;
+  # ── macOS and App Store updates ─────────────────────────────────────────
+  # macOS updates install by hand: an automatic install restarted the Mac on
+  # 11 Oct 2026 in the middle of overnight agent work. They still download in
+  # the background, so installing is quick, and Apple's security responses
+  # and XProtect data still install themselves. The dotfiles-sync agent
+  # reports a pending update (scripts/dotfiles-autoupdate).
+  # A plain domain name here would write root's own preferences, which macOS
+  # ignores for these settings, hence the /Library/Preferences paths.
+  system.defaults.SoftwareUpdate.AutomaticallyInstallMacOSUpdates = false;
+  system.defaults.CustomSystemPreferences = {
+    "/Library/Preferences/com.apple.SoftwareUpdate" = {
+      AutomaticCheckEnabled = true;
+      AutomaticDownload = true;
+      CriticalUpdateInstall = true;
+      ConfigDataInstall = true;
+    };
+    # App Store apps (masApps above, plus Tachimanga) update themselves.
+    "/Library/Preferences/com.apple.commerce".AutoUpdate = true;
+  };
 
-  # ── Daily unattended update ──────────────────────────────────────────────
-  # Once per calendar day, at the first hourly tick from 04:00 on (the cloud
-  # routine pushes the flake.lock bump at 02:00): fast-forward ~/dotfiles to
-  # origin/main, update pnpm globals, run the same switch as the `rebuild`
-  # alias, then `brew upgrade` (non-fatal per app, see onActivation above). Hourly ticks + RunAtLoad instead of a calendar slot because launchd
-  # drops calendar runs missed while the Mac is powered off; this way a Mac
-  # that was off or asleep at 04:00 catches up within an hour of coming back.
-  # A day counts as attempted once the network is up (stamp in /var/db), so a
-  # failing run retries tomorrow, not hourly.
-  # Cloud watchdog: the routine has silently skipped fires before (4 Mondays
-  # in Sep 2026, no run records), so a flake.lock on main older than 3 days
-  # raises the same shell banner.
-  # Never applies local work: aborts if nix/ or flake.* are dirty, or if the
-  # pull is not a fast-forward. Failures leave ~/Library/Logs/
-  # dotfiles-autoupdate.failed, which every new zsh prints (nix/user.nix)
-  # until a successful run or `rebuild` removes it. Known failure: casks that
-  # ship a .pkg (karabiner-elements, logi-options+, google-drive) need an
-  # interactive sudo to upgrade - run `rebuild` when the banner says so,
-  # which retries `brew upgrade` interactively.
+  # ── Daily unattended update, root half ──────────────────────────────────
+  # scripts/dotfiles-autoupdate, tests in tests/autoupdate_test.sh. The
+  # dotfiles-sync agent (nix/user.nix) fetches origin in myuser's GUI session,
+  # where the login keychain answers, and hands over the origin/main revision
+  # it fetched. Hourly, this daemon switches to exactly that revision, never
+  # the working tree, so uncommitted or unpushed work is never applied as
+  # root, and a running system built from such work waits for the push.
+  # Until 11 Oct 2026 one root daemon did all of it and never once succeeded:
+  # the keychain refuses a background session, a boot read as "already
+  # switched today", and failures reached only a banner nobody opened.
+  # `command` (not ProgramArguments) makes nix-darwin wait for /nix at boot.
   # AbandonProcessGroup: when activation reloads this daemon's own plist, the
   # bootout kills only the wrapper, not the in-flight darwin-rebuild.
   launchd.daemons.dotfiles-autoupdate = {
+    command = "${pkgs.writeShellScript "dotfiles-autoupdate" (builtins.readFile ../scripts/dotfiles-autoupdate)} apply";
+    path = [ "/run/current-system/sw/bin" "/nix/var/nix/profiles/default/bin" pkgs.git "/usr/bin" "/bin" "/usr/sbin" "/sbin" ];
+    environment = {
+      AUTOUPDATE_USER = username;
+      AUTOUPDATE_HOST = hostname;
+      HOME = "/var/root";
+    };
     serviceConfig = {
       Label = "com.${username}.dotfiles-autoupdate";
-      ProgramArguments = [
-        "${pkgs.writeShellScript "dotfiles-autoupdate" ''
-          set -uo pipefail
-          user=${username}
-          home=/Users/${username}
-          repo=$home/dotfiles
-          marker=$home/Library/Logs/dotfiles-autoupdate.failed
-          export HOME=/var/root
-          export PATH=/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin:/usr/bin:/bin:/usr/sbin:/sbin
-          ts() { date '+%F %T'; }
-          as_user() {
-            /usr/bin/sudo -u "$user" -H env \
-              PATH="$home/Library/pnpm/bin:/etc/profiles/per-user/$user/bin:/opt/homebrew/bin:$PATH" \
-              PNPM_HOME="$home/Library/pnpm" "$@"
-          }
-          fail() { echo "$(ts) FAILED: $*"; echo "$(ts) $*" > "$marker"; exit 1; }
-
-          stamp=/var/db/dotfiles-autoupdate.last
-          [ "$(date +%H)" -ge 4 ] || exit 0
-          [ "$(cat "$stamp" 2>/dev/null)" != "$(date +%F)" ] || exit 0
-          # A human `rebuild` in flight (also: this daemon's RunAtLoad fires
-          # mid-activation when a rebuild installs it) - try next hour.
-          pgrep -qf darwin-rebuild && exit 0
-          # A switch already happened today after 04:00 - that was today's run.
-          switched=$(stat -f '%Sm' -t '%F %H' /run/current-system)
-          if [ "''${switched% *}" = "$(date +%F)" ] && [ "''${switched#* }" -ge 4 ]; then
-            date +%F > "$stamp"; exit 0
-          fi
-
-          # Ticks right after wake can beat Wi-Fi; no network = retry next hour.
-          online=
-          for _ in $(seq 30); do
-            /usr/bin/curl -fsS -o /dev/null --max-time 5 https://github.com && { online=1; break; }
-            sleep 10
-          done
-          [ -n "$online" ] || exit 0
-          date +%F > "$stamp"
-
-          echo "=== $(ts) dotfiles auto-update"
-          echo "$(ts) running or interrupted" > "$marker"
-
-          [ "$(as_user git -C "$repo" branch --show-current)" = main ] \
-            || fail "$repo is not on main"
-          [ -z "$(as_user git -C "$repo" status --porcelain -- flake.nix flake.lock nix)" ] \
-            || fail "uncommitted changes in nix/ or flake.*"
-          as_user git -C "$repo" pull --ff-only --quiet \
-            || fail "git pull --ff-only failed (diverged from origin/main?)"
-
-          # pnpm globals float to their latest release, except the pins, which
-          # move only by reviewed commit: chrome-devtools-axi is tested against
-          # the chrome-devtools-mcp pin in nix/user.nix, and agent-device ships
-          # several releases a week from one publisher. pnpm 12's `--latest`
-          # moves exact pins too, and a '!pkg' filter turns the whole update
-          # into a no-op, so update the rest by name, then re-assert the pins
-          # (which also installs a missing one).
-          pins="chrome-devtools-axi@0.1.39 agent-device@0.21.23"
-          floating=$(as_user pnpm ls -g --depth 0 --json \
-            | ${pkgs.jq}/bin/jq -r --arg pins "$pins" \
-                '($pins | split(" ") | map(sub("@[^@]*$"; ""))) as $p
-                 | .[0].dependencies // {} | keys[] | select(IN($p[]) | not)')
-          if [ -n "$floating" ]; then
-            as_user pnpm update -g --latest $floating || echo "$(ts) warn: pnpm update -g failed"
-          fi
-          for pin in $pins; do
-            as_user pnpm add -g -E "$pin" || echo "$(ts) warn: pinning $pin failed"
-          done
-
-          darwin-rebuild switch --flake "$repo" || fail "darwin-rebuild switch failed"
-
-          # Runs last so a broken cask can't block the switch above.
-          as_user brew upgrade \
-            || fail "system updated, but brew upgrade failed for some apps (see log)"
-
-          lock_age=$(( ($(date +%s) - $(as_user git -C "$repo" log -1 --format=%ct -- flake.lock)) / 86400 ))
-          [ "$lock_age" -le 3 ] \
-            || fail "applied OK, but flake.lock on main is $lock_age days old - is the cloud update routine running? (claude.ai/code/routines)"
-
-          rm -f "$marker"
-          echo "=== $(ts) done"
-        ''}"
-      ];
       StartInterval = 3600;
       RunAtLoad = true;
       AbandonProcessGroup = true;
-      StandardOutPath = "/Users/${username}/Library/Logs/dotfiles-autoupdate.log";
-      StandardErrorPath = "/Users/${username}/Library/Logs/dotfiles-autoupdate.log";
+      StandardOutPath = "/var/log/dotfiles-autoupdate.log";
+      StandardErrorPath = "/var/log/dotfiles-autoupdate.log";
     };
   };
 

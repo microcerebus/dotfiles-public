@@ -210,7 +210,10 @@ in
     shellAliases = {
       # brew upgrade runs after the switch so one broken cask cannot block it
       # (see homebrew.onActivation in nix/host.nix).
-      rebuild = "sudo darwin-rebuild switch --flake ${dotfiles} && brew upgrade && rm -f ~/Library/Logs/dotfiles-autoupdate.failed";
+      rebuild = "sudo darwin-rebuild switch --flake ${dotfiles} && brew upgrade";
+      # The daily dotfiles-sync run, now and in this terminal, where sudo can
+      # prompt for the casks that ship a .pkg.
+      autoupdate-now = "dotfiles-autoupdate sync --now";
       vim = "nvim";
       v = "nvim";
       c = "clear";
@@ -255,11 +258,13 @@ in
         # right-arrow/End). ctrl+f is otherwise just forward-char here.
         bindkey '^f' autosuggest-accept
 
-        # Daily auto-update status (launchd daemon in nix/host.nix).
-        if [[ -e ~/Library/Logs/dotfiles-autoupdate.failed ]]; then
-          print -P "%F{red}dotfiles auto-update: $(<~/Library/Logs/dotfiles-autoupdate.failed)%f"
-          print -P "%F{8}  log: ~/Library/Logs/dotfiles-autoupdate.log - fix, then \`rebuild\`%f"
-        fi
+        # Daily auto-update alarms. The same reader feeds the agent board and
+        # agent sessions (scripts/dotfiles-autoupdate status).
+        () {
+          local out
+          out=$(${dotfiles}/scripts/dotfiles-autoupdate status --alarms 2>/dev/null)
+          [[ -n $out ]] && print -r -- $'\e[31m'"$out"$'\e[0m'
+        }
 
         # Herdr is the agent cockpit; never auto-wrap it in tmux (AGENTS.md).
         # SSH logins (phone/iPad via Termius) land in the persistent herdr
@@ -469,6 +474,37 @@ in
       KeepAlive = true;
       StandardOutPath = "${config.home.homeDirectory}/Library/Logs/agent-board.log";
       StandardErrorPath = "${config.home.homeDirectory}/Library/Logs/agent-board.log";
+    };
+  };
+
+  # Daily auto-update, myuser's half (scripts/dotfiles-autoupdate sync): fetch
+  # and fast-forward ~/dotfiles, pnpm globals, brew upgrade, pending macOS
+  # updates, then hand origin/main to the root daemon in nix/host.nix. An
+  # agent, not part of that daemon, because git's credential lives in the
+  # login keychain, which answers only inside this GUI session (a root daemon
+  # running `sudo -u myuser git` gets -25308, which broke every run until
+  # 11 Oct 2026). Hourly ticks, so a Mac that was asleep at 04:00 catches up;
+  # the work happens once a day. coreutils comes last, for `timeout` only.
+  launchd.agents.dotfiles-sync = {
+    enable = true;
+    config = {
+      Label = "com.myuser.dotfiles-sync";
+      ProgramArguments = [ "${pkgs.writeShellScript "dotfiles-autoupdate" (builtins.readFile ../scripts/dotfiles-autoupdate)}" "sync" ];
+      EnvironmentVariables = {
+        PNPM_HOME = "${config.home.homeDirectory}/Library/pnpm";
+        PATH = lib.concatStringsSep ":" [
+          "${config.home.homeDirectory}/Library/pnpm/bin"
+          "/etc/profiles/per-user/${username}/bin"
+          "/run/current-system/sw/bin"
+          "/opt/homebrew/bin"
+          "/usr/bin" "/bin" "/usr/sbin" "/sbin"
+          "${pkgs.coreutils}/bin"
+        ];
+      };
+      StartInterval = 3600;
+      RunAtLoad = true;
+      StandardOutPath = "${config.home.homeDirectory}/Library/Logs/dotfiles-sync.log";
+      StandardErrorPath = "${config.home.homeDirectory}/Library/Logs/dotfiles-sync.log";
     };
   };
 

@@ -2,6 +2,9 @@
   "cleanupPeriodDays": 365,
   "autoCompactEnabled": false,
   "hooks": {
+    "SessionStart": [
+      { "hooks": [{ "type": "command", "command": "~/dotfiles/scripts/dotfiles-autoupdate status --alarms", "timeout": 5 }] }
+    ],
     "UserPromptSubmit": [
       { "hooks": [{ "type": "command", "command": "python3 -I ~/.claude/hooks/turn_context.py", "timeout": 5 }] }
     ],

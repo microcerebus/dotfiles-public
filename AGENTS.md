@@ -18,9 +18,12 @@ tool-adoption backlog; check it before adding workflow tooling).
   Never request, read, or store the user's password.
 - Continue validating setup scripts through `tests/mac_setup_test.sh`, which runs the bootstrap in a sandboxed HOME with a PATH masked to stub executables.
   Do not run `setup/mac.sh` against the real system merely to test it.
-- The `dotfiles-autoupdate` launchd daemon (`nix/host.nix`) remains authorized to fast-forward to `origin/main` and switch daily without an attended request.
+- The daily auto-updater (`scripts/dotfiles-autoupdate`) remains authorized to run without an attended request.
+  The `dotfiles-sync` launchd agent (`nix/user.nix`) fast-forwards the main checkout to `origin/main` and updates pnpm globals and brew.
+  The `dotfiles-autoupdate` launchd daemon (`nix/host.nix`) switches the system to the exact `origin/main` revision the agent fetched, never to the working tree.
   Anything pushed to `main` is live on the machine within a day.
-  Local edits under `nix/` or `flake.*` must be committed or reverted, or the daemon refuses to run.
+  Unpushed or uncommitted work is never applied by the updater; a system that `rebuild` built from such work stays until the push.
+  Alarms reach the zsh banner, the agent board and agent sessions through `dotfiles-autoupdate status`.
 - Preserve unrelated changes.
   Writes outside this repo require an explicitly requested setup operation or an approved diff.
 - Never print, log, or commit secrets, tokens, private keys, `.env` files, or
@@ -127,8 +130,8 @@ tool-adoption backlog; check it before adding workflow tooling).
   `readlink ~/.zshrc` (store path should change after a rebuild that touches
   `nix/user.nix`) (2026-10-07).
 - The axi tools (gh-axi, chrome-devtools-axi, lavish-axi, tasks-axi) are pnpm
-  globals in `$PNPM_HOME/bin` (~/Library/pnpm/bin), updated daily by
-  `dotfiles-autoupdate` (`pnpm update -g --latest`). Their SessionStart hooks
+  globals in `$PNPM_HOME/bin` (~/Library/pnpm/bin), updated daily by the
+  `dotfiles-sync` agent (`pnpm update -g --latest`). Their SessionStart hooks
   in `~/.claude/settings.json` call the bare command names, so updates do not
   break them. Older `setup hooks` versions wrote absolute paths into pnpm's
   versioned store (`~/Library/pnpm/global/v11/<hash>/...`), which went stale
@@ -137,9 +140,10 @@ tool-adoption backlog; check it before adding workflow tooling).
   Bare `chrome-devtools-axi` and `lavish-axi` resolve to the wrappers in
   `scripts/` (earlier on PATH), which run the pnpm globals (2026-10-10).
 - chrome-devtools-axi and agent-device are pinned pnpm globals: the daily
-  update skips them and re-asserts the versions in `pins=` (nix/host.nix).
-  pnpm 12's `update -g --latest` moves exact pins too, and a `'!pkg'` filter
-  makes it update nothing, so the daemon names the floating globals instead.
+  update skips them and re-asserts the versions in `pins=`
+  (scripts/dotfiles-autoupdate). pnpm 12's `update -g --latest` moves exact
+  pins too, and a `'!pkg'` filter makes it update nothing, so the sync names
+  the floating globals instead.
   axi's server (chrome-devtools-mcp) is pinned in nix/user.nix, and the two
   must match: axi 0.1.30 against server 1.10 (page-ID routing on by default)
   failed every page command with "pageId: Invalid input: expected number,
@@ -187,3 +191,12 @@ tool-adoption backlog; check it before adding workflow tooling).
   `nix/github-runner.pf` lets the runner reach only its own listeners. It does
   not survive Tailscale's utun, and this Mac's tailnet address routes there,
   not via lo0 (2026-10-11).
+- The login keychain answers only inside the owner's GUI session. A launchd
+  daemon that runs `sudo -u myuser git fetch` has the right user but the wrong
+  security session: osxkeychain gets -25308 and git fails with "could not read
+  Username for 'https://github.com': Device not configured". That broke every
+  run of the old root auto-updater (7-10 Oct). Anything that needs the owner's
+  git, gh or keychain credentials unattended must be a launchd *agent*
+  (`launchd.agents` in `nix/user.nix`), and only the root step goes in a
+  daemon. SSH is no way around it: the key has a passphrase, and only the GUI
+  ssh-agent holds it (2026-10-11).

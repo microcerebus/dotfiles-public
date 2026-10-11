@@ -94,11 +94,11 @@ grep -q 'Current time' "$tmp/out" || { echo "FAIL no time without transcript"; f
 
 # Managed settings merge: adds owned keys, keeps everything else, idempotent.
 cat >"$tmp/settings.json" <<'JSON'
-{"theme":"dark","autoCompactEnabled":true,"hooks":{"SessionStart":[{"matcher":"","hooks":[{"type":"command","command":"gh-axi"}]}],"UserPromptSubmit":[{"hooks":[{"type":"command","command":"other-tool"}]}],"PostToolUse":[{"hooks":[{"type":"command","command":"python3 -I ~/.claude/hooks/retired.py"}]}]}}
+{"theme":"dark","autoCompactEnabled":true,"hooks":{"SessionStart":[{"matcher":"","hooks":[{"type":"command","command":"gh-axi"}]},{"hooks":[{"type":"command","command":"~/dotfiles/scripts/retired-script"}]}],"UserPromptSubmit":[{"hooks":[{"type":"command","command":"other-tool"}]}],"PostToolUse":[{"hooks":[{"type":"command","command":"python3 -I ~/.claude/hooks/retired.py"}]}]}}
 JSON
 bash "$repo/files/.claude/merge-settings.sh" jq "$tmp/settings.json" "$repo/files/.claude/settings.managed.json"
-got="$(jq -c '[.theme, .autoCompactEnabled, .cleanupPeriodDays, (.hooks.SessionStart|length), [.hooks.UserPromptSubmit[].hooks[0].command], (.hooks.PreToolUse[0].matcher), ([.hooks.PostToolUse[].hooks[0].command]|any(test("retired")))]' "$tmp/settings.json")"
-want='["dark",false,365,1,["other-tool","python3 -I ~/.claude/hooks/turn_context.py"],"Bash",false]'
+got="$(jq -c '[.theme, .autoCompactEnabled, .cleanupPeriodDays, [.hooks.SessionStart[].hooks[0].command], [.hooks.UserPromptSubmit[].hooks[0].command], (.hooks.PreToolUse[0].matcher), ([.hooks.PostToolUse[].hooks[0].command]|any(test("retired")))]' "$tmp/settings.json")"
+want='["dark",false,365,["gh-axi","~/dotfiles/scripts/dotfiles-autoupdate status --alarms"],["other-tool","python3 -I ~/.claude/hooks/turn_context.py"],"Bash",false]'
 if [ "$got" = "$want" ]; then echo "ok   merge keeps others' hooks, replaces ours, drops retired ones"; else echo "FAIL merge: $got, want $want"; fail=1; fi
 cp "$tmp/settings.json" "$tmp/once.json"; rm -f "$tmp/settings.json.before-merge"
 bash "$repo/files/.claude/merge-settings.sh" jq "$tmp/settings.json" "$repo/files/.claude/settings.managed.json"

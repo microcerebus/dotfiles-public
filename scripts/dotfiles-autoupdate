@@ -1,0 +1,394 @@
+#!/usr/bin/env bash
+# Daily unattended update of this Mac, split by privilege (review of 11 Oct
+# 2026, design B). Each step runs where its credential and privilege live.
+#
+#   sync     myuser's launchd agent (nix/user.nix), in his GUI session, where
+#            the login keychain answers. Daily from 04:00: fetch origin and
+#            fast-forward ~/dotfiles, update pnpm globals, brew upgrade,
+#            report pending macOS updates, check the flake.lock age, then hand
+#            the fetched origin/main revision to the daemon.
+#            `autoupdate-now` runs it in a terminal, where sudo can prompt.
+#   apply    the root launchd daemon (nix/host.nix). Hourly: switches the
+#            system to exactly the handed-over revision, never the working
+#            tree, and never rolls back a system built from unpushed work.
+#   status   the one reader of both status files, used by the zsh banner, the
+#            agent board and the SessionStart hook. Prints alarms, info and
+#            the last success of each runner.
+#
+# launchd runs /nix/store copies of this file; root never runs the checkout.
+# `status` must also run under macOS's bash 3.2 (the agent board calls it).
+# Tests: tests/autoupdate_test.sh.
+set -uo pipefail
+
+user=${AUTOUPDATE_USER:-$(id -un)}
+home=${AUTOUPDATE_HOME:-/Users/$user}
+repo=$home/dotfiles
+sync_dir=$home/.local/state/dotfiles-autoupdate
+daemon_dir=${AUTOUPDATE_DAEMON_DIR:-/var/db/dotfiles-autoupdate}
+system=${AUTOUPDATE_SYSTEM:-/run/current-system}
+sync_log=$home/Library/Logs/dotfiles-sync.log
+daemon_log=/var/log/dotfiles-autoupdate.log
+
+stale_after=$((36 * 3600))    # no successful run for this long is an alarm
+running_after=$((2 * 3600))   # a run unfinished for this long was killed
+push_after=$((36 * 3600))     # waiting for push for this long is an alarm
+macos_after=$((7 * 86400))    # a same-major macOS update pending this long
+retry_after=86400             # a failed revision is retried at most daily
+
+log() { echo "$(date '+%F %T') $*"; }
+last_line() { printf '%s\n' "$1" | sed '/^[[:space:]]*$/d' | tail -n 1; }
+
+# ── Status files ──────────────────────────────────────────────────────────
+# One per runner, tab-separated, replaced whole by rename:
+#   installed <epoch>        first time this runner ran on this machine
+#   ok <epoch>               last run that finished with no failure
+#   ran <epoch>              last run that finished
+#   running <epoch>          a run started and has not finished
+#   fail <text>              a step of the last run failed
+#   note <key> <since> <alarm-after-seconds, 0 = never> <text>
+# A note keeps its `since` across runs while its key stays the same.
+
+prev_field() { [ -f "$status" ] && awk -F '\t' -v k="$1" '$1 == k { print $2; exit }' "$status"; }
+prev_since() { [ -f "$status" ] && awk -F '\t' -v k="$1" '$1 == "note" && $2 == k { print $3; exit }' "$status"; }
+
+records=()
+failed=0
+fail() { records+=("fail	$*"); failed=1; log "FAILED: $*"; }
+note() { # note <key> <alarm-after> <text>
+  local since
+  since=$(prev_since "$1")
+  records+=("note	$1	${since:-$now}	$2	$3")
+  [ -n "$since" ] || log "$3"
+}
+
+write_status() { # write_status <line>...: replaces $status atomically
+  local tmp
+  tmp=$(mktemp "$status.XXXXXX") || return 1
+  printf '%s\n' "$@" >"$tmp" && chmod 644 "$tmp" && mv -f "$tmp" "$status"
+}
+
+begin() { # begin: makes sure $status exists, so a runner that stops is noticed
+  mkdir -p "$(dirname "$status")"
+  [ -f "$status" ] || write_status "installed	$now"
+}
+
+mark_running() { # keeps the last results, adds a running marker
+  local lines=() line
+  while IFS= read -r line; do
+    case $line in running*) ;; *) lines+=("$line") ;; esac
+  done <"$status"
+  write_status "${lines[@]}" "running	$now"
+}
+
+finish() {
+  local ok
+  ok=$(prev_field ok)
+  [ "$failed" = 1 ] || ok=$now
+  write_status "installed	$(prev_field installed)" ${ok:+"ok	$ok"} "ran	$now" \
+    ${records[@]+"${records[@]}"}
+}
+
+# ── sync: myuser's agent ─────────────────────────────────────────────────────
+cmd_sync() {
+  status=$sync_dir/sync.status
+  now=$(date +%s)
+  begin
+  if [ "${1:-}" != --now ]; then
+    [ "$(date +%H)" -ge 4 ] || return 0
+    [ "$(cat "$sync_dir/day" 2>/dev/null)" != "$(date +%F)" ] || return 0
+    # A rebuild in flight (it also reloads this agent) runs its own brew.
+    pgrep -qf darwin-rebuild && return 0
+  fi
+  if ! mkdir "$sync_dir/lock" 2>/dev/null; then
+    if kill -0 "$(cat "$sync_dir/lock/pid" 2>/dev/null)" 2>/dev/null; then
+      echo "another sync is running (pid $(cat "$sync_dir/lock/pid"))" >&2
+      return 1
+    fi
+    rm -rf "$sync_dir/lock" && mkdir "$sync_dir/lock" || return 1
+  fi
+  echo $$ >"$sync_dir/lock/pid"
+  trap 'rm -rf "$sync_dir/lock"' EXIT
+
+  # Ticks right after wake can beat Wi-Fi; offline means retry next hour.
+  local online='' _
+  for _ in $(seq 30); do
+    curl -fsS -o /dev/null --max-time 5 https://github.com && { online=1; break; }
+    sleep 10
+  done
+  [ -n "$online" ] || return 0
+  date +%F >"$sync_dir/day"
+  mark_running
+  log "=== sync"
+
+  local out fetched=
+  if out=$(GIT_TERMINAL_PROMPT=0 timeout 300 git -C "$repo" fetch --quiet origin 2>&1); then
+    fetched=$(git -C "$repo" rev-parse --verify -q refs/remotes/origin/main)
+  else
+    fail "git fetch from origin failed: $(last_line "$out")"
+  fi
+
+  [ -z "$fetched" ] || sync_main "$fetched"
+  sync_pnpm
+  sync_brew
+  sync_macos
+  if [ -n "$fetched" ]; then
+    local lock_age=$(( (now - $(git -C "$repo" log -1 --format=%ct "$fetched" -- flake.lock)) / 86400 ))
+    [ "$lock_age" -le 3 ] \
+      || fail "flake.lock on origin/main is $lock_age days old; is the cloud update routine running? (claude.ai/code/routines)"
+    # Last, so brew upgrade never races the switch's own brew bundle.
+    printf '%s\n' "$fetched" >"$sync_dir/revision.tmp" && mv -f "$sync_dir/revision.tmp" "$sync_dir/revision"
+    log "handed origin/main ${fetched:0:12} to the daemon"
+  fi
+  finish
+  log "=== sync done"
+}
+
+# Fast-forwards the checkout the live links point at. Local commits that are
+# not on origin/main wait for the owner's push; they are not an error.
+sync_main() {
+  local fetched=$1 branch head out
+  branch=$(git -C "$repo" branch --show-current)
+  head=$(git -C "$repo" rev-parse main)
+  if [ "$branch" != main ]; then
+    fail "$repo is on ${branch:-a detached HEAD}, not main, so its live links are not updating"
+  elif [ "$head" = "$fetched" ]; then
+    :
+  elif git -C "$repo" merge-base --is-ancestor "$head" "$fetched"; then
+    out=$(git -C "$repo" merge --ff-only --quiet "$fetched" 2>&1) \
+      || fail "could not fast-forward main to origin/main: $(last_line "$out")"
+  else
+    local ahead behind
+    ahead=$(git -C "$repo" rev-list --count "$fetched..$head")
+    behind=$(git -C "$repo" rev-list --count "$head..$fetched")
+    if [ "$behind" = 0 ]; then
+      note main 0 "local main is $ahead commits ahead of origin/main, waiting for push"
+    else
+      note main 0 "local main has $ahead commits not on origin/main and lacks $behind from it; waiting for push"
+    fi
+  fi
+}
+
+# pnpm globals float to their latest release, except the pins, which move only
+# by reviewed commit: chrome-devtools-axi is tested against the
+# chrome-devtools-mcp pin in nix/user.nix, and agent-device ships several
+# releases a week from one publisher. pnpm 12's `--latest` moves exact pins
+# too, and a '!pkg' filter turns the whole update into a no-op, so update the
+# rest by name, then re-assert the pins (which also installs a missing one).
+pins="chrome-devtools-axi@0.1.39 agent-device@0.21.23"
+sync_pnpm() {
+  local listed floating failed_steps='' pin
+  if ! listed=$(timeout 120 pnpm ls -g --depth 0 --json); then
+    fail "pnpm ls -g failed; pnpm globals were not updated"
+    return
+  fi
+  floating=$(printf '%s\n' "$listed" | jq -r --arg pins "$pins" \
+    '($pins | split(" ") | map(sub("@[^@]*$"; ""))) as $p
+     | .[0].dependencies // {} | keys[] | select(IN($p[]) | not)')
+  if [ -n "$floating" ]; then
+    # shellcheck disable=SC2086 # one argument per package name
+    timeout 600 pnpm update -g --latest $floating || failed_steps="update"
+  fi
+  for pin in $pins; do
+    timeout 300 pnpm add -g -E "$pin" || failed_steps="$failed_steps${failed_steps:+, }pin $pin"
+  done
+  [ -z "$failed_steps" ] || fail "pnpm globals: $failed_steps failed (see $sync_log)"
+}
+
+# Casks that ship a .pkg need sudo, which an unattended run cannot answer.
+sync_brew() {
+  local out names
+  out=$(timeout 3600 brew upgrade </dev/null 2>&1)
+  local code=$?
+  printf '%s\n' "$out"
+  [ "$code" = 0 ] && return
+  names=$(printf '%s\n' "$out" | sed -n 's/^Error: \([^:[:space:]]*\):.*/\1/p' | sort -u | paste -sd, - | sed 's/,/, /g')
+  fail "brew upgrade failed for ${names:-some apps (see $sync_log)}; run autoupdate-now in a terminal, where sudo can prompt"
+}
+
+# Reports pending updates, never installs them. A same-major macOS update
+# (26.x) alarms after 7 days so security fixes cannot sit unnoticed; a major
+# upgrade (27.x, which the owner declined on 10 Oct) and anything else stay info.
+sync_macos() {
+  local out current title version
+  current=$(sw_vers -productVersion)
+  if ! out=$(timeout 300 softwareupdate --list 2>&1); then
+    fail "softwareupdate --list failed: $(last_line "$out")"
+    return
+  fi
+  while IFS='	' read -r title version; do
+    case $title in
+      macOS*)
+        if [ "${version%%.*}" = "${current%%.*}" ]; then
+          note "macos:$version" "$macos_after" "$title is waiting to be installed; it restarts the Mac, so pick a quiet time"
+        else
+          note "macos-major:$version" 0 "$title is available (a major upgrade, not planned)"
+        fi ;;
+      *) note "update:$title" 0 "$title is available" ;;
+    esac
+  done < <(printf '%s\n' "$out" | sed -n 's/^[[:space:]]*Title: \(.*\), Version: \([^,]*\),.*/\1	\2/p')
+}
+
+# ── apply: the root daemon ──────────────────────────────────────────────────
+cmd_apply() {
+  local host=${AUTOUPDATE_HOST:?set AUTOUPDATE_HOST to the darwinConfigurations name}
+  status=$daemon_dir/status
+  now=$(date +%s)
+  begin
+  chmod 755 "$daemon_dir"
+  # A human `rebuild` in flight (also: this daemon's RunAtLoad fires
+  # mid-activation when a rebuild installs it), or a sync still running
+  # brew upgrade: try next hour.
+  pgrep -qf darwin-rebuild && return 0
+  kill -0 "$(cat "$sync_dir/lock/pid" 2>/dev/null)" 2>/dev/null && return 0
+
+  local target running
+  target=$(head -c 64 "$sync_dir/revision" 2>/dev/null | tr -d '\n')
+  running=$(sed -n 's/.*"configurationRevision": *"\([^"]*\)".*/\1/p' "$system/darwin-version.json" 2>/dev/null)
+
+  if [ -z "$target" ]; then
+    note handoff 0 "no revision from dotfiles-sync yet"
+    finish
+    return
+  fi
+  case $target in
+    *[!0-9a-f]*) fail "the revision handed over by dotfiles-sync is not a commit id"; finish; return ;;
+  esac
+  [ "${#target}" = 40 ] || { fail "the revision handed over by dotfiles-sync is not a commit id"; finish; return; }
+
+  case $running in
+    '')
+      note waiting:unknown "$push_after" "the running system has no recorded revision (built before this updater?); run rebuild from a pushed main"
+      finish
+      return ;;
+    *-dirty)
+      note "waiting:$running" "$push_after" "the running system was built from uncommitted changes on ${running:0:12}; waiting for them to be pushed and rebuilt"
+      finish
+      return ;;
+  esac
+  # The newest pushed revision wins: a system the owner rebuilt after a push is
+  # newer than the last handover, and stays.
+  local want=$target
+  if [ "$running" != "$target" ] && user_git merge-base --is-ancestor "$target" "$running" \
+      && user_git merge-base --is-ancestor "$running" refs/remotes/origin/main; then
+    want=$running
+  fi
+  if [ "$running" = "$want" ]; then
+    if hm_applied; then finish; return; fi
+    log "system is at ${want:0:12} but Home Manager is not applied; switching again"
+  elif ! user_git merge-base --is-ancestor "$running" "$want"; then
+    note "waiting:$running" "$push_after" "the running system is built from ${running:0:12}, which is not on origin/main yet; waiting for push"
+    finish
+    return
+  fi
+
+  local attempt
+  attempt=$(cat "$daemon_dir/attempt" 2>/dev/null)
+  if [ "${attempt% *}" = "$want" ] && [ $((now - ${attempt#* })) -lt "$retry_after" ]; then
+    return 0
+  fi
+
+  mark_running
+  log "=== switching to ${want:0:12} (running: $running)"
+  # Nix opens the repo through libgit2, which lets root read a repo another
+  # user owns only when SUDO_UID names that owner, as it does under `rebuild`.
+  # the owner's read-only sudo check of 11 Oct says whether root needs it here.
+  SUDO_UID=$(stat -f %u "$repo") darwin-rebuild switch --flake "git+file://$repo?rev=$want#$host"
+  local code=$?
+  running=$(sed -n 's/.*"configurationRevision": *"\([^"]*\)".*/\1/p' "$system/darwin-version.json" 2>/dev/null)
+  if [ "$code" != 0 ]; then
+    fail "switch to ${want:0:12} failed (exit $code); see $daemon_log"
+  elif [ "$running" != "$want" ]; then
+    fail "switch to ${want:0:12} exited 0 but the system reports ${running:-no revision}; see $daemon_log"
+  elif ! hm_applied; then
+    fail "switch to ${want:0:12} finished but Home Manager did not apply (brew bundle failed?); see $daemon_log"
+  fi
+  if [ "$failed" = 1 ]; then
+    echo "$want $now" >"$daemon_dir/attempt"
+  else
+    rm -f "$daemon_dir/attempt"
+    log "=== switched to ${want:0:12}"
+  fi
+  finish
+}
+
+# Root asks git questions about myuser's repo as myuser, never as itself: a
+# repo's own config can run commands.
+user_git() { sudo -u "$user" -H "$(command -v git)" -C "$repo" "$@" 2>/dev/null; }
+
+# An equal system path does not prove Home Manager applied (AGENTS.md, the
+# brew bundle sharp edge): compare the closure's generation with HM's own.
+hm_applied() {
+  local want
+  want=$(nix-store -qR "$system" 2>/dev/null | grep -- '-home-manager-generation$' | head -n 1)
+  [ -n "$want" ] && [ "$want" = "$(readlink "$home/.local/state/home-manager/gcroots/current-home")" ]
+}
+
+# ── status: the one reader ──────────────────────────────────────────────────
+age() {
+  local s=$1
+  if [ "$s" -lt 3600 ]; then echo "$((s / 60)) min"
+  elif [ "$s" -lt 172800 ]; then echo "$((s / 3600)) h"
+  else echo "$((s / 86400)) d"; fi
+}
+
+alarm_lines='' info_lines='' ok_lines=''
+alarm() { alarm_lines="$alarm_lines$1
+"; }
+info() { info_lines="$info_lines$1
+"; }
+
+read_status() { # read_status <name> <file> <log>
+  local name=$1 file=$2 logfile=$3 kind a b c d installed='' ok='' ran='' running=''
+  if [ ! -f "$file" ]; then
+    alarm "$name: has never run ($file is missing); is its launchd job loaded?"
+    return
+  fi
+  while IFS='	' read -r kind a b c d; do
+    case $kind in
+      installed) installed=$a ;;
+      ok) ok=$a ;;
+      ran) ran=$a ;;
+      running) running=$a ;;
+      fail) alarm "$name: $a" ;;
+      note)
+        if [ "$c" -gt 0 ] && [ $((now - b)) -ge "$c" ]; then alarm "$name: $d (for $(age $((now - b))))"
+        else info "$name: $d"; fi ;;
+    esac
+  done <"$file"
+  if [ -n "$running" ]; then
+    if [ $((now - running)) -ge "$running_after" ]; then
+      alarm "$name: a run started $(age $((now - running))) ago and never finished; see $logfile"
+    else
+      info "$name: running for $(age $((now - running)))"
+    fi
+  fi
+  local good=${ok:-${installed:-0}}
+  if [ $((now - good)) -ge "$stale_after" ]; then
+    alarm "$name: no successful run for $(age $((now - good)))${ran:+ (last run $(age $((now - ran))) ago)}; see $logfile"
+  elif [ -n "$ok" ]; then
+    ok_lines="${ok_lines}$name: last succeeded $(age $((now - ok))) ago
+"
+  fi
+}
+
+cmd_status() {
+  now=$(date +%s)
+  read_status sync "$sync_dir/sync.status" "$sync_log"
+  read_status switch "$daemon_dir/status" "$daemon_log"
+  if [ "${1:-}" = --alarms ]; then
+    [ -n "$alarm_lines" ] || return 0
+    printf '%s' "$alarm_lines" | sed 's/^/dotfiles auto-update: /'
+    echo "  details: dotfiles-autoupdate status"
+    return 0
+  fi
+  printf '%s' "$alarm_lines" | sed 's/^/alarm: /'
+  printf '%s' "$info_lines" | sed 's/^/info: /'
+  printf '%s' "$ok_lines" | sed 's/^/ok: /'
+}
+
+case ${1:-} in
+  sync) shift; cmd_sync "$@" ;;
+  apply) shift; cmd_apply "$@" ;;
+  status) shift; cmd_status "$@" ;;
+  *) echo "usage: dotfiles-autoupdate sync [--now] | apply | status [--alarms]" >&2; exit 2 ;;
+esac
