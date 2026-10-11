@@ -428,14 +428,29 @@ at "2026-10-12 05:00"; tick
 unset STUB_BREW_FAIL
 at "2026-10-12 07:00"
 expect_eq "status reports alarms, info and successes in that order" "$(report)" \
-"alarm: sync: brew upgrade failed for karabiner-elements; run autoupdate-now in a terminal, where sudo can prompt
+"alarm: sync: brew upgrade failed for karabiner-elements; run autoupdate-now in a terminal, where sudo can prompt; see $home/Library/Logs/dotfiles-sync.log
 info: sync: local main is 1 commits ahead of origin/main, waiting for push
-ok: switch: last succeeded 2 h ago"
+ok: switch: last good run 2 h ago"
 expect_eq "status --alarms is the banner and SessionStart text" "$(alarms)" \
-"dotfiles auto-update: sync: brew upgrade failed for karabiner-elements; run autoupdate-now in a terminal, where sudo can prompt
+"dotfiles auto-update: sync: brew upgrade failed for karabiner-elements; run autoupdate-now in a terminal, where sudo can prompt; see $home/Library/Logs/dotfiles-sync.log
   details: dotfiles-autoupdate status"
 legacy=$(env -i HOME="$home" TZ="$TZ" PATH="$stubs:/usr/bin:/bin" FAKE_NOW="$FAKE_NOW" \
   AUTOUPDATE_HOME="$home" AUTOUPDATE_DAEMON_DIR="$AUTOUPDATE_DAEMON_DIR" /bin/bash "$script" status)
 expect_eq "status reads the same under macOS's bash 3.2" "$legacy" "$(report)"
+
+# 18. A runner that is installed but has not run yet still shows, so the
+# board's card never looks like it tracks one runner. A failure that already
+# names its log is not pointed at it twice.
+fresh
+at "2026-10-12 03:00"; tick
+at "2026-10-12 03:30"
+expect_report "an installed runner that has not run yet is reported" "^ok: sync: no run yet, installed 30 min ago$"
+export STUB_SWITCH_EXIT=1
+at "2026-10-12 04:00"; commit_upstream "C: push"
+at "2026-10-12 05:00"; tick
+unset STUB_SWITCH_EXIT
+got=$(alarms)
+if [ "$(grep -o 'see /' <<<"$got" | wc -l | tr -d ' ')" = 1 ]; then ok "a failure that names its log is pointed at it once"
+else bad "a failure that names its log is pointed at it once" "got: $got"; fi
 
 exit "$fail"

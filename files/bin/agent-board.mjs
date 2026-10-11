@@ -16,7 +16,8 @@ import { fileURLToPath } from 'node:url';
 const PORT = Number(process.env.AGENT_BOARD_PORT ?? 4790);
 const T3_DB = process.env.AGENT_BOARD_T3_DB ?? path.join(os.homedir(), '.t3/userdata/statev2.sqlite');
 const CLAUDE_PROJECTS = process.env.AGENT_BOARD_CLAUDE_PROJECTS ?? path.join(os.homedir(), '.claude/projects');
-const AUTOUPDATE = path.join(path.dirname(fileURLToPath(import.meta.url)), '../../scripts/dotfiles-autoupdate');
+const SELF = fileURLToPath(import.meta.url);
+const AUTOUPDATE = path.join(path.dirname(SELF), '../../scripts/dotfiles-autoupdate');
 const QUIET_MS = 10 * 60_000; // a running thread with no log write for this long is flagged
 const REFRESH_S = 15;
 const TAIL_BYTES = 512 * 1024;
@@ -210,7 +211,8 @@ function card(t, now) {
 // Alarms go above the threads with the needs-you colours; a healthy updater is one quiet card below them.
 function updatesSection(u) {
   const lines = [...u.alarms.map((t) => ['red', t]), ...u.infos.map((t) => ['', t]), ...u.oks.map((t) => ['muted', t])];
-  return `<h2 class="${u.alarms.length ? 'attn' : ''}">Auto-update${u.alarms.length ? ` · ${u.alarms.length}` : ''}</h2>`
+  // No count in the heading: every other heading counts cards, and this section is one card.
+  return `<h2 class="${u.alarms.length ? 'attn' : ''}">Auto-update</h2>`
     + `<div class="t${u.alarms.length ? ' needs' : ''}"><div class="name">dotfiles auto-update</div>`
     + lines.map(([tone, text]) => `<div class="line ${tone}">${escape(text)}</div>`).join('') + '</div>';
 }
@@ -342,6 +344,13 @@ function serve() {
   };
   syncTailnet();
   setInterval(syncTailnet, 15_000);
+  // launchd runs this file from the live checkout, which merges and the daily sync change under it while the plist
+  // stays the same. Exit on a change so KeepAlive restarts the board on the new code.
+  fs.watchFile(SELF, { interval: 2_000 }, (current, previous) => {
+    if (current.mtimeMs === previous.mtimeMs) return;
+    console.log('agent-board: source changed, restarting');
+    process.exit(0);
+  });
 }
 
-if (process.argv[1] && fs.realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) serve();
+if (process.argv[1] && fs.realpathSync(process.argv[1]) === SELF) serve();

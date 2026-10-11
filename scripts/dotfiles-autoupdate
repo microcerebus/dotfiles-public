@@ -349,7 +349,7 @@ read_status() { # read_status <name> <file> <log>
       ok) ok=$a ;;
       ran) ran=$a ;;
       running) running=$a ;;
-      fail) alarm "$name: $a" ;;
+      fail) case $a in *"$logfile"*) alarm "$name: $a" ;; *) alarm "$name: $a; see $logfile" ;; esac ;;
       note)
         if [ "$c" -gt 0 ] && [ $((now - b)) -ge "$c" ]; then alarm "$name: $d (for $(age $((now - b))))"
         else info "$name: $d"; fi ;;
@@ -366,7 +366,10 @@ read_status() { # read_status <name> <file> <log>
   if [ $((now - good)) -ge "$stale_after" ]; then
     alarm "$name: no successful run for $(age $((now - good)))${ran:+ (last run $(age $((now - ran))) ago)}; see $logfile"
   elif [ -n "$ok" ]; then
-    ok_lines="${ok_lines}$name: last succeeded $(age $((now - ok))) ago
+    ok_lines="${ok_lines}$name: last good run $(age $((now - ok))) ago
+"
+  elif [ -z "$ran$running" ]; then
+    ok_lines="${ok_lines}$name: no run yet, installed $(age $((now - good))) ago
 "
   fi
 }

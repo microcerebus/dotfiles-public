@@ -1,5 +1,8 @@
 // Run: node --test tests/agent_board_test.mjs
 // Builds a fixture copy of the T3 tables the board reads, plus Claude logs, and checks what the board shows.
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
+import net from 'node:net';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -7,6 +10,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { hostAllowed, readUpdates, render, snapshot, tailnetAddress } from '../files/bin/agent-board.mjs';
+
+const BOARD = new URL('../files/bin/agent-board.mjs', import.meta.url);
 
 const NOW = Date.parse('2026-10-11T03:30:00Z');
 const iso = (minutesAgo) => new Date(NOW - minutesAgo * 60_000).toISOString();
@@ -79,7 +84,7 @@ function fixture() {
 }
 
 // updater(output, exit): a stand-in for `dotfiles-autoupdate status` that prints `output`.
-const HEALTHY = 'info: sync: macOS 27.0.1 is available (a major upgrade, not planned)\nok: sync: last succeeded 2 h ago\n';
+const HEALTHY = 'info: sync: macOS 27.0.1 is available (a major upgrade, not planned)\nok: sync: last good run 2 h ago\n';
 function updater(output, exit = 0) {
   const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'agent-board-updater-')), 'status');
   fs.writeFileSync(file, `printf '%s' '${output.replaceAll("'", "'\\''")}'\nexit ${exit}\n`);
@@ -128,13 +133,15 @@ test('renders escaped titles, states and context bands', () => {
 
 test('shows auto-update alarms above the threads and counts them as needing the owner', () => {
   const autoupdate = updater('alarm: sync: git fetch from origin failed: <stderr>\nalarm: switch: no successful run for 2 d\n'
-    + 'info: sync: local main is 1 commits ahead of origin/main, waiting for push\nok: switch: last succeeded 2 d ago\n');
+    + 'info: sync: local main is 1 commits ahead of origin/main, waiting for push\nok: switch: last good run 2 d ago\n');
   const html = render(snapshot({ ...fixture(), now: NOW, autoupdate }));
   assert.match(html, /<title>\(2\) agent board<\/title>/);
-  assert.ok(html.indexOf('Auto-update · 2') < html.indexOf('Needs you · 1'));
+  // The heading counts no lines: every other heading counts cards, and this section is one card.
+  const heading = html.indexOf('<h2 class="attn">Auto-update</h2>');
+  assert.ok(heading >= 0 && heading < html.indexOf('Needs you · 1'));
   assert.match(html, /<div class="t needs"><div class="name">dotfiles auto-update<\/div><div class="line red">sync: git fetch from origin failed: &lt;stderr&gt;<\/div>/);
   assert.match(html, /<div class="line ">sync: local main is 1 commits ahead/);
-  assert.match(html, /<div class="line muted">switch: last succeeded 2 d ago<\/div>/);
+  assert.match(html, /<div class="line muted">switch: last good run 2 d ago<\/div>/);
 });
 
 test('a healthy updater is one quiet card below the threads', () => {
@@ -163,4 +170,32 @@ test('finds the Tailscale address and never a LAN or loopback one', () => {
   const iface = (address, internal = false) => ({ family: 'IPv4', address, internal });
   assert.equal(tailnetAddress({ lo0: [iface('127.0.0.1', true)], en0: [iface('192.168.1.5')], utun4: [iface('100.99.1.2')] }), '100.99.1.2');
   assert.equal(tailnetAddress({ en0: [iface('100.20.1.1')], lo0: [iface('127.0.0.1', true)] }), null);
+});
+
+// launchd starts the board once, from the live checkout. A merge or the daily sync's fast-forward changes the file
+// under it, and the plist stays the same, so nothing restarts it: it must exit itself for KeepAlive to restart it.
+test('exits when its own source changes, so launchd restarts it on the new code', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-board-self-'));
+  const copy = path.join(dir, 'agent-board.mjs');
+  fs.copyFileSync(BOARD, copy);
+  const probe = net.createServer().listen(0, '127.0.0.1');
+  await once(probe, 'listening');
+  const port = probe.address().port;
+  probe.close();
+  const board = spawn(process.execPath, ['--no-warnings', copy], {
+    env: { ...process.env, AGENT_BOARD_PORT: String(port) }, stdio: ['ignore', 'pipe', 'inherit'],
+  });
+  try {
+    let out = '';
+    board.stdout.on('data', (chunk) => { out += chunk; });
+    const exited = once(board, 'exit');
+    while (!out.includes(`listening on 127.0.0.1:${port}`)) await new Promise((resolve) => setTimeout(resolve, 50));
+    fs.appendFileSync(copy, '// changed\n');
+    const timeout = new Promise((resolve) => setTimeout(resolve, 10_000, 'still running'));
+    assert.deepEqual(await Promise.race([exited, timeout]), [0, null]);
+    assert.match(out, /source changed, restarting/);
+  } finally {
+    board.kill();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
