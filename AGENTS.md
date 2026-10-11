@@ -174,3 +174,9 @@ tool-adoption backlog; check it before adding workflow tooling).
   2026-10-10 node 22.23.2 -> 22.23.3 and pnpm 11 -> 12 broke job-tracker's
   commit hooks. Every switch now prints `scripts/toolchain-diff` warnings for
   node and pnpm changes; projects should pin their own toolchain (2026-10-10).
+- nix-darwin's `services.github-runners` asserts `nix.enable`, which Determinate
+  rules out, so job-tracker's self-hosted runner is declared by hand in
+  `nix/github-runner.nix`. Creating its `_github-runner` user needs a macOS
+  admin prompt: `rebuild` must run in a GUI session, not over SSH (nix-darwin
+  aborts there). Registration needs no sudo: `github-runner-register` queues a
+  one-hour token the service consumes (2026-10-11).

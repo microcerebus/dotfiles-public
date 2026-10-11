@@ -1,0 +1,141 @@
+#!/usr/bin/env bash
+# github-runner: lifecycle of the self-hosted GitHub Actions runner that
+# nix/github-runner.nix declares for job-tracker.
+#
+# Usage: github-runner <command> <config>
+#   start          launchd entry point, as the runner user: refuse to run if
+#                  the isolation check fails, wipe all job state, register if a
+#                  token is queued, then run the listener.
+#   job-completed  runner hook after every job: wipe everything the job wrote,
+#                  so one PR's run cannot leave state for the next.
+#   check          isolation check: the runner user must not read the owner's
+#                  home, ~/.ssh or keychains, use sudo, or be a trusted Nix user.
+#   register       run by the owner (github-runner-register): mint a one-hour
+#                  registration token with gh and queue it for the runner,
+#                  never printing it.
+#
+# <config> is the store file nix/github-runner.nix writes (url name labels bin
+# state work home tmp inbox protected). Paths come from it, never from the
+# environment: a job can rewrite HOME or TMPDIR for later steps through
+# GITHUB_ENV, and the completed hook must not follow that.
+# Tests: tests/github_runner_test.sh
+set -euo pipefail
+[ $# = 2 ] || { echo "usage: github-runner start|job-completed|check|register <config>" >&2; exit 64; }
+cmd="$1"
+# shellcheck source=/dev/null
+. "$2"
+
+# empty <dir> [keep...]: delete everything inside <dir> except the named
+# top-level entries. Jobs leave read-only trees (Go, Nix), so make directories
+# writable first; BSD chmod -R never follows symlinks out of <dir>.
+empty() {
+  local dir="$1" entry keep
+  shift
+  [ -d "$dir" ] || return 0
+  local args=()
+  for keep in "$@"; do args+=(! -name "$keep"); done
+  while IFS= read -r -d '' entry; do
+    if [ -d "$entry" ] && [ ! -L "$entry" ]; then /bin/chmod -R u+rwX "$entry"; fi
+    /bin/rm -rf "$entry"
+  done < <(/usr/bin/find "$dir" -mindepth 1 -maxdepth 1 ${args[@]+"${args[@]}"} -print0)
+}
+
+check() {
+  local failed=0
+  # deny <what> <command...>: the command must fail for the runner user.
+  deny() {
+    local what="$1"
+    shift
+    if "$@" >/dev/null 2>&1; then
+      echo "isolation FAILED: the runner user can $what" >&2
+      failed=1
+    else
+      echo "isolation ok: cannot $what"
+    fi
+  }
+  nix_trusted() { nix store info --json 2>/dev/null | grep -Eq '"trusted": ?(true|1)'; }
+  deny "list $protected" ls "$protected"
+  deny "read $protected/.ssh" ls "$protected/.ssh"
+  deny "read $protected/Library/Keychains" ls "$protected/Library/Keychains"
+  deny "run sudo" sudo -n true
+  deny "act as a trusted Nix user" nix_trusted
+  [ "$failed" = 0 ] || { echo "refusing to run jobs until this is fixed" >&2; return 1; }
+}
+
+# register_queued: register with the queued token, then delete it whatever
+# happens. The current registration is set aside first (config.sh refuses to
+# run over one) and restored if GitHub rejects the token, so a stale token
+# never takes down a working runner.
+register_queued() {
+  local queued="$inbox/token" token previous="$state/.previous" f
+  token="$(<"$queued")"
+  rm -f "$queued"
+  rm -rf "$previous"
+  mkdir "$previous"
+  for f in .runner .credentials .credentials_rsaparams; do
+    if [ -e "$state/$f" ]; then mv "$state/$f" "$previous/"; fi
+  done
+  # The token goes in by environment, not argv, so ps never shows it.
+  if ACTIONS_RUNNER_INPUT_TOKEN="$token" "$bin/config.sh" --unattended --disableupdate --replace \
+    --url "$url" --name "$name" --labels "$labels" --work "$work"; then
+    echo "registered as $name with labels $labels"
+  else
+    echo "registration failed (token expired or revoked?); keeping the previous registration, if any" >&2
+    for f in .runner .credentials .credentials_rsaparams; do
+      if [ -e "$previous/$f" ]; then mv -f "$previous/$f" "$state/"; fi
+    done
+  fi
+  rm -rf "$previous"
+}
+
+case "$cmd" in
+  start)
+    echo "=== $(date '+%F %T') github-runner start"
+    check
+    empty "$home"
+    empty "$tmp"
+    empty "$work"
+    # config.sh and the listener read RUNNER_ROOT; jobs inherit HOME and TMPDIR.
+    export RUNNER_ROOT="$state" HOME="$home" TMPDIR="$tmp"
+    if [ -s "$inbox/token" ]; then register_queued; fi
+    if [ ! -f "$state/.runner" ]; then
+      echo "not registered: run github-runner-register as the owner; this service starts again when the token lands"
+      exit 0
+    fi
+    exec "$bin/Runner.Listener" run --startuptype service
+    ;;
+  job-completed)
+    PATH=/usr/bin:/bin
+    empty "$home"
+    empty "$tmp"
+    # _temp and _PipelineMapping belong to the runner, which resets them per job.
+    empty "$work" _temp _PipelineMapping
+    echo "wiped job state: $home, $tmp, $work"
+    ;;
+  check)
+    check
+    ;;
+  register)
+    if [ ! -d "$inbox" ] || [ ! -w "$inbox" ]; then
+      echo "no writable token inbox at $inbox; run rebuild first, which creates the runner" >&2
+      exit 1
+    fi
+    # The inbox's group is the runner's, and new files inherit it, so 0640
+    # lets the runner read the token and nobody else.
+    umask 077
+    queued="$(mktemp "$inbox/.token.XXXXXX")"
+    if ! gh api -X POST "repos/${url#https://github.com/}/actions/runners/registration-token" \
+      --jq .token >"$queued" || [ ! -s "$queued" ]; then
+      rm -f "$queued"
+      echo "gh could not mint a registration token (needs admin on ${url#https://github.com/})" >&2
+      exit 1
+    fi
+    chmod 0640 "$queued"
+    mv "$queued" "$inbox/token"
+    echo "token queued (valid for one hour); a waiting runner registers within a minute, a running one at its next start"
+    ;;
+  *)
+    echo "unknown command: $cmd" >&2
+    exit 64
+    ;;
+esac

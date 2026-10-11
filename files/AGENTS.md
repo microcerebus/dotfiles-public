@@ -64,6 +64,7 @@ Glossary: "intelligence" = how hard a problem the model can handle unsupervised.
 - Bulk mechanical work (clear-spec implementation, log digging, giant docs/PDFs): shell out to GPT via `codex exec` (model: ~/.codex/config.toml).
   Anything user-facing needs taste >= 7.
 - Reviews of plans and implementations: Fable 5.1 or Opus 5.5, optionally GPT via codex as an extra independent perspective.
+- Design work (UI/UX and visual design, design reviews, screen design docs, new UI components): Fable 5.1 with the Impeccable skills, by default.
 - Workflows cannot call GPT directly: have a Sonnet-on-low stage spawn `codex exec` and report results back.
   Prefix any subagent/workflow label that runs a non-Claude model with the model name (e.g. `[gpt] parse logs`).
   Use `schema` on the wrapper stage so the codex report comes back structured instead of as free text.

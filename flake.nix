@@ -56,9 +56,10 @@
     {
       darwinConfigurations.${hostname} = nix-darwin.lib.darwinSystem {
         inherit system;
-        specialArgs = { inherit inputs username; };
+        specialArgs = { inherit inputs username hostname; };
         modules = [
           ./nix/host.nix
+          ./nix/github-runner.nix
 
           home-manager.darwinModules.home-manager
           {
