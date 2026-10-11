@@ -2,22 +2,15 @@
 # `github-runner firewall` loads them into the anchor com.apple/github-runner,
 # which the stock /etc/pf.conf already evaluates, and keeps pf enabled. They
 # match only the runner's own sockets, so they change nothing for anyone else.
-# Tests: tests/github_runner_test.sh. The runner's isolation check proves them
-# live on every start and before every job.
+# Tests: tests/github_runner_test.sh. The runner's isolation check probes the
+# tailnet on every start and before every job.
 
 private = "{ 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 100.64.0.0/10 169.254.0.0/16 fc00::/7 fe80::/10 }"
 
-# This Mac. Whatever the runner sends to one of this Mac's addresses, loopback
-# or LAN, goes out and comes back in on lo0 as the same packet, so the tag set
-# on the way out survives. On the way in, `user` is the owner of the socket
-# that would receive the packet, so tagged packets reach only runner sockets:
-# its own test servers answer, and nothing owned by the owner, root or any other
-# user does, whatever port it listens on.
-pass out quick on lo0 proto { tcp udp } user @uid@ tag github-runner no state
-block return in quick on lo0 proto { tcp udp } tagged github-runner user != @uid@
-
 # The LAN and the tailnet, closed except DNS, as they are to a hosted runner.
-# This also covers this Mac's own tailnet address, which routes through
-# Tailscale's utun interface rather than lo0, so the tag does not survive it.
+# This covers this Mac's own tailnet address too, which routes through
+# Tailscale's utun interface. It cannot cover this Mac's loopback and LAN
+# addresses: macOS delivers that traffic without pf ever seeing it, so even a
+# rule on lo0 matches nothing (diagnosed 2026-10-11).
 pass out quick proto { tcp udp } to $private port 53 user @uid@ no state
 block return out quick proto { tcp udp } to $private user @uid@

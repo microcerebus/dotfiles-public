@@ -2,7 +2,8 @@
 # Tests for scripts/github-runner against stub runner binaries, sudo, nix, gh,
 # netstat, lsof and pfctl, and for the runner's pf rules (nix/github-runner.pf).
 # The listener probes use the real nc against real sockets on 127.0.0.1 and
-# ::1; nothing else touches the network. Writes only to a temp dir.
+# ::1; a stub nc sends tailnet addresses there too. Nothing else touches the
+# network. Writes only to a temp dir.
 # Run: bash tests/github_runner_test.sh
 set -euo pipefail
 repo="$(cd "$(dirname "$0")/.." && pwd)"
@@ -74,6 +75,17 @@ case "$*" in
   *) exit 2 ;;
 esac
 EOF
+# nc is the real one, except that it sends any 100.x and fd7a: address to
+# loopback, so a tailnet listener answers or refuses as fast as a local one.
+cat >"$stubs/nc" <<'EOF'
+#!/usr/bin/env bash
+args=()
+for a in "$@"; do
+  case "$a" in 100.*.*.*) a=127.0.0.1 ;; fd7a:*) a=::1 ;; esac
+  args+=("$a")
+done
+exec /usr/bin/nc "${args[@]}"
+EOF
 # python3 is the real one unless a case makes it fail.
 real_python3="$(command -v python3)"
 # shellcheck disable=SC2016 # the stub expands these, not this script
@@ -114,9 +126,8 @@ netstat_rows() {
 # fresh: a new runner layout under $tmp/r with a config file pointing at it.
 # The protected home is closed to the runner user, as the owner's home is,
 # though a directory below it is world-readable, like ~/.t3. netstat lists
-# two listeners of other users with nothing behind them, so every probe is
-# refused, as the firewall makes it for the runner. pf runs Apple's stock
-# main ruleset.
+# four listeners of other users with nothing behind them, two on the
+# tailnet, so every probe is refused. pf runs Apple's stock main ruleset.
 fresh() {
   [ -d "$tmp/r" ] && chmod -R u+rwX "$tmp/r" && rm -rf "$tmp/r"
   r="$tmp/r"
@@ -124,6 +135,7 @@ fresh() {
   chmod 755 "$r/protected/.t3"
   chmod 000 "$r/protected"
   netstat_rows tcp4 "127.0.0.1.$closed4" LISTEN tcp6 "*.$closed6" LISTEN \
+    tcp4 "100.99.1.2.$closed4" LISTEN tcp6 "fd7a:115c:a1e0::1.$closed6" LISTEN \
     tcp4 "127.0.0.1.$open" ESTABLISHED >"$r/log/netstat.txt"
   printf '%s\n' 'scrub-anchor "com.apple/*" all fragment reassemble' 'anchor "com.apple/*" all' >"$r/log/pf.main"
   echo "pass all" >"$r/rules.pf"
@@ -165,7 +177,7 @@ want="isolation ok: cannot list $r/protected
 isolation ok: cannot enter $r/protected
 isolation ok: cannot run sudo
 isolation ok: cannot act as a trusted Nix user
-isolation ok: cannot connect to 2 listeners of other users: 127.0.0.1:$closed4 [::1]:$closed6
+isolation ok: cannot connect to listeners of other users on the tailnet: 100.99.1.2:$closed4 [fd7a:115c:a1e0::1]:$closed6
 isolation ok: can still reach its own servers on 127.0.0.1 and [::1]"
 if [ "$code" = 0 ] && [ "$out" = "$want" ]; then ok "check passes when isolated"
 else bad "check passes when isolated" "exit $code" "want:" "$want" "got:" "$out"; fi
@@ -193,18 +205,30 @@ fresh; STUB_NIX_TRUSTED=1 run check
 if [ "$code" != 0 ] && grep -q "trusted Nix user" <<<"$out"; then ok "check fails for a trusted Nix user"
 else bad "check fails for a trusted Nix user" "exit $code" "$out"; fi
 
-# A wildcard listener is probed on loopback; the real one there answers.
-fresh; netstat_rows tcp4 "127.0.0.1.$closed4" LISTEN tcp4 "*.$open" LISTEN >"$r/log/netstat.txt"
+# A wildcard listener is probed on loopback; the real one there answers. pf
+# cannot stop that on macOS, so it is a warning. The 100.x addresses just
+# outside the tailnet's /10 count as this Mac's own.
+fresh; netstat_rows tcp4 "127.0.0.1.$closed4" LISTEN tcp4 "*.$open" LISTEN \
+  tcp4 "100.63.255.255.$open" LISTEN tcp4 "100.128.0.1.$open" LISTEN >"$r/log/netstat.txt"
 run check
-if [ "$code" != 0 ] \
-  && grep -q "^isolation FAILED: the runner user can connect to listeners of other users: 127.0.0.1:$open$" <<<"$out"; then
-  ok "check fails when another user's listener answers"
-else bad "check fails when another user's listener answers" "exit $code" "$out"; fi
+if [ "$code" = 0 ] && grep -q "^isolation ok: no listeners of other users on the tailnet to probe$" <<<"$out" \
+  && grep -q "^isolation warning: can connect to 3 listeners of other users on this Mac's own addresses, which pf cannot filter: 127.0.0.1:$open 100.63.255.255:$open 100.128.0.1:$open$" <<<"$out"; then
+  ok "check warns, and still passes, when another user's loopback listener answers"
+else bad "check warns, and still passes, when another user's loopback listener answers" "exit $code" "$out"; fi
 
-fresh; netstat_rows tcp4 "127.0.0.1.$closed4" LISTEN tcp4 "127.0.0.1.$open" LISTEN >"$r/log/netstat.txt"
+fresh; netstat_rows tcp4 "100.64.0.1.$open" LISTEN tcp4 "100.127.255.255.$open" LISTEN \
+  tcp4 "127.0.0.1.$closed4" LISTEN >"$r/log/netstat.txt"
+run check
+if [ "$code" != 0 ] && grep -q "refusing to run jobs" <<<"$out" \
+  && grep -qF "isolation FAILED: the runner user can connect to listeners of other users on the tailnet: 100.64.0.1:$open 100.127.255.255:$open" <<<"$out"; then
+  ok "check fails when another user's tailnet listener answers"
+else bad "check fails when another user's tailnet listener answers" "exit $code" "$out"; fi
+
+fresh; netstat_rows tcp4 "127.0.0.1.$closed4" LISTEN tcp4 "127.0.0.1.$open" LISTEN tcp4 "100.99.1.2.$open" LISTEN >"$r/log/netstat.txt"
 printf 'p4242\nf9\nn127.0.0.1:%s\nf10\nn*:%s\np4343\nf3\nn[::1]:%s\n' "$open" "$closed6" "$closed6" >"$r/log/lsof.txt"
 run check
-if [ "$code" = 0 ] && grep -q "^isolation ok: cannot connect to 1 listeners of other users: 127.0.0.1:$closed4$" <<<"$out"; then
+if [ "$code" = 0 ] && ! grep -q "warning" <<<"$out" \
+  && grep -q "^isolation ok: no listeners of other users on the tailnet to probe$" <<<"$out"; then
   ok "check leaves the runner's own listeners out of the probe"
 else bad "check leaves the runner's own listeners out of the probe" "exit $code" "$out"; fi
 
@@ -323,10 +347,7 @@ else bad "firewall enables pf again if something disabled it" "exit $code" "$out
 # pfctl -n parses without root or /dev/pf; the output is the rules as pf
 # stores them, macros and lists expanded.
 rules="$(sed 's/@uid@/533/g' "$repo/nix/github-runner.pf" | /sbin/pfctl -nvf - 2>/dev/null | grep -v '^[a-z]* = ' || true)"
-want="pass out quick on lo0 proto tcp all user = 533 no state tag github-runner
-pass out quick on lo0 proto udp all user = 533 no state tag github-runner
-block return in quick on lo0 proto tcp all user != 533 tagged github-runner
-block return in quick on lo0 proto udp all user != 533 tagged github-runner"
+want=
 v4="10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 100.64.0.0/10 169.254.0.0/16" v6="fc00::/7 fe80::/10"
 for rule in "pass out quick %s proto %s from any to %s port = 53 user = 533 no state" \
   "block return out quick %s proto %s from any to %s user = 533"; do
@@ -338,6 +359,7 @@ for rule in "pass out quick %s proto %s from any to %s port = 53 user = 533 no s
     done
   done
 done
+want="${want#$'\n'}"
 if [ "$rules" = "$want" ]; then ok "pf rules parse to the expected ruleset"
 else bad "pf rules parse to the expected ruleset" "$(diff <(echo "$want") <(echo "$rules"))"; fi
 

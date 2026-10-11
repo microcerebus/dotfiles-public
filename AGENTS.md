@@ -187,10 +187,11 @@ tool-adoption backlog; check it before adding workflow tooling).
 - pf: never reload the main ruleset (`pfctl -f /etc/pf.conf`); system services
   add anchors to it at runtime. Load a child of the `com.apple` anchor instead
   (`pfctl -a com.apple/<name> -f`), which Apple's pf.conf already evaluates.
-  A pf tag set on the way out survives lo0 back in, which is how
-  `nix/github-runner.pf` lets the runner reach only its own listeners. It does
-  not survive Tailscale's utun, and this Mac's tailnet address routes there,
-  not via lo0 (2026-10-11).
+  pf on macOS never sees traffic to this Mac's own loopback or LAN addresses:
+  a rule `on lo0` matched 0 packets even with no user condition, so per-user
+  loopback isolation cannot be done with pf (the runner's check only warns).
+  This Mac's tailnet address routes via Tailscale's utun, which pf does
+  filter (2026-10-11).
 - The login keychain answers only inside the owner's GUI session. A launchd
   daemon that runs `sudo -u myuser git fetch` has the right user but the wrong
   security session: osxkeychain gets -25308 and git fails with "could not read

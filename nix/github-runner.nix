@@ -9,16 +9,21 @@
 #
 # Isolation: a hidden, non-admin user owns everything under /var/lib/github-runner.
 # It cannot list or enter the owner's home, whatever groups macOS puts it in:
-# a deny ACL that every activation re-applies. pf lets it reach no other
-# user's listener on this Mac (the agent Chrome's DevTools, T3 Code, Lavish,
-# anything started later) and nothing on the LAN or tailnet but DNS:
+# a deny ACL that every activation re-applies. pf lets it reach nothing on the
+# LAN or tailnet but DNS, this Mac's own tailnet address included:
 # nix/github-runner.pf, kept loaded by the github-runner-firewall daemon. On
 # every start and before every job the runner proves all that, plus no sudo
 # and no trusted Nix, and runs no jobs if any of it fails. After every job a
 # hook wipes the job's HOME, TMPDIR and work dir, the way a hosted runner
 # starts each job on a fresh VM.
-# Not covered: Unix sockets and world-readable files outside the owner's home
-# keep their own modes (a few sockets in /tmp are world-writable).
+# Not covered: other users' listeners on this Mac's loopback and LAN
+# addresses (the agent Chrome's DevTools, T3 Code, Lavish). macOS delivers
+# that traffic without pf ever seeing it, so the runner can connect to them,
+# and its check only warns. The owner accepted this on 2026-10-11: job-tracker
+# is private, and the dependencies and PR code its jobs run already run as the
+# owner in agent worktrees. Closing it would take a VM. Unix sockets and
+# world-readable files outside the owner's home keep their own modes (a few
+# sockets in /tmp are world-writable).
 # Firewall off by hand, if it ever gets in the owner's way:
 #   sudo pfctl -a com.apple/github-runner -F rules
 #

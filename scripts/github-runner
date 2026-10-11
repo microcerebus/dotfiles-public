@@ -12,10 +12,12 @@
 #                  so one PR's run cannot leave state for the next.
 #   check          isolation check: the runner user must not list or enter the
 #                  owner's home, use sudo, be a trusted Nix user, or connect to
-#                  any other user's listener on this Mac, and must still reach
-#                  its own servers on loopback.
+#                  any other user's listener on the tailnet, and must still
+#                  reach its own servers on loopback. It only warns about the
+#                  listeners it reaches on this Mac's loopback and LAN
+#                  addresses, which pf on macOS cannot filter.
 #   firewall       launchd entry point, as root, every minute: keep the pf
-#                  rules behind that last part (nix/github-runner.pf) loaded
+#                  rules behind the tailnet part (nix/github-runner.pf) loaded
 #                  and pf enabled.
 #   register       run by the owner (github-runner-register): mint a one-hour
 #                  registration token with gh and queue it for the runner,
@@ -70,25 +72,52 @@ listeners() {
     function found(addr, port) { if (!seen[addr " " port]++) print addr, port }'
 }
 
-# unreachable_listeners: no listener of another user may accept a connection
-# from the runner user. Finding none to probe fails too: there is always at
-# least launchd's sshd, so an empty list means the probe itself broke.
-unreachable_listeners() {
-  local addr port target probed=() reached=()
+# tailnet <address>: whether the address is Tailscale's (100.64.0.0/10 or
+# fd7a:115c:a1e0::/48).
+tailnet() {
+  local second
+  case "$1" in
+    fd7a:115c:a1e0:*) return 0 ;;
+    100.*.*.*) second="${1#100.}" && second="${second%%.*}" && [ "$second" -ge 64 ] && [ "$second" -le 127 ] ;;
+    *) return 1 ;;
+  esac
+}
+
+# probe_listeners: no listener of another user on the tailnet may accept a
+# connection from the runner user; pf blocks the tailnet, so one that does
+# means the firewall is down. Traffic to this Mac's loopback and LAN addresses
+# never reaches pf on macOS (2026-10-11), so a listener there that answers is
+# a warning, not a failure: the owner accepted that gap. Finding nothing to
+# probe fails: there is always at least launchd's sshd, so an empty list means
+# the probe itself broke.
+probe_listeners() {
+  local addr port target probed=0 on_tailnet=() reached_tailnet=() reached_here=()
   while read -r addr port; do
     case "$addr" in *:*) target="[$addr]:$port" ;; *) target="$addr:$port" ;; esac
-    probed+=("$target")
-    if nc -z -G 2 -w 2 "$addr" "$port" >/dev/null 2>&1; then reached+=("$target"); fi
+    probed=$((probed + 1))
+    if tailnet "$addr"; then
+      on_tailnet+=("$target")
+      if nc -z -G 2 -w 2 "$addr" "$port" >/dev/null 2>&1; then reached_tailnet+=("$target"); fi
+    elif nc -z -G 2 -w 2 "$addr" "$port" >/dev/null 2>&1; then
+      reached_here+=("$target")
+    fi
   done < <(listeners)
-  if [ "${#probed[@]}" = 0 ]; then
+  if [ "$probed" = 0 ]; then
     echo "isolation FAILED: found no listeners of other users to probe" >&2
     return 1
   fi
-  if [ "${#reached[@]}" != 0 ]; then
-    echo "isolation FAILED: the runner user can connect to listeners of other users: ${reached[*]}" >&2
+  if [ "${#reached_here[@]}" != 0 ]; then
+    echo "isolation warning: can connect to ${#reached_here[@]} listeners of other users on this Mac's own addresses, which pf cannot filter: ${reached_here[*]}" >&2
+  fi
+  if [ "${#reached_tailnet[@]}" != 0 ]; then
+    echo "isolation FAILED: the runner user can connect to listeners of other users on the tailnet: ${reached_tailnet[*]}" >&2
     return 1
   fi
-  echo "isolation ok: cannot connect to ${#probed[@]} listeners of other users: ${probed[*]}"
+  if [ "${#on_tailnet[@]}" = 0 ]; then
+    echo "isolation ok: no listeners of other users on the tailnet to probe"
+  else
+    echo "isolation ok: cannot connect to listeners of other users on the tailnet: ${on_tailnet[*]}"
+  fi
 }
 
 # own_servers: the runner's own test servers must still work, on both
@@ -129,7 +158,7 @@ check() {
   deny "enter $protected" enter "$protected"
   deny "run sudo" sudo -n true
   deny "act as a trusted Nix user" nix_trusted
-  unreachable_listeners || failed=1
+  probe_listeners || failed=1
   if own_servers >/dev/null 2>&1; then
     echo "isolation ok: can still reach its own servers on 127.0.0.1 and [::1]"
   else

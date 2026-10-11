@@ -170,6 +170,13 @@ in
       init.defaultBranch = "main";
       pull.rebase = true;
       push.autoSetupRemote = true;
+      # gh is git's only credential for github.com, so a gh login reaches every
+      # HTTPS fetch (dotfiles-sync's too) and no keychain copy outlives it: on
+      # 11 Oct 2026 git's osxkeychain copy kept a leaked token alive after a
+      # gh re-login. The empty helper drops git's default osxkeychain for this
+      # host only. Store path, so launchd agents can run it.
+      # Tests: tests/git_credential_test.sh.
+      credential."https://github.com".helper = [ "" "!${pkgs.gh}/bin/gh auth git-credential" ];
     };
     # .resume/: pause-safely resume notes stay local in every repo (they
     # carry thread ids and would ride along in a `wip:` commit otherwise).
