@@ -39,7 +39,7 @@ SCOPE: <repo, worktree, branch, files or packages in bounds>
 CONTEXT: <links: issue, PR, resume note, feature map entry>
 ACCEPTANCE: <what must be true, observable>
 VERIFY: <the proof: verification skill command, screenshots, test names>
-TIMEBOX: <hours or context budget; pause-safely at 300k tokens>
+TIMEBOX: <hours or context budget; finish under about 150k tokens; pause-safely at 200k, never past 250k>
 FORBIDDEN: <actions needing the owner: deploys, provider settings, containers, merges outside the gates>
 REPORT: <who to tell, in what format: plain language, at most 5 lines, no raw IDs>
 STANDING: <standing-orders.md pasted verbatim>

@@ -1,18 +1,18 @@
 ---
 name: pause-safely
-description: "Stop at a safe boundary, make the work durable, and leave a resume note a fresh thread can pick up. Use when told to pause or stop, before going offline or a restart, when context passes about 300k tokens at a phase boundary (always before 500k), or when a provider usage limit is about to cut the session off. Never on 'keep going'."
+description: "Stop at a safe boundary, make the work durable, and leave a resume note a fresh thread can pick up. Use when told to pause or stop, before going offline or a restart, when context passes about 200k tokens at a phase boundary (always before 250k), or when a provider usage limit is about to cut the session off. Never on 'keep going'."
 ---
 
 # Pause safely
 
 Adapted from pstack's pause-safely playbook (cursor/plugins, MIT, Lauren Tan) for Claude Code in T3 Code.
-Auto-compact is off on purpose.
-A thread that fills its context dies mid-command and loses whatever lived only in it, so leave before that happens.
+Auto-compact fires near 270k only as a backstop, and a compacted thread keeps a lossy summary of its own work.
+Leave on purpose at a phase boundary before that happens; after a compaction, finish the current step and pause.
 
 ## When
 
 - the owner or the orchestrator says pause, stop or wrap up.
-- Context is past about 300k tokens and you are at a phase boundary, or near 500k at any point.
+- Context is past about 200k tokens and you are at a phase boundary, or near 250k at any point.
   The per-turn hook prints the count; otherwise run `python3 -I ~/.claude/skills/recall/scripts/recall.py context`.
 - A usage-limit warning, or a provider or model switch, is coming.
 - Not on "keep going", "going to bed, keep going" or "don't stop".

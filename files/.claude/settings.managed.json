@@ -1,6 +1,10 @@
 {
   "cleanupPeriodDays": 365,
-  "autoCompactEnabled": false,
+  "bashOutputMaxChars": 15000,
+  "autoCompactEnabled": true,
+  "autoCompactWindow": 300000,
+  "claudeMdExcludes": ["/Users/*/AGENTS.md"],
+  "deniedMcpServers": [{ "serverName": "claude.ai Claude Docs" }, { "serverName": "claude.ai Telegram" }],
   "hooks": {
     "SessionStart": [
       { "hooks": [{ "type": "command", "command": "~/dotfiles/scripts/dotfiles-autoupdate status --alarms", "timeout": 5 }] }
@@ -10,6 +14,9 @@
     ],
     "PreToolUse": [
       { "matcher": "Bash", "hooks": [{ "type": "command", "command": "python3 -I ~/.claude/hooks/bash_guard.py", "timeout": 5 }] }
+    ],
+    "PreCompact": [
+      { "matcher": "auto", "hooks": [{ "type": "command", "command": "python3 -I ~/.claude/hooks/pre_compact.py", "timeout": 5 }] }
     ],
     "PostToolUse": [
       { "matcher": "Write|Edit|MultiEdit", "hooks": [{ "type": "command", "command": "python3 -I ~/.claude/hooks/write_guard.py", "timeout": 5 }] }

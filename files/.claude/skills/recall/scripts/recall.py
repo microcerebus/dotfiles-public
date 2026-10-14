@@ -18,6 +18,9 @@ HOME = os.path.expanduser('~')
 CLAUDE = os.path.join(HOME, '.claude', 'projects')
 CODEX = os.path.join(HOME, '.codex', 'sessions')
 HISTORY = os.path.join(HOME, '.claude', 'history.jsonl')
+# Handoff thresholds (~/AGENTS.md, Agent operations): pause-safely at the next
+# phase boundary past HANDOFF, at once past PAUSE_NOW; 250k is the hard stop.
+HANDOFF, PAUSE_NOW = 200_000, 230_000
 # Messages that arrive as "user" but were written by the harness or another agent.
 NOISE = ('<local-command', '<command-stdout', '<environment_context>', '<user_instructions>',
          '<permissions', '# AGENTS.md', '<task-notification>', 'Background command completed')
@@ -187,15 +190,20 @@ def context_tokens(path):
     return None
 
 
+def context_advice(n):
+    if n >= PAUSE_NOW:
+        return 'near 250k: use the pause-safely skill now'
+    if n >= HANDOFF:
+        return 'past 200k: use the pause-safely skill at the next phase boundary'
+    return None
+
+
 def cmd_context(a):
     path = a.transcript or cmd_self(a)[0]['path']
     n = context_tokens(path)
     if n is None:
         sys.exit(f'No assistant usage record in {path} yet.')
-    advice = ('ok' if n < 300_000 else
-              'past 300k: pause safely at the next phase boundary' if n < 450_000 else
-              'near 500k: pause safely now')
-    return [{'tokens': n, 'advice': advice, 'path': path}]
+    return [{'tokens': n, 'advice': context_advice(n) or 'ok', 'path': path}]
 
 
 def main():

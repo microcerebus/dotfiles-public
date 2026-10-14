@@ -94,7 +94,7 @@ Prefer the boring, widely-adopted, steadily-maintained option over the flashy fe
 - Skills only help when they get used: make them model-invocable or name them in the brief.
 - pnpm over npm wherever a JS package manager is needed.
 - Adopted: CodeRabbit for PR review (over Greptile), Claude as the preferred AI in the editor.
-  In T3 Code, use Codex when Claude hits usage limits, following the fallback routing table in ~/AGENTS.md.
+  In T3 Code, use Codex when Claude hits usage limits, following the fallback routing table in ~/dotfiles/docs/model-routing.md.
   Tried and dropped, don't re-suggest: GitHub Copilot, Wakatime, Paseo, mosh/Moshi, Hex (dictation is Claude voice now), Codex cloud tasks (couldn't carry a real session), agenttrail (a 3D view of one repo; can't show T3 threads, who waits on me or context, so the agent board does that).
 - Claude Code installs natively, not as a brew cask (reversed 2026-10-07: the cask fell ~60 versions behind because brew skips self-updating casks).
 - Catppuccin for the dev toolchain (terminal, editor, shell), with JetBrains Mono Nerd Font; products I build get their own design system.

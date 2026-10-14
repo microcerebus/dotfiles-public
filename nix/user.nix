@@ -408,8 +408,8 @@ in
   home.file.".claude/skills/codex-computer-use".source = link "files/.claude/skills/codex-computer-use";
   # Own skills adapted from pstack playbooks (MIT, Lauren Tan) for T3 Code:
   # recall (mine Claude, Codex and T3 history; scripts/recall.py, read-only,
-  # stdlib Python), pause-safely and session-pickup (auto-compact is off, so
-  # threads hand off through resume notes), standing-orders (lane rules and
+  # stdlib Python), pause-safely and session-pickup (threads hand off through
+  # resume notes; auto-compact near 270k is only a backstop), standing-orders (lane rules and
   # authorizations that survive thread death). They replace mattpocock's
   # handoff skill (dropped 2026-10-10).
   home.file.".claude/skills/recall".source = link "files/.claude/skills/recall";
@@ -456,6 +456,9 @@ in
   # `bash`, so no execute bit is required. Edit files/.claude/statusline.sh,
   # not the symlink target.
   home.file.".claude/statusline.sh".source = link "files/.claude/statusline.sh";
+  # Reader subagent (Haiku 5.5, low effort): usage trial until 2026-10-22,
+  # docs/model-routing.md. Remove with the trial unless the owner keeps it.
+  home.file.".claude/agents/reader.md".source = link "files/.claude/agents/reader.md";
   # Guardrail hooks (2026-10-10), each encoding a correction that rules alone
   # did not stop: turn_context.py prints the SGT time and the thread's context
   # size every turn; bash_guard.py blocks container/VM starts and em dashes in
@@ -464,10 +467,22 @@ in
   home.file.".claude/hooks/turn_context.py".source = link "files/.claude/hooks/turn_context.py";
   home.file.".claude/hooks/bash_guard.py".source = link "files/.claude/hooks/bash_guard.py";
   home.file.".claude/hooks/write_guard.py".source = link "files/.claude/hooks/write_guard.py";
+  # pre_compact.py shapes a backstop auto-compaction as a handoff (2026-10-14).
+  home.file.".claude/hooks/pre_compact.py".source = link "files/.claude/hooks/pre_compact.py";
   # ~/.claude/settings.json stays a plain file because Claude Code, herdr and
   # the axi tools write to it at runtime. Each switch deep-merges the keys
   # this repo owns (files/.claude/settings.managed.json: transcript retention,
-  # auto-compact off, the hooks above) and leaves everything else alone.
+  # auto-compact as a backstop, the hooks above) and leaves everything else alone.
+  # Two keys trim what every thread loads (2026-10-14, the owner's yes to the
+  # usage plan): claudeMdExcludes skips ~/AGENTS.md, which Claude Code loads
+  # as a project file in non-git directories under ~ (T3 scratch threads) on
+  # top of ~/.claude/CLAUDE.md, the same file; the path stays for other tools
+  # and the briefs that cite it. deniedMcpServers drops the claude.ai Claude
+  # Docs and Telegram connectors (no agent call in the 14 days before; alerts
+  # use scripts/telegram-alert). Gmail and Calendar stay: interview hosts and
+  # orchestrators run in scratch directories that no project setting reaches.
+  # A repo whose threads never need them can commit
+  # `{"disableClaudeAiConnectors": true}` in its .claude/settings.json.
   home.activation.claudeManagedSettings = lib.hm.dag.entryAfter [ "writeBoundary" ] ''
     run ${pkgs.bash}/bin/bash ${dotfiles}/files/.claude/merge-settings.sh \
       ${pkgs.jq}/bin/jq "$HOME/.claude/settings.json" \

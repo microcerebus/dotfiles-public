@@ -42,7 +42,7 @@ function fixture() {
   // A: running, busy, context from T3. B: waiting on an input card. C: idle. D: running but its log went quiet,
   // context only in the log. E: a running child of A. F: an idle child (hidden). G: settled. H: deleted.
   thread('A', 'p1', 'UI owner', 1, { branch: 'ui-polish', modelSelection: { model: 'claude-opus-5-5' } });
-  provider('A', 'sess-a', { usedTokens: 320_000, maxTokens: 1_000_000 });
+  provider('A', 'sess-a', { usedTokens: 210_000, maxTokens: 1_000_000 });
   run('A', 1, 'completed'); run('A', 2, 'running'); run('A', 3, 'cancelled');
   thread('B', 'p2', 'macOS update <script>alert(1)</script>', 3, { branch: 'macos' });
   provider('B', 'sess-b', { usedTokens: 90_000, maxTokens: 1_000_000 });
@@ -103,7 +103,7 @@ test('shows what each thread is doing and how full its context is', () => {
   const [a, e, d] = s.running;
   assert.equal(a.tool, 'Bash'); // newest main-thread tool call; the sidechain Grep is a subagent
   assert.equal(a.run, 'running'); // a later cancelled run does not hide the active one
-  assert.equal(a.contextUsed, 320_000);
+  assert.equal(a.contextUsed, 210_000);
   assert.equal(a.contextMax, 1_000_000);
   assert.equal(a.quiet, false);
   assert.equal(e.parentTitle, 'UI owner');
@@ -122,9 +122,9 @@ test('renders escaped titles, states and context bands', () => {
   assert.match(html, /Running · 3/);
   assert.match(html, /input card 6 min/);
   assert.match(html, /no activity 14 min/);
-  assert.match(html, /Bash 30s<\/span> · 320k \/ 1M · Opus 5\.5 · job-tracker · ui-polish/);
+  assert.match(html, /Bash 30s<\/span> · 210k \/ 1M · Opus 5\.5 · job-tracker · ui-polish/);
   assert.match(html, /done 25 min ago/);
-  assert.match(html, /class="warn" style="width:32\.0%"/);
+  assert.match(html, /class="warn" style="width:21\.0%"/);
   assert.match(html, /↳ UI owner/);
   assert.ok(html.includes('macOS update &lt;script&gt;alert(1)&lt;/script&gt;'));
   assert.ok(!html.includes('<script>'));

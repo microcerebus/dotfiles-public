@@ -86,19 +86,21 @@ check "allows still-hosts heredoc elsewhere" 0 bash_guard.py "$(bash_cmd $'cat >
 
 # Turn context: always the SGT time; context size read from the transcript's last usage record.
 printf '%s\n' '{"type":"user","message":{"content":"hi"}}' \
-  '{"type":"assistant","message":{"usage":{"input_tokens":5,"cache_creation_input_tokens":1000,"cache_read_input_tokens":349000}}}' >"$tmp/t.jsonl"
+  '{"type":"assistant","message":{"usage":{"input_tokens":5,"cache_creation_input_tokens":1000,"cache_read_input_tokens":209000}}}' >"$tmp/t.jsonl"
 check "turn context with transcript" 0 turn_context.py "{\"transcript_path\":\"$tmp/t.jsonl\"}"
-if grep -q 'SGT' "$tmp/out" && grep -q '350k tokens. Past 300k' "$tmp/out"; then echo "ok   turn context text"; else echo "FAIL turn context text: $(cat "$tmp/out")"; fail=1; fi
+if grep -q 'SGT' "$tmp/out" && grep -q '210k tokens. Past 200k' "$tmp/out"; then echo "ok   turn context text"; else echo "FAIL turn context text: $(cat "$tmp/out")"; fail=1; fi
 check "turn context without transcript" 0 turn_context.py '{}'
 grep -q 'Current time' "$tmp/out" || { echo "FAIL no time without transcript"; fail=1; }
+check "pre-compact backstop" 0 pre_compact.py '{"trigger":"auto"}'
+grep -q 'pause-safely' "$tmp/out" || { echo "FAIL pre-compact text: $(cat "$tmp/out")"; fail=1; }
 
 # Managed settings merge: adds owned keys, keeps everything else, idempotent.
 cat >"$tmp/settings.json" <<'JSON'
-{"theme":"dark","autoCompactEnabled":true,"hooks":{"SessionStart":[{"matcher":"","hooks":[{"type":"command","command":"gh-axi"}]},{"hooks":[{"type":"command","command":"~/dotfiles/scripts/retired-script"}]}],"UserPromptSubmit":[{"hooks":[{"type":"command","command":"other-tool"}]}],"PostToolUse":[{"hooks":[{"type":"command","command":"python3 -I ~/.claude/hooks/retired.py"}]}]}}
+{"theme":"dark","autoCompactEnabled":false,"hooks":{"SessionStart":[{"matcher":"","hooks":[{"type":"command","command":"gh-axi"}]},{"hooks":[{"type":"command","command":"~/dotfiles/scripts/retired-script"}]}],"UserPromptSubmit":[{"hooks":[{"type":"command","command":"other-tool"}]}],"PostToolUse":[{"hooks":[{"type":"command","command":"python3 -I ~/.claude/hooks/retired.py"}]}]}}
 JSON
 bash "$repo/files/.claude/merge-settings.sh" jq "$tmp/settings.json" "$repo/files/.claude/settings.managed.json"
 got="$(jq -c '[.theme, .autoCompactEnabled, .cleanupPeriodDays, [.hooks.SessionStart[].hooks[0].command], [.hooks.UserPromptSubmit[].hooks[0].command], (.hooks.PreToolUse[0].matcher), ([.hooks.PostToolUse[].hooks[0].command]|any(test("retired")))]' "$tmp/settings.json")"
-want='["dark",false,365,["gh-axi","~/dotfiles/scripts/dotfiles-autoupdate status --alarms"],["other-tool","python3 -I ~/.claude/hooks/turn_context.py"],"Bash",false]'
+want='["dark",true,365,["gh-axi","~/dotfiles/scripts/dotfiles-autoupdate status --alarms"],["other-tool","python3 -I ~/.claude/hooks/turn_context.py"],"Bash",false]'
 if [ "$got" = "$want" ]; then echo "ok   merge keeps others' hooks, replaces ours, drops retired ones"; else echo "FAIL merge: $got, want $want"; fail=1; fi
 cp "$tmp/settings.json" "$tmp/once.json"; rm -f "$tmp/settings.json.before-merge"
 bash "$repo/files/.claude/merge-settings.sh" jq "$tmp/settings.json" "$repo/files/.claude/settings.managed.json"

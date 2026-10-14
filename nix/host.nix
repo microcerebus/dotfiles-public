@@ -99,6 +99,7 @@
       "termius"              # SSH client (hosts sync via Termius account)
       "visual-studio-code"
       "vlc"                  # media player
+      "zoom"                 # video calls (interviews)
 
       # Tailscale GUI app: provides the TUN via a Network Extension, so no
       # root daemon to manage (the `tailscale` *formula* needs sudo tailscaled).

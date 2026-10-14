@@ -63,13 +63,12 @@ out="$(seg "$BLUE" "$model")"
 if [ -n "$used_tokens" ]; then
   tokens_int="$(printf '%.0f' "$used_tokens")"
   pct_int=$(( tokens_int * 100 / window ))
-  # Colour by absolute fill, not percent: with auto-compact off this is the
-  # only warning, and quality degrades well before a 1M window is full
-  # (Anthropic's session-management guidance: compact or hand off by
-  # ~300-400k). Yellow = plan a handoff, red = do it now. Small windows keep
-  # the 50%/80% marks.
-  warn=$(( window / 2 )); [ "$warn" -gt 200000 ] && warn=200000
-  crit=$(( window * 4 / 5 )); [ "$crit" -gt 350000 ] && crit=350000
+  # Colour by absolute fill, not percent, matching the handoff rule in
+  # ~/AGENTS.md: yellow past 200k = hand off at the next phase boundary,
+  # red past 230k = do it now (hard stop 250k; auto-compact near 270k is
+  # only a backstop). Small windows keep the 2/3 and 4/5 marks.
+  warn=$(( window * 2 / 3 )); [ "$warn" -gt 200000 ] && warn=200000
+  crit=$(( window * 4 / 5 )); [ "$crit" -gt 230000 ] && crit=230000
   if [ "$tokens_int" -ge "$crit" ]; then
     color="$RED"
   elif [ "$tokens_int" -ge "$warn" ]; then

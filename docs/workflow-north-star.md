@@ -77,10 +77,11 @@ Don't reinstall it.
 
 ## Context discipline (2026-07-05, revised 2026-07-08)
 
-Auto-compact is disabled (`autoCompactEnabled: false` in
-~/.claude/settings.json, not repo-managed - Claude Code mutates that file at
-runtime) and there is no artificial context hard limit; compaction is a
-manual, deliberate act.
+Since 2026-10-14 auto-compact is back on, but only as a backstop:
+`autoCompactWindow: 300000` (files/.claude/settings.managed.json) makes it
+fire near 270k, past the 250k handoff hard stop, and an `auto` PreCompact
+hook shapes the summary as a handoff. Idle compaction comes with it. From
+2026-07-05 to 2026-10-14 it was off and compaction was manual only.
 The 100k `autoCompactWindow` limit and its `claude-heavy` 1M escape-hatch
 alias were removed 2026-07-08.
 The statusline instead shows real usage against the model's actual context
@@ -98,5 +99,5 @@ Since 2026-10-10 handoffs follow pstack: the `pause-safely` skill commits a
 `wip:` checkpoint and writes a resume note to `<worktree>/.resume/`, and a
 fresh thread resumes through `session-pickup`. A UserPromptSubmit hook prints
 the SGT time and the thread's context size every turn, so agents see the
-300k/500k thresholds instead of guessing. mattpocock's `/handoff` was
+200k/250k thresholds instead of guessing (300k/500k until 2026-10-14). mattpocock's `/handoff` was
 replaced by these on 2026-10-10.

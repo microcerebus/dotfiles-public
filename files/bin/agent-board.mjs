@@ -199,8 +199,8 @@ function card(t, now) {
     : t.contextMax ? `${tokens(t.contextUsed)} / ${tokens(t.contextMax)}` : tokens(t.contextUsed);
   const meta = [context, modelName(t.model), t.project, t.branch].filter(Boolean).map(escape).join(' · ');
   const share = t.contextUsed !== null && t.contextMax ? Math.min(1, t.contextUsed / t.contextMax) : null;
-  // Context bands follow the pause-safely rule: past 300k pause at the next boundary, past 450k now.
-  const band = t.contextUsed >= 450_000 ? 'hot' : t.contextUsed >= 300_000 ? 'warn' : '';
+  // Context bands follow the pause-safely rule: past 200k pause at the next boundary, past 230k now.
+  const band = t.contextUsed >= 230_000 ? 'hot' : t.contextUsed >= 200_000 ? 'warn' : '';
   const bar = share !== null && t.state !== 'idle'
     ? `<div class="ctx"><i class="${band}" style="width:${(share * 100).toFixed(1)}%"></i></div>` : '';
   return `<div class="t ${t.state}"><div class="name">${escape(t.title)}</div>`
