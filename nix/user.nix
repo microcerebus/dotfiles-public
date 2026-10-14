@@ -389,7 +389,8 @@ in
   # pinned callstack/agent-device CLI (pnpm global, pinned in nix/host.nix).
   home.file.".claude/skills/agent-device".source = link "files/.claude/skills/agent-device";
   # unslop (cursor/plugins, pstack/skills/unslop): strips AI writing tells from
-  # everything user-facing; prompt-only markdown, security-read 2026-08-24.
+  # everything user-facing; prompt-only markdown. Refreshed with the pstack
+  # skills below; keeps its model-invocable "Must always apply." frontmatter.
   # Captain standing instruction: apply by default to all writing.
   home.file.".claude/skills/unslop".source = link "files/.claude/skills/unslop";
   # mattpocock/skills: grilling (relentless plan interviews). Prompt-only
@@ -416,19 +417,41 @@ in
   home.file.".claude/skills/session-pickup".source = link "files/.claude/skills/session-pickup";
   home.file.".claude/skills/standing-orders".source = link "files/.claude/skills/standing-orders";
   # pstack (cursor/plugins, pstack/skills, MIT, Lauren Tan), vendored at
-  # df581122cde17e6e27686b5a448bde23e4ad4318 (2026-10-05) and security-read
-  # 2026-10-10: prompt-only markdown plus one append-only TSV helper
-  # (show-me-your-work/scripts/log.sh), no network. Edits from upstream are
-  # limited to Cursor paths (.cursor/skills -> .claude/skills, transcript
-  # location), the cross-family reviewer, and making correct and
-  # show-me-your-work model-invocable. The rest stay slash-command only, as
-  # upstream ships them. Update procedure: docs/workflow-north-star.md.
+  # 1e5c90a4b6f249917bd21fe361b3a2a7deb741b8 (pstack 0.15.24, 2026-10-14) and
+  # security-read 2026-10-14: prompt-only markdown plus one append-only TSV
+  # helper (show-me-your-work/scripts/log.sh), no network, no hooks. Edits
+  # from upstream: Cursor paths (.cursor/skills -> .claude/skills, transcript
+  # location), Cursor Task/model lines -> Agent tool roles per CLAUDE.md model
+  # routing, the cross-family reviewer, correct and show-me-your-work (and
+  # unslop above) model-invocable; why reads git/gh, ~/orchestrator lane
+  # records and recall instead of Slack/Linear/Notion MCPs; reflect uses
+  # recall and tasks-axi; ketchup renders with T3 html_render and leads with
+  # "Needs the owner"; arena, architect, interrogate and swarm share
+  # arena/references/model-families.md (Codex via `codex exec`, Claude-only
+  # fallback with a Fable judge). The rest stay slash-command only, as
+  # upstream ships them. Skipped on purpose: poteto-mode (read from GitHub),
+  # setup-pstack, poteto-help, make-bot-ui, bro, no-comments,
+  # benchmark-checklist, automate-me, and the principle-* leaves (summarized
+  # in files/OPINIONS.md). Update procedure: docs/workflow-north-star.md.
   home.file.".claude/skills/correct".source = link "files/.claude/skills/correct";
   home.file.".claude/skills/show-me-your-work".source = link "files/.claude/skills/show-me-your-work";
   home.file.".claude/skills/create-verification-skill".source = link "files/.claude/skills/create-verification-skill";
   home.file.".claude/skills/maintain-verification-skill".source = link "files/.claude/skills/maintain-verification-skill";
   home.file.".claude/skills/tdd".source = link "files/.claude/skills/tdd";
   home.file.".claude/skills/blast-radius".source = link "files/.claude/skills/blast-radius";
+  home.file.".claude/skills/teach".source = link "files/.claude/skills/teach";
+  home.file.".claude/skills/how".source = link "files/.claude/skills/how";
+  home.file.".claude/skills/why".source = link "files/.claude/skills/why";
+  home.file.".claude/skills/ketchup".source = link "files/.claude/skills/ketchup";
+  home.file.".claude/skills/in-your-own-words".source = link "files/.claude/skills/in-your-own-words";
+  home.file.".claude/skills/sharpen".source = link "files/.claude/skills/sharpen";
+  home.file.".claude/skills/technical-writing".source = link "files/.claude/skills/technical-writing";
+  home.file.".claude/skills/figure-it-out".source = link "files/.claude/skills/figure-it-out";
+  home.file.".claude/skills/reflect".source = link "files/.claude/skills/reflect";
+  home.file.".claude/skills/architect".source = link "files/.claude/skills/architect";
+  home.file.".claude/skills/arena".source = link "files/.claude/skills/arena";
+  home.file.".claude/skills/interrogate".source = link "files/.claude/skills/interrogate";
+  home.file.".claude/skills/swarm".source = link "files/.claude/skills/swarm";
   # Status line (Catppuccin Mocha): ~/.claude/settings.json invokes this via
   # `bash`, so no execute bit is required. Edit files/.claude/statusline.sh,
   # not the symlink target.

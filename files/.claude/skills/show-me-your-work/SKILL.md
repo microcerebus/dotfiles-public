@@ -63,7 +63,7 @@ Correct the log, not the story. The audit never edits or removes a row, even an 
 
 ## Cross-model review of the trail
 
-Before handing back, spawn a subagent on a different model family from the one that did the work. Self-review is not a substitute. From Claude, that is GPT through the `codex-review` skill when Codex has quota; when it does not, use Fable 5.1 through the Agent tool and say in the Attention line that the reviewer shared the model family. The subagent reads the audit trail and the run's transcript, then flags what the user should pay attention to. Not a redo of the work, a scan for what's suboptimal or risky.
+Before handing back, spawn a subagent on a different model family from the one that did the work. Self-review is not a substitute. From Claude, that is GPT through the `codex-review` skill when Codex has quota; when it does not, use Fable 5.1 through the Agent tool and say in the Attention line that the reviewer shared the model family. The subagent reads the audit trail and the run's transcript, then flags what the user should pay attention to. Not a redo of the work, a scan for what's suboptimal or risky. Pick the reviewer's model and effort per the Model routing and Reasoning effort sections of `~/.claude/CLAUDE.md` (a review is a judgment stage: high effort, Fast off).
 
 - Decisions logged with weak or absent evidence.
 - Verification steps skipped or claimed without proof in the transcript.

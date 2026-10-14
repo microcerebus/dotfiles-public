@@ -61,14 +61,13 @@ To update: re-fetch the raw SKILL.md, diff it, security-read it (they instruct
 agents), commit. Local edits to keep: lavish and chrome-devtools-axi call the
 bare command (the scripts/ wrappers), never `pnpm dlx`, and chrome-devtools-axi
 keeps its "Which browser" and "Sharing the agent Chrome" sections. Bump no-mistakes by changing the flake input tag + vendorHash.
-pstack skills (correct, show-me-your-work, create-verification-skill,
-maintain-verification-skill, tdd, blast-radius) are pinned to cursor/plugins
-df581122 (2026-10-05). To update: sparse-clone cursor/plugins, diff
-`pstack/skills/<name>` against files/.claude/skills/<name>, re-apply the
-Claude Code edits listed in nix/user.nix, keep each dir's MIT LICENSE, and
-record the new commit there. Install only skills whose failure mode has shown
-up twice in real sessions (pstack guide 09).
-unslop is an older pstack copy with local additions; keep it as a fork.
+pstack skills are pinned to cursor/plugins 1e5c90a4 (pstack 0.15.24, 2026-10-14); nix/user.nix lists them, the skipped ones, and every local edit.
+the owner asked on 2026-10-14 for the rest of the pstack set, which overrides the earlier "install only after a failure mode shows up twice" rule for pstack.
+To update: clone cursor/plugins, check out the old pin's `pstack/skills` next to the new one, and save `diff -ru old/<name> files/.claude/skills/<name>` as the local patch.
+Copy the new upstream dir over, re-apply the patch, and fix rejected hunks by hand.
+Security-read every changed upstream file (they instruct agents; flag any script, network call, or hook), keep each dir's MIT LICENSE, and record the new commit and date in nix/user.nix.
+Rewrite any new Cursor-only line the same way: `Task` becomes Agent tool roles from CLAUDE.md, `pstack-models.mdc` and poteto-mode "Subagents" become CLAUDE.md model routing, a second model family goes through arena/references/model-families.md, `/visualize` becomes html_render, and principle skills point at ~/OPINIONS.md.
+unslop follows upstream since 0.15.24 but keeps its model-invocable "Must always apply." frontmatter.
 gnhf was evaluated and skipped for now (/loop covers most of it).
 Treehouse and firstmate came off hold 2026-07-05 (owner's call; firstmate's herdr backend resolves the overlap concern).
 Wheelhouse is blocked until upstream adds a license.
