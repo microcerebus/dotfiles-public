@@ -54,8 +54,25 @@ if [ "${1:-}" = env ]; then
 fi
 exec "$@"
 EOF
+# stub-terminal-check <name>: in a terminal run (STUB_TTY), records a step
+# outside the terminal's foreground process group, where a terminal read or
+# mode change stops it and Ctrl-C cannot reach it, and a step handed the
+# terminal as stdin, which makes pnpm ask which builds to approve.
+cat >"$stubs/stub-terminal-check" <<'EOF'
+#!/bin/sh
+[ -n "${STUB_TTY:-}" ] || exit 0
+[ "$(ps -o pgid= -p $$ | tr -d ' ')" = "$(ps -o tpgid= -p $$ | tr -d ' ')" ] \
+  || echo "$1 ran outside the terminal's foreground process group" >>"$STUB_LOG/calls"
+[ ! -t 0 ] || echo "$1 had the terminal as stdin" >>"$STUB_LOG/calls"
+EOF
+cat >"$stubs/git" <<EOF
+#!/bin/sh
+stub-terminal-check git
+exec $(command -v git) "\$@"
+EOF
 cat >"$stubs/curl" <<'EOF'
 #!/bin/sh
+stub-terminal-check curl
 [ "${STUB_OFFLINE:-0}" = 0 ]
 EOF
 cat >"$stubs/pgrep" <<'EOF'
@@ -68,12 +85,21 @@ echo 26.7.1
 EOF
 cat >"$stubs/softwareupdate" <<'EOF'
 #!/bin/sh
+stub-terminal-check softwareupdate
 echo softwareupdate >>"$STUB_LOG/calls"
 if [ -s "$STUB_LOG/updates" ]; then cat "$STUB_LOG/updates"; else echo "No new software available." >&2; fi
 EOF
+# STUB_PNPM_CTRL_C: the owner presses Ctrl-C during `pnpm update`, which the
+# terminal sends to its foreground process group. The step handles it and
+# finishes its own work, the harder case for the run to notice.
 cat >"$stubs/pnpm" <<'EOF'
 #!/bin/sh
+stub-terminal-check pnpm
 echo "pnpm $*" >>"$STUB_LOG/calls"
+if [ "${STUB_PNPM_CTRL_C:-0}" = 1 ] && [ "$1" = update ]; then
+  trap '' INT
+  kill -INT -- "-$(ps -o tpgid= -p $$ | tr -d ' ')"
+fi
 case $1 in
   ls) echo '[{"dependencies":{"gh-axi":{},"lavish-axi":{},"chrome-devtools-axi":{},"agent-device":{}}}]' ;;
   *) [ "${STUB_PNPM_FAIL:-0}" = 0 ] ;;
@@ -148,7 +174,10 @@ echo "$sys"
 EOF
 chmod +x "$stubs"/*
 
-at() { FAKE_NOW=$(/bin/date -j -f '%Y-%m-%d %H:%M' "$1" +%s); export FAKE_NOW; }
+# at <YYYY-MM-DD HH:MM>: sets the fake clock, seconds pinned to :00 (without
+# them, date -j takes the real clock's seconds, and "7 days later" could land
+# a few seconds short when a run crossed a minute).
+at() { FAKE_NOW=$(/bin/date -j -f '%Y-%m-%d %H:%M:%S' "$1:00" +%s); export FAKE_NOW; }
 
 # fresh: origin with one pushed commit A, a clean checkout of it on main, and
 # the running system built from A with Home Manager applied.
@@ -165,7 +194,7 @@ fresh() {
   export AUTOUPDATE_SYSTEM="$s/current-system" AUTOUPDATE_DAEMON_DIR="$s/daemon"
   export AUTOUPDATE_STAMP="$s/daemon/stamp"
   export HM_GCROOT="$home/.local/state/home-manager/gcroots/current-home"
-  unset STUB_OFFLINE STUB_REBUILD_RUNNING STUB_PNPM_FAIL STUB_BREW_OUTPUT STUB_BREW_SUDO STUB_TTY STUB_BREW_KILL STUB_SWITCH_EXIT STUB_HM_BROKEN
+  unset STUB_OFFLINE STUB_REBUILD_RUNNING STUB_PNPM_FAIL STUB_PNPM_CTRL_C STUB_BREW_OUTPUT STUB_BREW_SUDO STUB_TTY STUB_BREW_KILL STUB_SWITCH_EXIT STUB_HM_BROKEN
   at "2026-10-11 12:00"
   git init -q --bare -b main "$s/origin.git"
   git clone -q "$s/origin.git" "$s/upstream" 2>/dev/null
@@ -527,6 +556,9 @@ else ok "any other brew failure guesses no cause"; fi
 # no timeout (macOS ships none), and every step failed. With timeout on PATH,
 # brew's captured output, /dev/null stdin and timeout's background process
 # group then kept sudo from prompting, and the terminal stopped taking input.
+# After that fix, pnpm, still under plain timeout and given the terminal,
+# asked which builds to approve from a background process group, stopped, and
+# the terminal took no input, not even Ctrl-C.
 darwin="$repo#darwinConfigurations.myhost.config"
 hm="$darwin.home-manager.users.myuser"
 alias_cmd=$(nix eval --raw "$hm.programs.zsh.shellAliases.autoupdate-now")
@@ -545,7 +577,7 @@ fresh
 export STUB_BREW_SUDO=1 STUB_TTY=1
 at "2026-10-12 05:00"
 as_path="$repo/scripts:$terminal:$real:/usr/bin:/bin:/usr/sbin:/sbin" \
-  as "$home" script -q /dev/null bash -c "$alias_cmd" </dev/null >>"$s/log/out" 2>&1 || true
+  as "$home" script -q "$s/log/terminal" bash -c "$alias_cmd" </dev/null >/dev/null 2>&1 || true
 got=$(alarms)
 if grep -q timeout <<<"$got"; then bad "autoupdate-now runs on a shell PATH without timeout" "got: $got"
 else ok "autoupdate-now runs on a shell PATH without timeout"; fi
@@ -555,5 +587,33 @@ expect_eq "autoupdate-now shows brew's output as it runs, and logs it" "$(calls 
 got=$(alarms | grep 'sync:' || true)
 if [ -z "$got" ]; then ok "autoupdate-now in a terminal finishes the sync with no alarm"
 else bad "autoupdate-now in a terminal finishes the sync with no alarm" "got: $got"; fi
+expect_eq "a terminal run keeps every step in the terminal's foreground process group" \
+  "$(grep "outside the terminal's foreground" "$s/log/calls" | sort -u)" ""
+expect_eq "a terminal run gives the terminal only to brew, so nothing else prompts" \
+  "$(grep "had the terminal as stdin" "$s/log/calls" | sort -u)" ""
+steps="sync
+git fetch origin
+pnpm globals
+brew upgrade
+macOS updates
+sync done"
+expect_eq "a terminal run shows each step" \
+  "$(tr -d '\r' <"$s/log/terminal" | sed -n 's/^.*[0-9]\{4\}-[0-9-]\{5\} [0-9:]\{8\} [-=]\{3\} //p')" "$steps"
+expect_eq "a terminal run copies its steps to the sync log" \
+  "$(sed -n 's/^.*[0-9]\{4\}-[0-9-]\{5\} [0-9:]\{8\} [-=]\{3\} //p' "$home/Library/Logs/dotfiles-sync.log")" "$steps"
+
+# 21. Ctrl-C in a terminal run stops it after the step it interrupts, even a
+# step that handles the signal itself, and the status says so. A shell gives
+# its foreground job the default SIGINT; a background one, such as a test
+# runner started with &, would pass on an ignored one, so reset it.
+coreutils=$(nix eval --raw "$repo#darwinConfigurations.myhost.pkgs.coreutils.outPath")
+fresh
+export STUB_TTY=1 STUB_PNPM_CTRL_C=1
+at "2026-10-12 05:00"
+as_path="$repo/scripts:$terminal:$real:/usr/bin:/bin:/usr/sbin:/sbin" \
+  as "$home" "$coreutils/bin/env" --default-signal=INT \
+  script -q "$s/log/terminal" bash -c "$alias_cmd" </dev/null >/dev/null 2>&1 || true
+expect_eq "Ctrl-C in a terminal run stops it before the next step" "$(calls brew)" 0
+expect_alarm "a run stopped by Ctrl-C says so" "sync: interrupted \(Ctrl-C\)"
 
 exit "$fail"

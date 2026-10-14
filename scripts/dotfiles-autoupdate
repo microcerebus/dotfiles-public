@@ -7,8 +7,8 @@
 #            fast-forward ~/dotfiles, update pnpm globals, brew upgrade,
 #            report pending macOS updates, check the flake.lock age, then hand
 #            the fetched origin/main revision to the daemon.
-#            `autoupdate-now` runs the same program in a terminal, where
-#            brew gets the terminal and sudo can prompt.
+#            `autoupdate-now` runs the same program in a terminal, which
+#            shows each step and where sudo can prompt for brew.
 #   apply    the root launchd daemon (nix/host.nix). Hourly: switches the
 #            system to exactly the handed-over revision, never the working
 #            tree, and never rolls back a system built from unpushed work.
@@ -36,7 +36,24 @@ push_after=$((36 * 3600))     # waiting for push for this long is an alarm
 macos_after=$((7 * 86400))    # a same-major macOS update pending this long
 retry_after=86400             # a failed revision is retried at most daily
 
-log() { echo "$(date '+%F %T') $*"; }
+terminal=  # set when sync runs in a terminal (autoupdate-now)
+
+log() { # a terminal run also copies its lines to the sync log
+  local line
+  line="$(date '+%F %T') $*"
+  echo "$line"
+  [ -z "$terminal" ] || echo "$line" >>"$sync_log"
+}
+
+# Every step that can hang runs under timeout, which moves the step to a
+# process group of its own. Unattended, that lets it kill the step's children
+# too. In a terminal, a step in that background group stops (SIGTTIN/SIGTTOU)
+# as soon as it reads the terminal or changes its mode, and Ctrl-C cannot
+# reach it: on 14 Oct 2026 pnpm stopped there on a build-approval prompt and
+# the terminal took no input. A terminal run keeps each step in the foreground.
+timed() { # timed <seconds> <command>...
+  if [ -n "$terminal" ]; then timeout --foreground "$@"; else timeout "$@"; fi
+}
 last_line() { printf '%s\n' "$1" | sed '/^[[:space:]]*$/d' | tail -n 1; }
 
 # ── Status files ──────────────────────────────────────────────────────────
@@ -93,6 +110,10 @@ finish() {
 cmd_sync() {
   status=$sync_dir/sync.status
   now=$(date +%s)
+  # Every step reads /dev/null, as under launchd, so none of them prompts in
+  # a terminal either; only brew gets the terminal, for sudo (sync_brew).
+  if { : </dev/tty; } 2>/dev/null; then terminal=1; fi
+  exec </dev/null
   begin
   if [ "${1:-}" != --now ]; then
     [ "$(date +%H)" -ge 4 ] || return 0
@@ -111,18 +132,24 @@ cmd_sync() {
   trap 'rm -rf "$sync_dir/lock"' EXIT
 
   # Ticks right after wake can beat Wi-Fi; offline means retry next hour.
-  local online='' _
-  for _ in $(seq 30); do
+  local online='' try
+  for try in $(seq 30); do
     curl -fsS -o /dev/null --max-time 5 https://github.com && { online=1; break; }
+    [ "$try" != 1 ] || log "--- waiting up to 5 min for github.com"
     sleep 10
   done
-  [ -n "$online" ] || return 0
+  [ -n "$online" ] || { log "github.com is unreachable; the next tick retries"; return 0; }
   date +%F >"$sync_dir/day"
   mark_running
+  # Ctrl-C in a terminal run reaches the running step (timed); the run then
+  # stops after that step, whether the step died of it or handled it, and
+  # records why instead of leaving a run that never finished.
+  trap 'fail "interrupted (Ctrl-C)"; finish; exit 130' INT
   log "=== sync"
 
   local out fetched=
-  if out=$(GIT_TERMINAL_PROMPT=0 timeout 300 git -C "$repo" fetch --quiet origin 2>&1); then
+  log "--- git fetch origin"
+  if out=$(GIT_TERMINAL_PROMPT=0 timed 300 git -C "$repo" fetch --quiet origin 2>&1); then
     fetched=$(git -C "$repo" rev-parse --verify -q refs/remotes/origin/main)
   else
     fail "git fetch from origin failed: $(last_line "$out")"
@@ -178,7 +205,8 @@ sync_main() {
 pins="chrome-devtools-axi@0.1.39 agent-device@0.21.23"
 sync_pnpm() {
   local listed floating failed_steps='' pin
-  if ! listed=$(timeout 120 pnpm ls -g --depth 0 --json); then
+  log "--- pnpm globals"
+  if ! listed=$(timed 120 pnpm ls -g --depth 0 --json); then
     fail "pnpm ls -g failed; pnpm globals were not updated"
     return
   fi
@@ -187,28 +215,27 @@ sync_pnpm() {
      | .[0].dependencies // {} | keys[] | select(IN($p[]) | not)')
   if [ -n "$floating" ]; then
     # shellcheck disable=SC2086 # one argument per package name
-    timeout 600 pnpm update -g --latest $floating || failed_steps="update"
+    timed 600 pnpm update -g --latest $floating || failed_steps="update"
   fi
   for pin in $pins; do
-    timeout 300 pnpm add -g -E "$pin" || failed_steps="$failed_steps${failed_steps:+, }pin $pin"
+    timed 300 pnpm add -g -E "$pin" || failed_steps="$failed_steps${failed_steps:+, }pin $pin"
   done
   [ -z "$failed_steps" ] || fail "pnpm globals: $failed_steps failed (see $sync_log)"
 }
 
 # Casks that ship a .pkg need sudo, which an unattended run cannot answer, so
-# that alarm sends the owner to `autoupdate-now`. There brew gets the terminal:
-# its stdin, live output (copied to the log) and timeout --foreground. Plain
-# timeout runs brew in a background process group, where sudo's password read
-# stops it and the terminal stops taking input (14 Oct 2026). Only a sudo
-# password failure asks for a terminal; a failed download is the network.
+# that alarm sends the owner to `autoupdate-now`. There brew alone gets the
+# terminal as stdin, for sudo, and its output is copied to the log as it runs.
+# Only a sudo password failure asks for a terminal; a failed download is the
+# network.
 sync_brew() {
   local out code kind casks named=
+  log "--- brew upgrade"
   out=$(mktemp) || { fail "brew upgrade did not run: mktemp failed"; return; }
-  if [ -t 0 ]; then
-    log "=== brew upgrade, from a terminal" >>"$sync_log"
-    timeout --foreground 3600 brew upgrade 2>&1 | tee -a "$sync_log" "$out"
+  if [ -n "$terminal" ]; then
+    timed 3600 brew upgrade </dev/tty 2>&1 | tee -a "$sync_log" "$out"
   else
-    timeout 3600 brew upgrade </dev/null 2>&1 | tee "$out"
+    timed 3600 brew upgrade 2>&1 | tee "$out"
   fi
   code=$?
   if [ "$code" != 0 ]; then
@@ -237,8 +264,9 @@ sync_brew() {
 # upgrade (27.x, which the owner declined on 10 Oct) and anything else stay info.
 sync_macos() {
   local out current title version
+  log "--- macOS updates"
   current=$(sw_vers -productVersion)
-  if ! out=$(timeout 300 softwareupdate --list 2>&1); then
+  if ! out=$(timed 300 softwareupdate --list 2>&1); then
     fail "softwareupdate --list failed: $(last_line "$out")"
     return
   fi
