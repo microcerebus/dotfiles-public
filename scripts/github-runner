@@ -37,17 +37,54 @@ cmd="$1"
 
 # empty <dir> [keep...]: delete everything inside <dir> except the named
 # top-level entries. Jobs leave read-only trees (Go, Nix), so make directories
-# writable first; BSD chmod -R never follows symlinks out of <dir>.
+# writable first; BSD chmod -R never follows symlinks out of <dir>. What the
+# runner user may not change ("Operation not permitted") stays and is listed:
+# macOS's containermanagerd puts such directories in its home
+# (Library/ContainerManager, Library/Caches/com.apple.containermanagerd).
+# Anything else that stays is an error.
 empty() {
-  local dir="$1" entry keep
+  local dir="$1" entry keep line path p covered errors
   shift
   [ -d "$dir" ] || return 0
-  local args=()
+  local args=() denied=() kept=() left=()
   for keep in "$@"; do args+=(! -name "$keep"); done
   while IFS= read -r -d '' entry; do
-    if [ -d "$entry" ] && [ ! -L "$entry" ]; then /bin/chmod -R u+rwX "$entry"; fi
-    /bin/rm -rf "$entry"
+    errors="$({
+      if [ -d "$entry" ] && [ ! -L "$entry" ]; then /bin/chmod -R u+rwX "$entry" || true; fi
+      /bin/rm -rf "$entry" || true
+    } 2>&1)"
+    while IFS= read -r line; do
+      case "$line" in
+        *": Operation not permitted")
+          path="${line#*: }"
+          denied+=("${path%: Operation not permitted}")
+          ;;
+      esac
+    done <<<"$errors"
   done < <(/usr/bin/find "$dir" -mindepth 1 -maxdepth 1 ${args[@]+"${args[@]}"} -print0)
+  # Report each protected tree once, by its top.
+  for path in ${denied[@]+"${denied[@]}"}; do
+    covered=0
+    for p in ${denied[@]+"${denied[@]}"} ${kept[@]+"${kept[@]}"}; do
+      case "$path" in "$p"/*) covered=1 ;; esac
+    done
+    for p in ${kept[@]+"${kept[@]}"}; do [ "$path" = "$p" ] && covered=1; done
+    [ "$covered" = 1 ] || kept+=("$path")
+  done
+  # What stays must be a protected tree or a directory on the way to one.
+  while IFS= read -r -d '' path; do
+    covered=0
+    for p in ${kept[@]+"${kept[@]}"}; do
+      case "$p" in "$path" | "$path"/*) covered=1 ;; esac
+      case "$path" in "$p"/*) covered=1 ;; esac
+    done
+    [ "$covered" = 1 ] || left+=("$path")
+  done < <(/usr/bin/find "$dir" -mindepth 1 -maxdepth 1 ${args[@]+"${args[@]}"} -print0)
+  if [ "${#kept[@]}" != 0 ]; then echo "kept what the runner user may not change: ${kept[*]}"; fi
+  if [ "${#left[@]}" != 0 ]; then
+    echo "could not wipe: ${left[*]}" >&2
+    return 1
+  fi
 }
 
 # listeners: "address port" for every TCP listener of another user on this

@@ -10,7 +10,7 @@ repo="$(cd "$(dirname "$0")/.." && pwd)"
 script="$repo/scripts/github-runner"
 tmp="$(mktemp -d)"
 server=
-trap '[ -z "$server" ] || kill "$server" 2>/dev/null; chmod -R u+rwX "$tmp" 2>/dev/null; rm -rf "$tmp"' EXIT
+trap '[ -z "$server" ] || kill "$server" 2>/dev/null; chmod -R u+rwX "$tmp" 2>/dev/null; chflags -R nouchg "$tmp" 2>/dev/null; chmod -R u+rwX "$tmp" 2>/dev/null; rm -rf "$tmp"' EXIT
 fail=0
 token=test-registration-token
 
@@ -129,7 +129,13 @@ netstat_rows() {
 # four listeners of other users with nothing behind them, two on the
 # tailnet, so every probe is refused. pf runs Apple's stock main ruleset.
 fresh() {
-  [ -d "$tmp/r" ] && chmod -R u+rwX "$tmp/r" && rm -rf "$tmp/r"
+  if [ -d "$tmp/r" ]; then
+    # Open the closed home first, then lift the flag the protected-dir cases set.
+    chmod -R u+rwX "$tmp/r" 2>/dev/null || true
+    chflags -R nouchg "$tmp/r"
+    chmod -R u+rwX "$tmp/r"
+    rm -rf "$tmp/r"
+  fi
   r="$tmp/r"
   mkdir -p "$r"/{state,work,home,tmp,inbox,log} "$r/protected/.t3"
   chmod 755 "$r/protected/.t3"
@@ -309,6 +315,33 @@ if [ "$code" = 0 ] && empty_dir "$r/home" && empty_dir "$r/tmp" \
   && [ -e "$tmp/elsewhere/keep" ]; then
   ok "job-completed wipes what the job wrote, keeps runner internals, ignores job env"
 else bad "job-completed wipes what the job wrote, keeps runner internals, ignores job env" "exit $code" "$out" "$(ls -A "$r/home" "$r/work")"; fi
+
+# macOS's containermanagerd puts directories in the runner's home that the
+# runner user may not change (chmod and rm get "Operation not permitted").
+# The user-immutable flag stands in for that protection here. They stay, and
+# everything the job wrote around them goes.
+fresh; seed "$r/home"
+mkdir -p "$r/home/Library/ContainerManager/x" "$r/home/Library/Caches/com.apple.containermanagerd" \
+  "$r/home/Library/Caches/ms-playwright/chromium" "$r/home/Library/Preferences"
+touch "$r/home/Library/ContainerManager/x/f" "$r/home/Library/Caches/ms-playwright/chromium/bin" \
+  "$r/home/Library/Preferences/p.plist"
+chflags uchg "$r/home/Library/ContainerManager" "$r/home/Library/Caches/com.apple.containermanagerd"
+run job-completed
+left="$(cd "$r/home" && find . -mindepth 1 | sort | tr '\n' ' ')"
+if [ "$code" = 0 ] && [ "$left" = "./Library ./Library/Caches ./Library/Caches/com.apple.containermanagerd ./Library/ContainerManager ./Library/ContainerManager/x " ] \
+  && grep -qF "kept what the runner user may not change: $r/home/Library/ContainerManager $r/home/Library/Caches/com.apple.containermanagerd" <<<"$out" \
+  && grep -q "^wiped job state" <<<"$out"; then
+  ok "job-completed keeps what macOS protects in the home and wipes the rest"
+else bad "job-completed keeps what macOS protects in the home and wipes the rest" "exit $code" "$out" "left: $left"; fi
+
+# start wipes the same way, so a protected directory must not stop the runner.
+fresh; mkdir -p "$r/home/Library/ContainerManager" "$r/home/Library/Caches/junk"
+chflags uchg "$r/home/Library/ContainerManager"
+run start
+if [ "$code" = 0 ] && grep -q "not registered" <<<"$out" && [ ! -e "$r/home/Library/Caches" ] \
+  && [ -d "$r/home/Library/ContainerManager" ]; then
+  ok "start runs despite a protected directory in the home"
+else bad "start runs despite a protected directory in the home" "exit $code" "$out"; fi
 
 # ── firewall ───────────────────────────────────────────────────────────────
 fresh; : >"$r/log/pf.main"; run firewall

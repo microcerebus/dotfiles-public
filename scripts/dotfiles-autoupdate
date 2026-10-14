@@ -7,7 +7,8 @@
 #            fast-forward ~/dotfiles, update pnpm globals, brew upgrade,
 #            report pending macOS updates, check the flake.lock age, then hand
 #            the fetched origin/main revision to the daemon.
-#            `autoupdate-now` runs it in a terminal, where sudo can prompt.
+#            `autoupdate-now` runs the same program in a terminal, where
+#            brew gets the terminal and sudo can prompt.
 #   apply    the root launchd daemon (nix/host.nix). Hourly: switches the
 #            system to exactly the handed-over revision, never the working
 #            tree, and never rolls back a system built from unpushed work.
@@ -194,15 +195,41 @@ sync_pnpm() {
   [ -z "$failed_steps" ] || fail "pnpm globals: $failed_steps failed (see $sync_log)"
 }
 
-# Casks that ship a .pkg need sudo, which an unattended run cannot answer.
+# Casks that ship a .pkg need sudo, which an unattended run cannot answer, so
+# that alarm sends the owner to `autoupdate-now`. There brew gets the terminal:
+# its stdin, live output (copied to the log) and timeout --foreground. Plain
+# timeout runs brew in a background process group, where sudo's password read
+# stops it and the terminal stops taking input (14 Oct 2026). Only a sudo
+# password failure asks for a terminal; a failed download is the network.
 sync_brew() {
-  local out names
-  out=$(timeout 3600 brew upgrade </dev/null 2>&1)
-  local code=$?
-  printf '%s\n' "$out"
-  [ "$code" = 0 ] && return
-  names=$(printf '%s\n' "$out" | sed -n 's/^Error: \([^:[:space:]]*\):.*/\1/p' | sort -u | paste -sd, - | sed 's/,/, /g')
-  fail "brew upgrade failed for ${names:-some apps (see $sync_log)}; run autoupdate-now in a terminal, where sudo can prompt"
+  local out code kind casks named=
+  out=$(mktemp) || { fail "brew upgrade did not run: mktemp failed"; return; }
+  if [ -t 0 ]; then
+    log "=== brew upgrade, from a terminal" >>"$sync_log"
+    timeout --foreground 3600 brew upgrade 2>&1 | tee -a "$sync_log" "$out"
+  else
+    timeout 3600 brew upgrade </dev/null 2>&1 | tee "$out"
+  fi
+  code=$?
+  if [ "$code" != 0 ]; then
+    # brew ends with one `Error: <cask>: <reason>` line per failed cask.
+    while IFS='	' read -r kind casks; do
+      named=1
+      case $kind in
+        download) fail "brew upgrade could not download $casks (a network error); the next daily run retries them" ;;
+        sudo) fail "brew upgrade failed for $casks; run autoupdate-now in a terminal, where sudo can prompt" ;;
+        *) fail "brew upgrade failed for $casks" ;;
+      esac
+    done < <(sed -n 's/^Error: \([^:[:space:]]*\): \(.*\)/\1	\2/p' "$out" | sort -u \
+      | awk -F '\t' -v password="$(grep -c '^sudo: .*password' "$out")" '
+          seen[$1]++ { next }
+          { kind = $2 ~ /Download failed/ ? "download" : (password > 0 && $2 ~ /sudo/) ? "sudo" : "other"
+            casks[kind] = casks[kind] (casks[kind] == "" ? "" : ", ") $1 }
+          END { n = split("sudo download other", order, " ")
+                for (i = 1; i <= n; i++) if (order[i] in casks) print order[i] "\t" casks[order[i]] }')
+    [ -n "$named" ] || fail "brew upgrade failed (exit $code)"
+  fi
+  rm -f "$out"
 }
 
 # Reports pending updates, never installs them. A same-major macOS update

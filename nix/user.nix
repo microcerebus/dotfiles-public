@@ -6,6 +6,7 @@ let
   # Configs that should be editable without a rebuild are linked out-of-store.
   dotfiles = "${config.home.homeDirectory}/dotfiles";
   link = path: config.lib.file.mkOutOfStoreSymlink "${dotfiles}/${path}";
+  autoupdate = "${pkgs.callPackage ./autoupdate.nix { }}/bin/dotfiles-autoupdate";
 
   # inshellisense (FOSS Fig successor: as-you-type dropdown from Fig's spec
   # DB). The nixpkgs build isn't a SEA bundle, so upstream's dev-mode fallback
@@ -219,8 +220,9 @@ in
       # (see homebrew.onActivation in nix/host.nix).
       rebuild = "sudo darwin-rebuild switch --flake ${dotfiles} && brew upgrade";
       # The daily dotfiles-sync run, now and in this terminal, where sudo can
-      # prompt for the casks that ship a .pkg.
-      autoupdate-now = "dotfiles-autoupdate sync --now";
+      # prompt for the casks that ship a .pkg. The agent's own program
+      # (nix/autoupdate.nix), not the checkout on PATH.
+      autoupdate-now = "${autoupdate} sync --now";
       vim = "nvim";
       v = "nvim";
       c = "clear";
@@ -491,12 +493,12 @@ in
   # login keychain, which answers only inside this GUI session (a root daemon
   # running `sudo -u myuser git` gets -25308, which broke every run until
   # 11 Oct 2026). Hourly ticks, so a Mac that was asleep at 04:00 catches up;
-  # the work happens once a day. coreutils comes last, for `timeout` only.
+  # the work happens once a day.
   launchd.agents.dotfiles-sync = {
     enable = true;
     config = {
       Label = "com.myuser.dotfiles-sync";
-      ProgramArguments = [ "${pkgs.writeShellScript "dotfiles-autoupdate" (builtins.readFile ../scripts/dotfiles-autoupdate)}" "sync" ];
+      ProgramArguments = [ autoupdate "sync" ];
       EnvironmentVariables = {
         PNPM_HOME = "${config.home.homeDirectory}/Library/pnpm";
         PATH = lib.concatStringsSep ":" [
@@ -505,7 +507,6 @@ in
           "/run/current-system/sw/bin"
           "/opt/homebrew/bin"
           "/usr/bin" "/bin" "/usr/sbin" "/sbin"
-          "${pkgs.coreutils}/bin"
         ];
       };
       StartInterval = 3600;

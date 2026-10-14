@@ -260,7 +260,7 @@
   # AbandonProcessGroup: when activation reloads this daemon's own plist, the
   # bootout kills only the wrapper, not the in-flight darwin-rebuild.
   launchd.daemons.dotfiles-autoupdate = {
-    command = "${pkgs.writeShellScript "dotfiles-autoupdate" (builtins.readFile ../scripts/dotfiles-autoupdate)} apply";
+    command = "${pkgs.callPackage ./autoupdate.nix { }}/bin/dotfiles-autoupdate apply";
     path = [ "/run/current-system/sw/bin" "/nix/var/nix/profiles/default/bin" pkgs.git "/usr/bin" "/bin" "/usr/sbin" "/sbin" ];
     environment = {
       AUTOUPDATE_USER = username;

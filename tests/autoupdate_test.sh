@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # Tests for scripts/dotfiles-autoupdate against a sandboxed origin, checkout
 # and fake system generations, with stub darwin-rebuild, nix-store, pnpm,
-# brew, softwareupdate, sudo, curl and a clock.
-# Pure: no network, never touches the real system, writes only to a temp dir.
+# brew, softwareupdate, sudo, curl and a clock. The terminal case (20) runs
+# the program `autoupdate-now` names, built from this flake.
+# Never touches the real system and writes only to a temp dir and the Nix
+# store. The network is used only by Nix, to fetch what that build needs.
 # Run: bash tests/autoupdate_test.sh
 set -euo pipefail
 repo="$(cd "$(dirname "$0")/.." && pwd)"
@@ -33,6 +35,7 @@ cat >"$stubs/sleep" <<'EOF'
 EOF
 cat >"$stubs/timeout" <<'EOF'
 #!/bin/sh
+while case $1 in -*) true ;; *) false ;; esac; do shift; done
 shift
 exec "$@"
 EOF
@@ -80,11 +83,31 @@ cat >"$stubs/brew" <<'EOF'
 #!/bin/sh
 echo "brew $*" >>"$STUB_LOG/calls"
 [ "${STUB_BREW_KILL:-0}" = 1 ] && kill -KILL "$(cat "$HOME/.local/state/dotfiles-autoupdate/lock/pid")"
-if [ "${STUB_BREW_FAIL:-0}" = 1 ]; then
+# STUB_BREW_OUTPUT: a failed upgrade, as brew printed it.
+if [ -n "${STUB_BREW_OUTPUT:-}" ]; then cat "$STUB_BREW_OUTPUT" >&2; exit 1; fi
+# STUB_BREW_SUDO: a cask whose .pkg needs sudo. Like sudo, it can prompt only
+# in a terminal (STUB_TTY) and from that terminal's foreground process group.
+# In the terminal it also records whether it has the terminal as stdin, and
+# whether its output reaches the log while it runs.
+if [ "${STUB_BREW_SUDO:-0}" = 1 ]; then
   echo "==> Upgrading karabiner-elements"
-  echo "sudo: a terminal is required to read the password" >&2
-  echo "Error: karabiner-elements: Failure while executing; \`/usr/bin/sudo -u root -- /usr/sbin/installer\` exited with 1." >&2
-  exit 1
+  if [ -n "${STUB_TTY:-}" ]; then
+    [ -t 0 ] && echo "brew stdin is the terminal" >>"$STUB_LOG/calls"
+    for _ in $(seq 50); do
+      if grep -q "Upgrading karabiner" "$HOME/Library/Logs/dotfiles-sync.log" 2>/dev/null; then
+        echo "brew output is live" >>"$STUB_LOG/calls"
+        break
+      fi
+      /bin/sleep 0.1
+    done
+  fi
+  if [ -n "${STUB_TTY:-}" ] && [ "$(ps -o pgid= -p $$ | tr -d ' ')" = "$(ps -o tpgid= -p $$ | tr -d ' ')" ]; then
+    echo "sudo prompted" >>"$STUB_LOG/calls"
+  else
+    echo "sudo: a terminal is required to read the password; either use the -S option to read from standard input or configure an askpass helper" >&2
+    echo "Error: karabiner-elements: Failure while executing; \`/usr/bin/sudo -u root -- /usr/sbin/installer\` exited with 1." >&2
+    exit 1
+  fi
 fi
 EOF
 # nix-store -qR <system>: the fake system's closure file.
@@ -142,7 +165,7 @@ fresh() {
   export AUTOUPDATE_SYSTEM="$s/current-system" AUTOUPDATE_DAEMON_DIR="$s/daemon"
   export AUTOUPDATE_STAMP="$s/daemon/stamp"
   export HM_GCROOT="$home/.local/state/home-manager/gcroots/current-home"
-  unset STUB_OFFLINE STUB_REBUILD_RUNNING STUB_PNPM_FAIL STUB_BREW_FAIL STUB_BREW_KILL STUB_SWITCH_EXIT STUB_HM_BROKEN
+  unset STUB_OFFLINE STUB_REBUILD_RUNNING STUB_PNPM_FAIL STUB_BREW_OUTPUT STUB_BREW_SUDO STUB_TTY STUB_BREW_KILL STUB_SWITCH_EXIT STUB_HM_BROKEN
   at "2026-10-11 12:00"
   git init -q --bare -b main "$s/origin.git"
   git clone -q "$s/origin.git" "$s/upstream" 2>/dev/null
@@ -176,20 +199,22 @@ commit_local() {
     git -C "$home/dotfiles" commit -qm "$1"
 }
 
-# as <home> cmd...: runs cmd with a clean environment, as launchd would.
+# as <home> cmd...: runs cmd with a clean environment, as launchd would, on
+# $as_path.
+as_path="$stubs:$real:/usr/bin:/bin:/usr/sbin:/sbin"
 as() {
   local h=$1 v vars=()
   shift
   for v in $(compgen -e | grep -E '^(AUTOUPDATE|STUB)_'); do vars+=("$v=${!v}"); done
-  env -i HOME="$h" TZ="$TZ" PATH="$stubs:$real:/usr/bin:/bin:/usr/sbin:/sbin" FAKE_NOW="$FAKE_NOW" \
+  env -i HOME="$h" TZ="$TZ" PATH="$as_path" FAKE_NOW="$FAKE_NOW" \
     SYSTEMS="$SYSTEMS" HM_GCROOT="$HM_GCROOT" "${vars[@]}" "$@"
 }
 
 # ── Adapter: how this suite drives the updater and reads what it reports ──
 # tick: one hourly launchd tick of every updater job, at the fake time.
 tick() {
-  as "$home" bash "$script" sync >>"$s/log/out" 2>&1 || true
-  as "$root_home" bash "$script" apply >>"$s/log/out" 2>&1 || true
+  as "$home" bash "$script" sync </dev/null >>"$s/log/out" 2>&1 || true
+  as "$root_home" bash "$script" apply </dev/null >>"$s/log/out" 2>&1 || true
 }
 # alarms: what reaches the owner (zsh banner, agent board, SessionStart hook).
 alarms() { as "$home" bash "$script" status --alarms; }
@@ -334,7 +359,7 @@ expect_eq "nothing is switched when the fetch fails" "$(built)" ""
 
 # 10. brew names the cask that failed and how to finish it.
 fresh
-export STUB_BREW_FAIL=1
+export STUB_BREW_SUDO=1
 at "2026-10-12 05:00"; tick; tick
 expect_alarm "a brew failure names the cask and the fix" "karabiner-elements.*autoupdate-now"
 
@@ -422,10 +447,10 @@ expect_eq "Home Manager on a newer pushed rebuild is repaired at that revision" 
 # 16. status is one reader for every surface; the agent board runs it with
 # macOS's bash 3.2, so it must read the same there.
 fresh
-export STUB_BREW_FAIL=1
+export STUB_BREW_SUDO=1
 at "2026-10-12 01:00"; commit_local "L: unpushed"
 at "2026-10-12 05:00"; tick
-unset STUB_BREW_FAIL
+unset STUB_BREW_SUDO
 at "2026-10-12 07:00"
 expect_eq "status reports alarms, info and successes in that order" "$(report)" \
 "alarm: sync: brew upgrade failed for karabiner-elements; run autoupdate-now in a terminal, where sudo can prompt; see $home/Library/Logs/dotfiles-sync.log
@@ -452,5 +477,83 @@ unset STUB_SWITCH_EXIT
 got=$(alarms)
 if [ "$(grep -o 'see /' <<<"$got" | wc -l | tr -d ' ')" = 1 ]; then ok "a failure that names its log is pointed at it once"
 else bad "a failure that names its log is pointed at it once" "got: $got"; fi
+
+# 19. The alarm's advice follows brew's cause. On 14 Oct 2026 four casks
+# failed to download and the alarm said to run autoupdate-now where sudo can
+# prompt; a download failure is the network, and the next run retries.
+cat >"$tmp/brew-download.out" <<'EOF'
+==> Fetching downloads for: chatgpt, cursor, discord, google-chrome and visual-studio-code
+✔︎ Cask visual-studio-code (1.141.1)
+✘ Cask google-chrome (155.0.8059.80)
+Error: Download failed on Cask 'google-chrome' with message: Download failed: https://dl.google.com/chrome/mac/universal/stable/GGRO/googlechrome.dmg
+curl: (56) Recv failure: Connection reset by peer
+✘ Cask cursor (3.24.18,be4c9e5350d77747b42cd467cbd3370a753d464b)
+Error: Download failed on Cask 'cursor' with message: Download failed: https://downloads.cursor.com/production/be4c9e5350d77747b42cd467cbd3370a753d464b/darwin/arm64/Cursor-darwin-arm64.zip
+curl: (56) Recv failure: Connection reset by peer
+✘ Cask chatgpt (26.1007.41230)
+Error: Download failed on Cask 'chatgpt' with message: Download failed: https://persistent.oaistatic.com/codex-app-prod/ChatGPT-darwin-arm64-26.1007.41230.zip
+curl: (56) Recv failure: Connection reset by peer
+✘ Cask discord (0.0.416)
+Error: Download failed on Cask 'discord' with message: Download failed: https://dl.discordapp.net/apps/osx/0.0.416/Discord.dmg
+curl: (56) Recv failure: Connection reset by peer
+Error: chatgpt: Download failed for chatgpt.
+Error: cursor: Download failed for cursor.
+Error: discord: Download failed for discord.
+Error: google-chrome: Download failed for google-chrome.
+==> Upgrading visual-studio-code
+🍺  visual-studio-code was successfully upgraded!
+EOF
+fresh
+export STUB_BREW_OUTPUT="$tmp/brew-download.out"
+at "2026-10-12 05:00"; tick; tick
+expect_alarm "a brew download failure names the casks and says the next run retries" \
+  "could not download chatgpt, cursor, discord, google-chrome.*next daily run retries"
+got=$(alarms)
+if grep -q sudo <<<"$got"; then bad "a brew download failure does not send the owner to sudo" "got: $got"
+else ok "a brew download failure does not send the owner to sudo"; fi
+
+printf '%s\n' "==> Upgrading foo" \
+  "Error: foo: It seems there is already an App at '/Applications/Foo.app'." >"$tmp/brew-other.out"
+fresh
+export STUB_BREW_OUTPUT="$tmp/brew-other.out"
+at "2026-10-12 05:00"; tick; tick
+expect_alarm "any other brew failure names the cask and points at the log" "brew upgrade failed for foo; see "
+got=$(alarms)
+if grep -Eq 'sudo|network' <<<"$got"; then bad "any other brew failure guesses no cause" "got: $got"
+else ok "any other brew failure guesses no cause"; fi
+
+# 20. autoupdate-now, typed in a terminal, runs the dotfiles-sync agent's own
+# program. On 14 Oct 2026 it ran the checkout on the shell's PATH, which has
+# no timeout (macOS ships none), and every step failed. With timeout on PATH,
+# brew's captured output, /dev/null stdin and timeout's background process
+# group then kept sudo from prompting, and the terminal stopped taking input.
+darwin="$repo#darwinConfigurations.myhost.config"
+hm="$darwin.home-manager.users.myuser"
+alias_cmd=$(nix eval --raw "$hm.programs.zsh.shellAliases.autoupdate-now")
+agent=$(nix eval --raw "$hm.launchd.agents.dotfiles-sync.config.ProgramArguments" --apply builtins.head)
+daemon=$(nix eval --raw "$darwin.launchd.daemons.dotfiles-autoupdate.command")
+expect_eq "autoupdate-now runs the dotfiles-sync agent's program" "${alias_cmd%% *}" "$agent"
+expect_eq "the root daemon runs the same program" "${daemon%% *}" "$agent"
+built_by=$(nix eval --json "$hm.programs.zsh.shellAliases.autoupdate-now" \
+  --apply 'a: map (d: d + "^*") (builtins.attrNames (builtins.getContext a))' | jq -r '.[]')
+# shellcheck disable=SC2086 # one installable per derivation
+[ -z "$built_by" ] || nix build --no-link $built_by
+terminal="$tmp/terminal" # the stubs, less timeout
+mkdir -p "$terminal"
+for f in "$stubs"/*; do [ "${f##*/}" = timeout ] || ln -s "$f" "$terminal/"; done
+fresh
+export STUB_BREW_SUDO=1 STUB_TTY=1
+at "2026-10-12 05:00"
+as_path="$repo/scripts:$terminal:$real:/usr/bin:/bin:/usr/sbin:/sbin" \
+  as "$home" script -q /dev/null bash -c "$alias_cmd" </dev/null >>"$s/log/out" 2>&1 || true
+got=$(alarms)
+if grep -q timeout <<<"$got"; then bad "autoupdate-now runs on a shell PATH without timeout" "got: $got"
+else ok "autoupdate-now runs on a shell PATH without timeout"; fi
+expect_eq "autoupdate-now in a terminal lets sudo prompt" "$(calls "sudo prompted")" 1
+expect_eq "autoupdate-now hands brew the terminal as stdin" "$(calls "brew stdin is the terminal")" 1
+expect_eq "autoupdate-now shows brew's output as it runs, and logs it" "$(calls "brew output is live")" 1
+got=$(alarms | grep 'sync:' || true)
+if [ -z "$got" ]; then ok "autoupdate-now in a terminal finishes the sync with no alarm"
+else bad "autoupdate-now in a terminal finishes the sync with no alarm" "got: $got"; fi
 
 exit "$fail"
