@@ -73,6 +73,8 @@ Ban them by default and only allow one back when it is genuinely how you write.
 - Short declarative capper sentences after the point already landed. Fold them in or cut them.
 - Compressed jargon noun-phrases ("expiry-rate creep surfaces as a health metric").
   Spell out plain cause and effect instead.
+- Internal labels and IDs with no gloss ("gate rules", "order 47").
+  Say what the thing is or does the first time it comes up.
 - Colon-led list labels ("Deliberately absent: X"). Prefer plain phrasing.
 - Meta-labels announcing what a sentence is ("One vocabulary note:", "in one sentence:") and narrating what the document is doing ("so I won't repeat them here").
   Just say the thing.

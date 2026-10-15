@@ -413,4 +413,16 @@ fresh; rmdir "$r/inbox"; run register
 if [ "$code" != 0 ] && grep -q "rebuild" <<<"$out"; then ok "register explains a missing inbox"
 else bad "register explains a missing inbox" "exit $code" "$out"; fi
 
+# job-tracker's workflow names this path (JOB_TRACKER_EVIDENCE_STORE, its PR
+# #88) and fails closed until it exists. The runner must own it to keep and
+# prune; the owner reads it through group staff.
+activation=$(nix eval --raw "$repo#darwinConfigurations.myhost.config.system.activationScripts.launchd.text")
+store=/var/lib/github-runner/evidence
+missing=
+for line in "mkdir -p $store" "chown _github-runner:staff $store" "chmod 2750 $store"; do
+  grep -qxF "$line" <<<"$activation" || missing="$missing [$line]"
+done
+if [ -z "$missing" ]; then ok "activation creates the evidence store, runner-owned and readable by staff"
+else bad "activation creates the evidence store, runner-owned and readable by staff" "missing:$missing"; fi
+
 exit "$fail"

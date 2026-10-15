@@ -508,7 +508,8 @@ in
   };
 
   # Agent board: read-only phone view of open T3 threads (who waits on the owner,
-  # what runs, context use, quiet runs) at http://<mac>.<tailnet>.ts.net:4790.
+  # what runs, context use, quiet runs) at http://<mac>.<tailnet>.ts.net:4790,
+  # and a project map of the ~/orchestrator lanes at /map.
   # Binds 127.0.0.1 and the Tailscale address only, never all interfaces, and
   # writes nothing. Chosen over agenttrail on 2026-10-11
   # (docs/agent-observability/proposal.html). Test: tests/agent_board_test.mjs.

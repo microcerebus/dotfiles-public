@@ -1,0 +1,418 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Project map on the agent board: design</title>
+<style>
+/* Catppuccin Mocha with JetBrains Mono, the agent board's own look (files/bin/agent-board.mjs). No external assets. */
+:root{
+  --base:#1e1e2e; --mantle:#181825; --crust:#11111b;
+  --surface0:#313244; --surface1:#45475a; --surface2:#585b70;
+  --overlay0:#6c7086; --overlay1:#7f849c; --overlay2:#9399b2;
+  --text:#cdd6f4; --subtext:#a6adc8;
+  --mauve:#cba6f7; --blue:#89b4fa; --sapphire:#74c7ec; --teal:#94e2d5;
+  --green:#a6e3a1; --yellow:#f9e2af; --peach:#fab387; --red:#f38ba8;
+  --lavender:#b4befe;
+  --mono:'JetBrains Mono','JetBrainsMono Nerd Font',ui-monospace,SFMono-Regular,Menlo,monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{color-scheme:dark}
+body{background:var(--crust);color:var(--text);font-family:var(--mono);font-size:14px;line-height:1.6;padding:0 14px 64px}
+::selection{background:var(--surface2);color:var(--text)}
+.wrap{max-width:1040px;margin:0 auto;min-width:0}
+header.page{margin:28px 0 18px}
+h1{font-size:20px;letter-spacing:-.3px;line-height:1.35}
+.meta{color:var(--overlay1);font-size:12px;margin-top:6px}
+h2{font-size:15px;margin:34px 0 10px;color:var(--lavender)}
+h3{font-size:13.5px;margin:18px 0 6px}
+p{max-width:72ch}
+p+p{margin-top:8px}
+a{color:var(--blue);text-decoration-thickness:1px;text-underline-offset:3px}
+code{background:var(--mantle);border:1px solid var(--surface0);border-radius:5px;padding:0 5px;font-size:12.5px;overflow-wrap:break-word}
+pre{background:var(--mantle);border:1px solid var(--surface0);border-radius:10px;padding:12px 14px;font-size:12px;line-height:1.55;overflow-x:auto;margin:8px 0 4px}
+pre code{background:none;border:0;padding:0;font-size:inherit}
+.card{background:var(--base);border:1px solid var(--surface0);border-radius:12px;padding:16px 18px;min-width:0}
+.needs{border-color:var(--peach)}
+.needs h2{margin-top:0;color:var(--peach)}
+.muted{color:var(--subtext)}
+.small{font-size:12px}
+ul.plain{list-style:none}
+ul.plain li{padding:4px 0}
+ul.dash{padding-left:18px}
+ul.dash li{margin:4px 0;max-width:72ch}
+table{width:100%;border-collapse:collapse;font-size:12.5px}
+th,td{text-align:left;vertical-align:top;padding:8px 10px;border-bottom:1px solid var(--surface0);overflow-wrap:break-word}
+th{color:var(--overlay1);font-weight:500}
+tr:last-child td{border-bottom:0}
+.tablewrap{overflow-x:auto;background:var(--base);border:1px solid var(--surface0);border-radius:12px}
+.tablewrap table{min-width:560px}
+@media (max-width:640px){.tablewrap table{min-width:0}.tablewrap thead{display:none}.tablewrap td{display:block;border-bottom:0;padding:3px 12px}.tablewrap td:first-child{padding-top:10px;font-weight:700}.tablewrap td:last-child{padding-bottom:10px}.tablewrap tr{display:block;border-bottom:1px solid var(--surface0)}.tablewrap tr:last-child{border-bottom:0}.tablewrap td[data-h]::before{content:attr(data-h) ': ';color:var(--overlay2)}}
+.grid2{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:14px}
+@media (max-width:760px){.grid2{grid-template-columns:minmax(0,1fr)}}
+.green{color:var(--green)}.red{color:var(--red)}.peach{color:var(--peach)}.yellow{color:var(--yellow)}
+.sapphire{color:var(--sapphire)}.teal{color:var(--teal)}.grey{color:var(--overlay2)}
+.swatch{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:6px;vertical-align:1px}
+
+/* Decision forms (Lavish input playbook): local state until Queue is pressed. */
+.q{border-top:1px dashed var(--surface1);padding:12px 0 4px;margin-top:10px}
+.q:first-of-type{border-top:0;margin-top:0;padding-top:4px}
+.q b{color:var(--text)}
+.q .why{color:var(--subtext);font-size:12.5px;margin:4px 0 8px;max-width:72ch}
+.q label{display:block;padding:5px 0 5px 2px;cursor:pointer;max-width:72ch}
+.q label input{margin-right:8px;accent-color:var(--peach)}
+.q .rec{color:var(--green);font-size:12px;margin-left:6px}
+.q button{font:inherit;font-size:12px;color:var(--crust);background:var(--peach);border:0;border-radius:7px;padding:5px 10px;margin:6px 0 2px;cursor:pointer}
+.q button:hover{background:#f6c39e}
+.q button:focus-visible,.q input:focus-visible{outline:2px solid var(--lavender);outline-offset:2px}
+.q .sent{font-size:12px;color:var(--overlay2);margin-left:8px}
+
+/* Mockup frames */
+.frames{display:grid;grid-template-columns:minmax(0,1fr);gap:22px}
+.frames figure.ph{max-width:400px}
+.frame.desk{overflow-x:auto}
+.frame.desk .board{min-width:900px}
+.frame{background:var(--mantle);border:1px solid var(--surface1);border-radius:16px;padding:10px 10px 14px;min-width:0}
+.frame.desk{border-radius:10px}
+.frame .cap{font-size:12px;color:var(--overlay2);padding:0 4px 8px;display:flex;justify-content:space-between;gap:8px}
+figcaption{font-size:12px;color:var(--subtext);margin-top:8px;max-width:72ch}
+
+/* The board's own idioms, reused for the map. Class names match agent-board.mjs where the element already exists. */
+.board{background:var(--crust);border-radius:10px;padding:0 8px 14px;min-width:0;font-size:13px;line-height:1.45}
+.board .top{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:baseline;gap:4px 12px;padding:14px 4px 6px}
+.board .top h1{font-size:15px;color:var(--lavender)}
+.board .top h1 span{color:var(--overlay1);font-weight:400}
+.board .top h1 u{color:var(--text);text-decoration-color:var(--lavender);text-underline-offset:4px}
+.board .top small{font-size:11px;color:var(--overlay1)}
+.board h2{font-size:11px;letter-spacing:.6px;text-transform:uppercase;color:var(--overlay1);margin:14px 4px 6px;font-weight:500}
+.board h2.attn{color:var(--peach)}
+.board h2 i{font-style:normal;text-transform:none;letter-spacing:0;color:var(--overlay1);margin-left:8px}
+.board .t{background:var(--base);border:1px solid var(--surface0);border-radius:10px;padding:8px 10px;margin-bottom:7px;min-width:0}
+.board .t.needs{background:#2b2530;border-color:#5a4652}
+.board .name{font-weight:700;font-size:12.5px;display:flex;justify-content:space-between;gap:8px;min-width:0}
+.board .name span:first-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.board .pr{font-weight:500;font-size:11.5px;white-space:nowrap;color:var(--subtext)}
+.board .pr b{font-weight:500}
+.board .sub{font-size:11.5px;color:var(--subtext);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:2px}
+.board .state{font-weight:500}
+.board .lane{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:baseline;gap:2px 10px;margin:16px 4px 4px}
+.board .lane b{font-size:12.5px;color:var(--lavender)}
+.board .lane small{font-size:11px;color:var(--overlay1)}
+.board .ms{display:flex;justify-content:space-between;align-items:baseline;gap:8px;margin:10px 4px 5px;font-size:11px;color:var(--subtext)}
+.board .ms b{font-weight:500;color:var(--text)}
+.board .bar{display:flex;height:4px;background:var(--surface0);border-radius:3px;overflow:hidden;margin:0 4px 7px}
+.board .bar i{display:block;height:100%}
+.board .u{background:var(--base);border:1px solid var(--surface0);border-radius:10px;padding:7px 10px;margin-bottom:6px;min-width:0}
+.board .u.needs{background:#2b2530;border-color:#5a4652}
+.board .u.done{opacity:.62}
+.board .u .row{display:flex;justify-content:space-between;gap:8px;min-width:0;align-items:baseline}
+.board .u .id{font-weight:700;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.board .u .id .state{font-weight:500;margin-right:7px}
+.board .u .after{font-size:11.5px;color:var(--overlay2);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.board .u .after b{font-weight:500;color:var(--subtext)}
+.board .kids{margin-left:12px;padding-left:10px;border-left:1px solid var(--surface1)}
+.board .foot{color:var(--overlay2);font-size:11px;margin:14px 4px 0}
+.board .foot b{font-weight:500;color:var(--yellow)}
+.board.wide{padding:0 12px 16px}
+.board.wide .cols{display:grid;grid-template-columns:minmax(0,3fr) minmax(0,2fr);gap:0 22px;align-items:start}
+
+/* Flow figure */
+figure.flow{margin:0}
+.flow svg{width:100%;height:auto;display:block}
+.flow text{font-family:var(--mono);fill:var(--text);font-size:12px}
+.flow .lbl{fill:var(--subtext);font-size:10.5px}
+.flow .box{fill:var(--base);stroke:var(--surface1)}
+.flow .edge{stroke:var(--overlay1);fill:none;stroke-width:1.2}
+.flow .edge.new{stroke:var(--peach)}
+.flow .new text{fill:var(--peach)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="page">
+  <h1>A project map for the agent board: milestones, units, owners and what waits on you</h1>
+  <div class="meta">Sun 11 Oct 2026 · design only, nothing built · dotfiles worktree <code>docs/project-map-design</code> · one page, one round</div>
+</header>
+
+<section class="card needs" id="needs">
+  <h2>Needs you: four decisions</h2>
+  <p class="small muted">Each has a recommendation. Pick on the page and press Queue, or answer the input card the orchestrator sends.</p>
+
+  <form class="q" data-lavish-question="D1 data contract" onsubmit="event.preventDefault(); const v=new FormData(event.currentTarget).get('d1'); if(!v) return; window.lavish?.queuePrompt('D1 data contract: '+v,{tag:'choice',text:'D1: '+v,element:event.currentTarget,data:{question:'D1',answer:v}}); event.currentTarget.querySelector('.sent').textContent='queued';">
+    <b>D1. Where the map reads from.</b>
+    <div class="why">The lane template's <code>units.tsv</code> gains three optional columns (milestone, after, since) and a fixed state vocabulary. The job-tracker lane still writes the old five-column log, which the approved phase 2 restructure converts. Until then its lane shows a one-line "legacy layout" notice.</div>
+    <label><input type="radio" name="d1" value="A: template columns; phase 2 converts job-tracker first"> A. Template columns, phase 2 first <span class="rec">recommended</span></label>
+    <label><input type="radio" name="d1" value="B: also read the legacy log through a first-word bridge, deleted at phase 2"> B. Also bridge the legacy log now (first word of the status column), deleted at phase 2</label>
+    <button type="submit">Queue answer</button><span class="sent"></span>
+  </form>
+
+  <form class="q" data-lavish-question="D2 PR state" onsubmit="event.preventDefault(); const v=new FormData(event.currentTarget).get('d2'); if(!v) return; window.lavish?.queuePrompt('D2 PR state: '+v,{tag:'choice',text:'D2: '+v,element:event.currentTarget,data:{question:'D2',answer:v}}); event.currentTarget.querySelector('.sent').textContent='queued';">
+    <b>D2. Where PR state comes from.</b>
+    <div class="why">The ledger already records every verdict and merge per head SHA. Reading GitHub live would give the board network access and your <code>gh</code> token, which it has neither of today.</div>
+    <label><input type="radio" name="d2" value="A: ledger.tsv only; the PR number links to GitHub"> A. Ledger only, PR numbers link to GitHub <span class="rec">recommended</span></label>
+    <label><input type="radio" name="d2" value="B: gh pr list every 60 s, cached, in the board process"> B. Live <code>gh</code> every 60 s, cached in the board</label>
+    <button type="submit">Queue answer</button><span class="sent"></span>
+  </form>
+
+  <form class="q" data-lavish-question="D3 dependencies" onsubmit="event.preventDefault(); const v=new FormData(event.currentTarget).get('d3'); if(!v) return; window.lavish?.queuePrompt('D3 dependencies: '+v,{tag:'choice',text:'D3: '+v,element:event.currentTarget,data:{question:'D3',answer:v}}); event.currentTarget.querySelector('.sent').textContent='queued';">
+    <b>D3. How dependencies are drawn.</b>
+    <div class="why">Standing order 37 ended stacked PRs, so most units have zero or one dependency. The mockup nests a unit under the one it waits for and writes the rest as text. A drawn graph would mostly be loose nodes, and on the phone it would still have to become this list.</div>
+    <label><input type="radio" name="d3" value="A: nested list, after as text"> A. Nested list <span class="rec">recommended</span></label>
+    <label><input type="radio" name="d3" value="B: nested list on the phone, drawn SVG graph per lane on desktop"> B. Nested list on the phone, drawn graph on desktop</label>
+    <button type="submit">Queue answer</button><span class="sent"></span>
+  </form>
+
+  <form class="q" data-lavish-question="D4 when to build" onsubmit="event.preventDefault(); const v=new FormData(event.currentTarget).get('d4'); if(!v) return; window.lavish?.queuePrompt('D4 when to build: '+v,{tag:'choice',text:'D4: '+v,element:event.currentTarget,data:{question:'D4',answer:v}}); event.currentTarget.querySelector('.sent').textContent='queued';">
+    <b>D4. When to build it.</b>
+    <div class="why">Your 14:01 rule starts nothing new before the Thu 15 Oct reset. The build is one dotfiles unit: a <code>/map</code> route, a parser with a fixture test per failure case, and a phone screenshot on the tailnet. About the size of the board itself.</div>
+    <label><input type="radio" name="d4" value="A: after the Thu 15 Oct reset"> A. After the reset <span class="rec">recommended</span></label>
+    <label><input type="radio" name="d4" value="B: now, as a second exception"> B. Now, as a second exception</label>
+    <button type="submit">Queue answer</button><span class="sent"></span>
+  </form>
+</section>
+
+<h2>What it answers</h2>
+<p>The board today lists threads. It cannot say what those threads are for, what is done, or what is parked on you. The map is a second page on the same server, <code>/map</code>, read from the lane files the coordinators already keep. It answers four questions per lane: which milestone is how far along, which unit waits on which, who holds each unit and whether that thread is alive, and what is on you right now.</p>
+<p>What agenttrail read from a <code>PLAN.md</code> we already hold in <code>~/orchestrator/lanes/&lt;lane&gt;/</code>. So no hooks, no second process, no file any repo has to carry, and no writes. The board keeps rendering on request.</p>
+
+<h2>The page, with this afternoon's lane data</h2>
+<p class="small muted">Both frames are live HTML built from the job-tracker, dotfiles and interviews lanes as of 14:10 SGT, converted by hand to the proposed columns. Thread titles as the board shows them; no thread ids.</p>
+
+<div class="frames">
+<figure class="ph">
+<div class="frame">
+  <div class="cap"><span>phone · 390 wide</span><span>14:12 SGT</span></div>
+  <div class="board">
+    <div class="top"><h1><span>agent board ·</span> threads · <u>map</u></h1><small>refreshes every 15s</small></div>
+
+    <h2 class="attn">Needs you · 3</h2>
+    <div class="u needs"><div class="row"><span class="id"><span class="state peach">you</span>telegram-bot</span><span class="pr">dotfiles</span></div><div class="sub">create the bot and store its token · asked 13:36</div></div>
+    <div class="u needs"><div class="row"><span class="id"><span class="state peach">you</span>hosted-69-20</span><span class="pr">job-tracker</span></div><div class="sub">go for hosted acceptance of #69 and #20 · since 14:00</div></div>
+    <div class="u needs"><div class="row"><span class="id"><span class="state peach">you</span>project-map-design</span><span class="pr">dotfiles</span></div><div class="sub">review the design page · Fable design worker</div></div>
+
+    <div class="lane"><b>job-tracker</b><small>priority 1 · Coordinator 13 <span class="green">running</span> · updated 2 min ago</small></div>
+
+    <div class="ms"><b>M1 Apply</b><span>0 of 4 done</span></div>
+    <div class="bar"><i style="width:50%;background:var(--teal)"></i><i style="width:25%;background:var(--sapphire)"></i></div>
+    <div class="u"><div class="row"><span class="id"><span class="state green">in-flight</span>20-ocean-ui</span><span class="pr"><b>#20</b> ci green</span></div><div class="sub">UI owner 9 · <span class="green">Bash 4s</span> · feature/ocean-ui · since 13:23</div><div class="after">after <b>platform/ci-self-hosted-runner</b> to merge</div></div>
+    <div class="kids">
+      <div class="u"><div class="row"><span class="id"><span class="state green">in-flight</span>pr20-pickers</span><span class="pr">no PR</span></div><div class="sub">Fable pickers worker · <span class="green">Edit 12s</span> · since 13:38</div></div>
+      <div class="u"><div class="row"><span class="id"><span class="state grey">queued</span>leads-screen</span><span class="pr"><b>#37</b> draft</span></div><div class="sub">unassigned · feature/slice0-leads-screen</div></div>
+    </div>
+    <div class="u"><div class="row"><span class="id"><span class="state sapphire">review</span>apply-for-me-design</span><span class="pr"><b>#72</b> approve r2</span></div><div class="sub">Worker · <span class="grey">idle 25 min</span> · docs/apply-for-me-design · since 13:28</div></div>
+
+    <div class="ms"><b>M0 Daily list</b><span>2 of 3 done</span></div>
+    <div class="bar"><i style="width:67%;background:var(--green)"></i><i style="width:33%;background:var(--sapphire)"></i></div>
+    <div class="u"><div class="row"><span class="id"><span class="state sapphire">review</span>daily-list-jd</span><span class="pr"><b>#71</b> approve r1</span></div><div class="sub">Worker · <span class="grey">idle 20 min</span> · feat/daily-list-jd · since 13:28</div><div class="after">after <b>platform/ci-self-hosted-runner</b></div></div>
+    <div class="u done"><div class="row"><span class="id"><span class="state grey">done</span>m0-daily-list</span><span class="pr"><b>#51</b> merged</span></div></div>
+    <div class="u done"><div class="row"><span class="id"><span class="state grey">done</span>m0-rank-r2</span><span class="pr"><b>#65</b> merged</span></div></div>
+
+    <div class="ms"><b>Platform</b><span>0 of 2 done</span></div>
+    <div class="bar"><i style="width:50%;background:var(--red)"></i><i style="width:50%;background:var(--peach)"></i></div>
+    <div class="u"><div class="row"><span class="id"><span class="state red">blocked</span>ci-self-hosted-runner</span><span class="pr"><b>#73</b> approve r1</span></div><div class="sub">Worker · <span class="grey">idle 15 min</span> · ci/self-hosted-runner · since 13:18</div><div class="after">after <b>dotfiles/runner-rebuild</b> (then you)</div></div>
+    <div class="u needs"><div class="row"><span class="id"><span class="state peach">you</span>hosted-69-20</span><span class="pr"><b>#69</b> approve r2</span></div><div class="sub">Coordinator 13 · go for hosted acceptance · since 14:00</div></div>
+
+    <div class="ms"><b>M2 Fit</b><span>0 of 1 done</span></div>
+    <div class="bar"><i style="width:100%;background:var(--yellow)"></i></div>
+    <div class="u"><div class="row"><span class="id"><span class="state yellow">paused</span>31-resume-screen</span><span class="pr"><b>#31</b> approve</span></div><div class="sub">no owner thread · feature/slice0-resume-screen</div><div class="after">after <b>20-ocean-ui</b></div></div>
+
+    <div class="lane"><b>dotfiles</b><small>priority 3 · orchestrator 8 <span class="green">running</span> · updated 1 min ago</small></div>
+    <div class="u"><div class="row"><span class="id"><span class="state green">in-flight</span>runner-hardening</span><span class="pr">local main</span></div><div class="sub">Runner worker (2) · <span class="green">Read 2s</span> · since 13:56</div></div>
+    <div class="kids">
+      <div class="u"><div class="row"><span class="id"><span class="state peach">then you</span>runner-rebuild</span><span class="pr">rebuild</span></div><div class="sub">run rebuild at the Mac, GUI terminal</div><div class="after">also after <b>autoupdate-design-b</b></div></div>
+    </div>
+    <div class="u"><div class="row"><span class="id"><span class="state yellow">paused</span>autoupdate-design-b</span><span class="pr">local main</span></div><div class="sub">Auto-updater build · <span class="grey">paused 310k</span> · fix/autoupdate · since 13:36</div></div>
+    <div class="u needs"><div class="row"><span class="id"><span class="state peach">you</span>telegram-bot</span><span class="pr">keychain</span></div><div class="sub">create the bot, store the token, send it /start</div></div>
+    <div class="u"><div class="row"><span class="id"><span class="state green">in-flight</span>telegram-alerts</span><span class="pr">no PR</span></div><div class="sub">Telegram alerts worker · <span class="green">Write 30s</span> · feat/telegram-alerts</div></div>
+    <div class="u needs"><div class="row"><span class="id"><span class="state peach">you</span>project-map-design</span><span class="pr">docs</span></div><div class="sub">review the design page · Fable design worker</div></div>
+    <div class="u done"><div class="row"><span class="id"><span class="state grey">done</span>agent-chrome-desktop-control</span><span class="pr">pushed</span></div></div>
+
+    <div class="lane"><b>interviews</b><small>priority 2 · no coordinator · updated 21 h ago</small></div>
+    <div class="u"><div class="row"><span class="id"><span class="state green">in-flight</span>interview-checks</span><span class="pr">10:00 · 18:00</span></div><div class="sub">Interview checks host · <span class="grey">idle 4 h</span> · scheduled</div></div>
+    <div class="u"><div class="row"><span class="id"><span class="state grey">queued</span>system-design-practice</span><span class="pr">Tue 14:00</span></div><div class="sub">Practice thread · <span class="grey">idle 11 h</span></div></div>
+    <div class="u"><div class="row"><span class="id"><span class="state yellow">paused</span>deep-dive-walkthrough</span><span class="pr">no PR</span></div><div class="sub">no owner thread · resume note on disk</div></div>
+
+    <div class="foot">Read-only view of ~/orchestrator lanes and T3 state. job-tracker: <b>1 row skipped</b> (unknown state "landed", line 41).</div>
+  </div>
+</div>
+<figcaption>Needs you merges T3 input cards with lane units in state <code>needs-myuser</code> whose dependencies are met. A unit whose turn has not come yet, like the rebuild, shows "then you" in its lane instead.</figcaption>
+</figure>
+
+<figure>
+<div class="frame desk">
+  <div class="cap"><span>desktop · two columns from 900px (pans sideways on a phone)</span><span>14:12 SGT</span></div>
+  <div class="board wide">
+    <div class="top"><h1><span>agent board ·</span> threads · <u>map</u></h1><small>14:12:08 SGT · refreshes every 15s</small></div>
+    <h2 class="attn">Needs you · 3</h2>
+    <div class="u needs"><div class="row"><span class="id"><span class="state peach">you</span>telegram-bot</span><span class="pr">dotfiles · asked 13:36</span></div><div class="sub">create the bot and store its token</div></div>
+    <div class="u needs"><div class="row"><span class="id"><span class="state peach">you</span>hosted-69-20</span><span class="pr">job-tracker · since 14:00</span></div><div class="sub">go for hosted acceptance of #69 and #20</div></div>
+    <div class="u needs"><div class="row"><span class="id"><span class="state peach">you</span>project-map-design</span><span class="pr">dotfiles</span></div><div class="sub">review the design page · Fable design worker</div></div>
+    <div class="cols">
+      <div>
+        <div class="lane"><b>job-tracker</b><small>priority 1 · Coordinator 13 <span class="green">running</span> · updated 2 min ago</small></div>
+        <div class="ms"><b>M1 Apply</b><span>0 of 4 done</span></div>
+        <div class="bar"><i style="width:50%;background:var(--teal)"></i><i style="width:25%;background:var(--sapphire)"></i></div>
+        <div class="u"><div class="row"><span class="id"><span class="state green">in-flight</span>20-ocean-ui</span><span class="pr"><b>#20</b> ci green</span></div><div class="sub">UI owner 9 · <span class="green">Bash 4s</span> · feature/ocean-ui · since 13:23</div><div class="after">after <b>platform/ci-self-hosted-runner</b> to merge</div></div>
+        <div class="kids">
+          <div class="u"><div class="row"><span class="id"><span class="state green">in-flight</span>pr20-pickers</span><span class="pr">no PR</span></div><div class="sub">Fable pickers worker · <span class="green">Edit 12s</span> · since 13:38</div></div>
+          <div class="u"><div class="row"><span class="id"><span class="state grey">queued</span>leads-screen</span><span class="pr"><b>#37</b> draft</span></div><div class="sub">unassigned · feature/slice0-leads-screen</div></div>
+        </div>
+        <div class="u"><div class="row"><span class="id"><span class="state sapphire">review</span>apply-for-me-design</span><span class="pr"><b>#72</b> approve r2</span></div><div class="sub">Worker · <span class="grey">idle 25 min</span> · docs/apply-for-me-design · since 13:28</div></div>
+        <div class="ms"><b>M0 Daily list</b><span>2 of 3 done</span></div>
+        <div class="bar"><i style="width:67%;background:var(--green)"></i><i style="width:33%;background:var(--sapphire)"></i></div>
+        <div class="u"><div class="row"><span class="id"><span class="state sapphire">review</span>daily-list-jd</span><span class="pr"><b>#71</b> approve r1</span></div><div class="sub">Worker · <span class="grey">idle 20 min</span> · feat/daily-list-jd · since 13:28</div><div class="after">after <b>platform/ci-self-hosted-runner</b></div></div>
+        <div class="u done"><div class="row"><span class="id"><span class="state grey">done</span>m0-daily-list</span><span class="pr"><b>#51</b> merged</span></div></div>
+        <div class="u done"><div class="row"><span class="id"><span class="state grey">done</span>m0-rank-r2</span><span class="pr"><b>#65</b> merged</span></div></div>
+        <div class="ms"><b>Platform</b><span>0 of 2 done</span></div>
+        <div class="bar"><i style="width:50%;background:var(--red)"></i><i style="width:50%;background:var(--peach)"></i></div>
+        <div class="u"><div class="row"><span class="id"><span class="state red">blocked</span>ci-self-hosted-runner</span><span class="pr"><b>#73</b> approve r1</span></div><div class="sub">Worker · <span class="grey">idle 15 min</span> · ci/self-hosted-runner · since 13:18</div><div class="after">after <b>dotfiles/runner-rebuild</b> (then you)</div></div>
+        <div class="u needs"><div class="row"><span class="id"><span class="state peach">you</span>hosted-69-20</span><span class="pr"><b>#69</b> approve r2</span></div><div class="sub">Coordinator 13 · go for hosted acceptance · since 14:00</div></div>
+        <div class="ms"><b>M2 Fit</b><span>0 of 1 done</span></div>
+        <div class="bar"><i style="width:100%;background:var(--yellow)"></i></div>
+        <div class="u"><div class="row"><span class="id"><span class="state yellow">paused</span>31-resume-screen</span><span class="pr"><b>#31</b> approve</span></div><div class="sub">no owner thread · feature/slice0-resume-screen</div><div class="after">after <b>20-ocean-ui</b></div></div>
+      </div>
+      <div>
+        <div class="lane"><b>dotfiles</b><small>priority 3 · orchestrator 8 <span class="green">running</span> · updated 1 min ago</small></div>
+        <div class="u"><div class="row"><span class="id"><span class="state green">in-flight</span>runner-hardening</span><span class="pr">local main</span></div><div class="sub">Runner worker (2) · <span class="green">Read 2s</span> · since 13:56</div></div>
+        <div class="kids">
+          <div class="u"><div class="row"><span class="id"><span class="state peach">then you</span>runner-rebuild</span><span class="pr">rebuild</span></div><div class="sub">run rebuild at the Mac, GUI terminal</div><div class="after">also after <b>autoupdate-design-b</b></div></div>
+        </div>
+        <div class="u"><div class="row"><span class="id"><span class="state yellow">paused</span>autoupdate-design-b</span><span class="pr">local main</span></div><div class="sub">Auto-updater build · <span class="grey">paused 310k</span> · fix/autoupdate · since 13:36</div></div>
+        <div class="u needs"><div class="row"><span class="id"><span class="state peach">you</span>telegram-bot</span><span class="pr">keychain</span></div><div class="sub">create the bot, store the token, send it /start</div></div>
+        <div class="u"><div class="row"><span class="id"><span class="state green">in-flight</span>telegram-alerts</span><span class="pr">no PR</span></div><div class="sub">Telegram alerts worker · <span class="green">Write 30s</span> · feat/telegram-alerts</div></div>
+        <div class="u needs"><div class="row"><span class="id"><span class="state peach">you</span>project-map-design</span><span class="pr">docs</span></div><div class="sub">review the design page · Fable design worker</div></div>
+        <div class="u done"><div class="row"><span class="id"><span class="state grey">done</span>agent-chrome-desktop-control</span><span class="pr">pushed</span></div></div>
+        <div class="lane"><b>interviews</b><small>priority 2 · no coordinator · updated 21 h ago</small></div>
+        <div class="u"><div class="row"><span class="id"><span class="state green">in-flight</span>interview-checks</span><span class="pr">10:00 · 18:00</span></div><div class="sub">Interview checks host · <span class="grey">idle 4 h</span> · scheduled</div></div>
+        <div class="u"><div class="row"><span class="id"><span class="state grey">queued</span>system-design-practice</span><span class="pr">Tue 14:00</span></div><div class="sub">Practice thread · <span class="grey">idle 11 h</span></div></div>
+        <div class="u"><div class="row"><span class="id"><span class="state yellow">paused</span>deep-dive-walkthrough</span><span class="pr">no PR</span></div><div class="sub">no owner thread · resume note on disk</div></div>
+      </div>
+    </div>
+    <div class="foot">Read-only view of ~/orchestrator lanes and T3 state. job-tracker: <b>1 row skipped</b> (unknown state "landed", line 41).</div>
+  </div>
+</div>
+<figcaption>Same data, two columns from 900px. The board's thread page gets the same "threads · map" header, so the two views are one tap apart.</figcaption>
+</figure>
+</div>
+
+<h3>How to read a unit row</h3>
+<div class="tablewrap"><table>
+<thead><tr><th>Part</th><th>Comes from</th><th>Shown as</th></tr></thead>
+<tr><td>State word</td><td data-h="Comes from"><code>units.tsv</code> state column</td><td data-h="Shown as"><span class="swatch" style="background:var(--overlay1)"></span>queued · <span class="swatch" style="background:var(--green)"></span>in-flight · <span class="swatch" style="background:var(--sapphire)"></span>review · <span class="swatch" style="background:var(--peach)"></span>you (needs-myuser) · <span class="swatch" style="background:var(--red)"></span>blocked · <span class="swatch" style="background:var(--yellow)"></span>paused · <span class="swatch" style="background:var(--overlay1)"></span>done (dimmed)</td></tr>
+<tr><td>PR chip</td><td data-h="Comes from">pr column, then the newest <code>ledger.tsv</code> row for that PR</td><td data-h="Shown as"><code>#73 approve r1</code>, <code>#51 merged</code>, <code>#37 draft</code>; "no verdict" when the ledger has no row; links to the PR on GitHub</td></tr>
+<tr><td>Owner line</td><td data-h="Comes from">owner column joined to the open T3 threads the board already reads</td><td data-h="Shown as">Thread title, then its live state: <span class="green">tool 4s</span>, <span class="grey">idle 20 min</span>, <span class="peach">input card</span>, <span class="red">no activity 14 min</span>; "no owner thread" when the id is not an open thread (the unit is nobody's)</td></tr>
+<tr><td>after line</td><td data-h="Comes from">after column</td><td data-h="Shown as">A unit with one dependency nests under it. More than one, or a dependency in another lane (<code>dotfiles/runner-rebuild</code>), is written out. A dependency on a <code>needs-myuser</code> unit says "(then you)"</td></tr>
+<tr><td>since</td><td data-h="Comes from">since column</td><td data-h="Shown as">Shown on in-flight, review and blocked units. Past 8 active hours it reads <span class="yellow">stalled</span>, the review rule from 10 Oct</td></tr>
+<tr><td>Milestone line</td><td data-h="Comes from">milestone column, titles from <code>lane.json</code></td><td data-h="Shown as">"M1 Apply · 0 of 4 done" and a thin bar: done, in-flight, review, you, blocked, paused, queued in that order. Milestones sort by their first unit's position in the file, so the coordinator orders them by writing them</td></tr>
+</table></div>
+
+<h2>What the board reads</h2>
+<p>Every file is one the lane template already names (<code>templates/orchestrator-lane/</code>). Three columns and one <code>lane.json</code> field are new, all optional. Nothing is required of any product repo.</p>
+
+<div class="tablewrap"><table>
+<thead><tr><th>File</th><th>Writer</th><th>What the map takes</th></tr></thead>
+<tr><td><code>lanes/&lt;lane&gt;/lane.json</code></td><td data-h="Writer">Orchestrator</td><td data-h="What the map takes"><code>priority</code> (order on the page), <code>repo</code> and <code>github</code> (PR links), <code>coordinator_thread</code> and <code>orchestrator_thread</code> (the lane header's live state). New, optional: <code>milestones</code>, an ordered list of <code>{"id":"M1","title":"Apply"}</code></td></tr>
+<tr><td><code>lanes/&lt;lane&gt;/units.tsv</code></td><td data-h="Writer">Lane coordinator (the orchestrator where there is none)</td><td data-h="What the map takes">One row per unit. Columns <code>unit</code>, <code>state</code>, <code>owner</code>, <code>branch</code>, <code>pr</code> as in the template, then new and optional <code>milestone</code>, <code>after</code>, <code>since</code></td></tr>
+<tr><td><code>lanes/&lt;lane&gt;/ledger.tsv</code></td><td data-h="Writer">Verifiers, append-only</td><td data-h="What the map takes">The newest row per <code>pr</code>: its <code>verdict</code> and <code>head_sha</code></td></tr>
+<tr><td>T3 <code>statev2.sqlite</code></td><td data-h="Writer">T3</td><td data-h="What the map takes">What the board already selects: open threads, run state, pending input cards, context. Nothing new</td></tr>
+</table></div>
+
+<h3>units.tsv, as the mockup's dotfiles lane would be written</h3>
+<pre><code>unit                          state        owner            branch                   pr       milestone  after                                 since
+runner-hardening              in-flight    mcp:&lt;thread id&gt;  main                                                                               13:56
+runner-rebuild                needs-myuser                                            rebuild             runner-hardening,autoupdate-design-b
+autoupdate-design-b           paused       mcp:&lt;thread id&gt;  fix/autoupdate                                                                     13:36
+telegram-bot                  needs-myuser                                                                                                      13:36
+telegram-alerts               in-flight    mcp:&lt;thread id&gt;  feat/telegram-alerts                                                               13:40
+project-map-design            needs-myuser  mcp:&lt;thread id&gt;  docs/project-map-design                                                            14:14
+agent-chrome-desktop-control  done                          main</code></pre>
+<p class="small muted">Tab-separated in the file; spaced out here so the columns line up. Empty cells are the optional columns left blank.</p>
+
+<div class="grid2" style="margin-top:14px">
+<div class="card">
+<h3 style="margin-top:0">Column rules</h3>
+<ul class="dash small">
+<li><code>unit</code>: <code>[a-z0-9][a-z0-9-]*</code>, unique in the file. Today's leading <code>#</code> is accepted and dropped.</li>
+<li><code>state</code>: exactly one of <code>queued</code>, <code>in-flight</code>, <code>review</code>, <code>needs-myuser</code>, <code>blocked</code>, <code>paused</code>, <code>done</code>. Anything else skips the row and is counted in the footer.</li>
+<li><code>owner</code>: a T3 thread id, or empty for unassigned. Prose like "worker (opus high)" shows as that text with no live state.</li>
+<li><code>pr</code>: a number, or a short word for things that are not PRs ("rebuild", "docs"). Numbers get the ledger chip and the GitHub link.</li>
+<li><code>after</code>: comma-separated unit ids, <code>lane/unit</code> for another lane. An id that matches nothing is drawn as <span class="yellow">after ? name</span> and counted.</li>
+<li><code>since</code>: <code>HH:MM</code> today, or an ISO timestamp.</li>
+<li>Columns are matched by header name, so order and extra columns do not matter. A file without a <code>unit</code> or <code>state</code> header is rejected whole.</li>
+</ul>
+</div>
+<div class="card">
+<h3 style="margin-top:0">What stays with people</h3>
+<ul class="dash small">
+<li>The coordinator writes <code>after</code>, <code>milestone</code> and <code>needs-myuser</code>. The map shows exactly what was written. Nothing is inferred from prose, review notes or GitHub.</li>
+<li><code>owners.md</code> stays the human address book and is not parsed. The owner column carries the id.</li>
+<li>Needs you on both pages = pending T3 input cards and approvals, plus every <code>needs-myuser</code> unit whose <code>after</code> units are all done.</li>
+<li>One standing-order line per lane: "a unit's row carries its milestone, its dependencies and whether it waits on the owner". A brief lint can check it later; the map does not.</li>
+</ul>
+</div>
+</div>
+
+<h2>Fresh, missing, malformed</h2>
+<p>The map renders on request like the thread page: it reads the lane files and the T3 database each time, about six files under 100 KB, in a few milliseconds. No watcher, no cache, no background work. The page refreshes itself every 15 seconds. Each lane header shows "updated N ago" from the newest file's modification time, and goes <span class="yellow">stale</span> when its coordinator thread is running but no lane file has changed for two hours.</p>
+
+<div class="tablewrap"><table>
+<thead><tr><th>When</th><th>The page shows</th></tr></thead>
+<tr><td><code>~/orchestrator/lanes</code> is missing or unreadable</td><td data-h="The page shows">The thread page as today, plus one line on /map: "No lanes at ~/orchestrator/lanes". Nothing else breaks.</td></tr>
+<tr><td><code>lane.json</code> missing or not JSON</td><td data-h="The page shows">The lane by its directory name, last in order, with "lane.json: &lt;error&gt;" in grey. Its units still render.</td></tr>
+<tr><td><code>units.tsv</code> missing</td><td data-h="The page shows">The lane header with its coordinator's live state and "no units file". The interviews and dotfiles lanes look like this today.</td></tr>
+<tr><td>Header lacks <code>unit</code> or <code>state</code></td><td data-h="The page shows">"units.tsv: no state column", no rows. The old five-column job-tracker log has both, but its state column is free text, so every row is skipped and the footer counts them: that is the "legacy layout" notice in D1.</td></tr>
+<tr><td>A row with the wrong field count, an unknown state, or a duplicate unit id</td><td data-h="The page shows">The row is skipped and the footer says which line and why. Never a guessed row.</td></tr>
+<tr><td><code>after</code> names a unit that does not exist, or forms a cycle</td><td data-h="The page shows">The edge is drawn as "after ? name" or "after name (cycle)" in yellow, the units still render, and the footer counts it.</td></tr>
+<tr><td>Owner id is not an open T3 thread</td><td data-h="The page shows">"no owner thread" in peach on that unit. A settled, archived or deleted owner reads the same way, which is the point.</td></tr>
+<tr><td><code>ledger.tsv</code> missing or a row malformed</td><td data-h="The page shows">PR chips show the number only, "no verdict". A bad row is skipped and counted.</td></tr>
+<tr><td>T3 database unreadable</td><td data-h="The page shows">The board's existing "Could not read T3 state" page, on both routes.</td></tr>
+</table></div>
+
+<h2>How it flows</h2>
+<figure class="flow card">
+<svg viewBox="0 0 900 230" role="img" aria-labelledby="flow-title">
+<title id="flow-title">Lane files and T3 state read by one script, rendered as two pages</title>
+<g id="src-lanes"><rect class="box" x="20" y="24" width="220" height="70" rx="10"/><text x="36" y="50">~/orchestrator/lanes/*/</text><text class="lbl" x="36" y="70">lane.json · units.tsv · ledger.tsv</text><text class="lbl" x="36" y="86">read each request, mtime for freshness</text></g>
+<g id="src-t3"><rect class="box" x="20" y="130" width="220" height="70" rx="10"/><text x="36" y="156">T3 statev2.sqlite</text><text class="lbl" x="36" y="176">threads, runs, input cards, context</text><text class="lbl" x="36" y="192">read-only, explicit columns</text></g>
+<g id="board"><rect class="box" x="340" y="72" width="220" height="86" rx="10"/><text x="356" y="100">agent-board.mjs</text><text class="lbl" x="356" y="120">launchd agent, port 4790</text><text class="lbl" x="356" y="136">tailnet and loopback only</text><text class="lbl" x="356" y="152">no writes, no network out</text></g>
+<g id="page-threads"><rect class="box" x="660" y="24" width="220" height="60" rx="10"/><text x="676" y="50">/  threads</text><text class="lbl" x="676" y="70">as today, plus the map link</text></g>
+<g id="page-map" class="new"><rect class="box" x="660" y="140" width="220" height="60" rx="10" stroke="var(--peach)"/><text x="676" y="166">/map</text><text class="lbl" x="676" y="186">milestones · units · owners · you</text></g>
+<path id="e1" class="edge new" d="M240 59 C300 59, 300 100, 340 100"/><title>new: lane files into the board</title>
+<path id="e2" class="edge" d="M240 165 C300 165, 300 130, 340 130"/>
+<path id="e3" class="edge" d="M560 100 C610 100, 610 54, 660 54"/>
+<path id="e4" class="edge new" d="M560 130 C610 130, 610 170, 660 170"/>
+<text class="lbl" x="268" y="48" style="fill:var(--peach)">new</text>
+<text class="lbl" x="598" y="146" style="fill:var(--peach)">new</text>
+<text class="lbl" x="268" y="150">as today</text>
+</svg>
+<figcaption>Peach is what the build adds: one more source and one more route in the same script.</figcaption>
+</figure>
+
+<h2>What it is not</h2>
+<ul class="dash">
+<li>Not a graph canvas. agenttrail's Map drew a repo's PLAN.md in WebGL and needed a daemon per repo. This is a list with nesting, on the server we already run.</li>
+<li>Not a second writer. The coordinator's units file is the source; the map never edits, caches or infers.</li>
+<li>Not a GitHub client. PR state is the ledger's last verdict; the chip links out for the live view (D2).</li>
+<li>Not on the product repos. No PLAN.md, no hooks, no settings, no CLAUDE.md edits anywhere.</li>
+</ul>
+
+<h2>Risks</h2>
+<ul class="dash">
+<li>The map is only as honest as the coordinator's rows. A unit nobody marks <code>needs-myuser</code> never reaches Needs you. The thread page's input cards still catch the T3 side. The one-line standing order and, later, a brief lint carry the rest.</li>
+<li>The job-tracker lane shows nothing useful until phase 2 converts its log. Phase 2 was approved on 10 Oct and waits for a quiet merge queue, which the 14:01 rule makes likely this week.</li>
+<li>Cross-lane dependencies (the CI PR on your rebuild) need the <code>lane/unit</code> form. The map resolves it or shows "after ? name"; it never silently drops the edge.</li>
+<li>Thread titles and unit ids are readable by every device on the tailnet, as the thread page already is.</li>
+</ul>
+
+<h2>Done means, for the build after your answers</h2>
+<ul class="dash">
+<li>A fixture lanes directory in <code>tests/agent_board_test.mjs</code> covering every row of the failure table, each asserting the literal text the page shows.</li>
+<li>A screenshot of <code>/map</code> at phone width on the MagicDNS address, with live lane data, kept local.</li>
+<li>Render time measured per request with three lanes loaded, next to the thread page's 14 ms.</li>
+<li>The lane template README, the three lane files and one standing-order line updated in <code>~/orchestrator</code>, committed the same day. No push without your "push".</li>
+</ul>
+
+</div>
+</body>
+</html>

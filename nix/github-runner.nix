@@ -41,6 +41,7 @@ let
   id = 533; # nix-darwin's default uid/gid for its own runner user
   root = "/var/lib/github-runner";
   inbox = "${root}/inbox";
+  evidence = "${root}/evidence";
   logDir = "/var/log/github-runner";
   pfRules = pkgs.writeText "github-runner.pf"
     (builtins.replaceStrings [ "@uid@" ] [ (toString id) ] (builtins.readFile ./github-runner.pf));
@@ -101,6 +102,12 @@ in
       chown ${user}:${user} ${root}/$dir
       chmod 0700 ${root}/$dir
     done
+    # job-tracker's CI keeps evidence and receipts here instead of uploading
+    # them (its JOB_TRACKER_EVIDENCE_STORE) and prunes it itself: 3 days, 40 GB.
+    # Group staff, so the owner can review it; job wipes leave it alone.
+    mkdir -p ${evidence}
+    chown ${user}:staff ${evidence}
+    chmod 2750 ${evidence}
     # The owner drops registration tokens here; the runner reads and deletes them.
     mkdir -p ${inbox}
     chown ${username}:${user} ${inbox}

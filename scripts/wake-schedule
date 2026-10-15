@@ -1,0 +1,168 @@
+#!/usr/bin/env bash
+# wake-schedule - wake the Mac before each fixed-time T3 Code task and keep it
+# awake through the run. Why and how: nix/wake-schedule.nix, which runs this as
+# root from launchd at load and at every wake time.
+# Tests: tests/wake_schedule_test.sh.
+#
+# Usage: wake-schedule run
+#
+# Environment (set by nix/wake-schedule.nix):
+#   WAKE_SLOTS         task times as HH:MM/<weekdays>, weekdays as digits with
+#                      0 = Sunday, like T3: "08:00/0123456 09:00/0"
+#   WAKE_LEAD_MIN      minutes before a slot to wake (5)
+#   WAKE_HOLD_MIN      minutes after a slot to keep the Mac awake (25)
+#   WAKE_HORIZON_DAYS  days of one-off wakes to keep queued (3)
+#   WAKE_MIN_BATTERY   on battery below this percent, wake but do not hold (15)
+#   WAKE_OWNER         owner tag on this script's pmset events
+#   WAKE_STATE         marker for a hold this script started; under /var/run,
+#                      so a boot clears it along with SleepDisabled
+set -euo pipefail
+
+slots=${WAKE_SLOTS:?WAKE_SLOTS is not set}
+lead=$((${WAKE_LEAD_MIN:-5} * 60))
+hold=$((${WAKE_HOLD_MIN:-25} * 60))
+horizon=${WAKE_HORIZON_DAYS:-3}
+min_battery=${WAKE_MIN_BATTERY:-15}
+owner=${WAKE_OWNER:-dotfiles-wake-schedule}
+state=${WAKE_STATE:-/var/run/wake-schedule.hold}
+status=0
+
+now() { date +%s; }
+log() { printf '%s %s\n' "$(date -r "$(now)" '+%Y-%m-%d %H:%M:%S')" "$*"; }
+at() { date -r "$1" '+%a %d %b %H:%M'; }
+
+# Every slot occurrence from yesterday to the horizon, as space-separated
+# wake:end epochs: the wake comes $lead before the slot and the hold ends $hold
+# after it. Strings, not arrays: bash 3.2 (macOS's) rejects empty arrays under
+# set -u, should anyone run this by hand.
+windows=
+load_windows() {
+  local today d day wd slot hm days epoch
+  today=$(date -r "$1" +%Y-%m-%d)
+  for ((d = -1; d <= horizon; d++)); do
+    if ((d < 0)); then day=$(date -j -v"${d}"d -f %Y-%m-%d "$today" +%Y-%m-%d)
+    else day=$(date -j -v+"${d}"d -f %Y-%m-%d "$today" +%Y-%m-%d); fi
+    wd=$(date -j -f %Y-%m-%d "$day" +%w)
+    for slot in $slots; do
+      hm=${slot%/*} days=${slot#*/}
+      [[ $days == *"$wd"* ]] || continue
+      epoch=$(date -j -f '%Y-%m-%d %H:%M:%S' "$day $hm:00" +%s)
+      windows+=" $((epoch - lead)):$((epoch + hold))"
+    done
+  done
+}
+
+# The latest hold end among windows open at $1, or 0. A window opens a minute
+# early, in case launchd starts the job just before the wake time.
+hold_end() {
+  local w wake end best=0
+  for w in $windows; do
+    wake=${w%:*} end=${w#*:}
+    if ((wake - 60 <= $1 && $1 < end && end > best)); then best=$end; fi
+  done
+  echo "$best"
+}
+
+# Queue a one-off wake for every window in the horizon and cancel this
+# script's future wakes that no slot asks for any more. One-off events because
+# pmset keeps only one repeating wake, and the slots need several times a day.
+sync_wakes() {
+  local n=$1 w wake line when have=" " want=" " e
+  for w in $windows; do
+    wake=${w%:*}
+    if ((wake > n + 60 && wake <= n + horizon * 86400)); then want+="$wake "; fi
+  done
+  while IFS= read -r line; do
+    [[ $line == *" by '$owner'"* && $line =~ wake\ at\ ([0-9/]+\ [0-9:]+) ]] || continue
+    when=$(date -j -f '%m/%d/%Y %H:%M:%S' "${BASH_REMATCH[1]}" +%s)
+    if ((when > n + 60)); then have+="$when "; fi
+  done < <(pmset -g sched)
+  for e in $want; do
+    [[ $have == *" $e "* ]] && continue
+    if pmset schedule wake "$(date -r "$e" '+%m/%d/%y %H:%M:%S')" "$owner" >/dev/null; then
+      log "queued wake $(at "$e")"
+    else
+      log "error: could not queue wake $(at "$e")"; status=1
+    fi
+  done
+  for e in $have; do
+    [[ $want == *" $e "* ]] && continue
+    if pmset schedule cancel wake "$(date -r "$e" '+%m/%d/%y %H:%M:%S')" "$owner" >/dev/null; then
+      log "cancelled wake $(at "$e"): no slot needs it"
+    else
+      log "error: could not cancel wake $(at "$e")"; status=1
+    fi
+  done
+}
+
+sleep_disabled() { [[ $(pmset -g) =~ SleepDisabled[[:space:]]+1 ]]; }
+
+# Ends a hold this script started. SleepDisabled goes back to 0 only if the
+# marker says this script set it; a value someone else set is theirs.
+release() {
+  [ -e "$state" ] || return 0
+  if sleep_disabled; then
+    pmset -a disablesleep 0
+    log "hold ended ($1): SleepDisabled 1 -> 0"
+  else
+    log "hold ended ($1): SleepDisabled was already 0"
+  fi
+  rm -f "$state"
+}
+
+# Starts a hold until $1, or resumes one a killed run left behind. Returns
+# non-zero when this run holds nothing.
+start_hold() {
+  local batt pct
+  if [ -e "$state" ]; then
+    # A reload mid-hold (rebuild, the daily switch) killed the last run and
+    # left the marker, so this run carries the hold on.
+    log "hold resumed until $(at "$1")"
+    return 0
+  fi
+  if sleep_disabled; then
+    log "no hold needed: SleepDisabled is already 1"
+    return 1
+  fi
+  batt=$(pmset -g batt)
+  pct=$(grep -Eo '[0-9]+%' <<<"$batt" | head -1 | tr -d %)
+  if [[ $batt == *"'Battery Power'"* && ${pct:-100} -lt $min_battery ]]; then
+    log "no hold: on battery at $pct%"
+    return 1
+  fi
+  # Only SleepDisabled stops a closed lid from sleeping the Mac: idle-sleep
+  # assertions (caffeinate) do not, and on battery none of them do.
+  pmset -a disablesleep 1
+  : >"$state"
+  log "hold started until $(at "$1"): SleepDisabled 0 -> 1"
+}
+
+run() {
+  local n hold_until next
+  n=$(now)
+  load_windows "$n"
+  hold_until=$(hold_end "$n")
+  # Hold first: with the lid closed a wake is a dark wake, and the Mac sleeps
+  # again within about 40 seconds.
+  if ((hold_until > 0)) && ! start_hold "$hold_until"; then hold_until=0; fi
+  sync_wakes "$n"
+  if ((hold_until == 0)); then
+    release "no window open"
+    return
+  fi
+  # Foreground sleep: a SIGTERM from launchd ends this run without running
+  # release, and the marker hands the hold to the next run. The end moves
+  # if a later window opens meanwhile.
+  while ((n < hold_until)); do
+    sleep 30
+    n=$(now)
+    next=$(hold_end "$n")
+    if ((next > hold_until)); then hold_until=$next; fi
+  done
+  release "window closed"
+}
+
+case "${1:-}" in
+  run) run; exit "$status" ;;
+  *) echo "usage: wake-schedule run" >&2; exit 2 ;;
+esac

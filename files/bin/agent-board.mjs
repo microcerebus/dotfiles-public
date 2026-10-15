@@ -3,6 +3,8 @@
 // context is, and which runs have gone quiet. It reads T3's statev2.sqlite (read-only, explicit columns only; never the
 // scheduled_tasks webhook token or secret) and tails Claude Code logs for last activity, and writes nothing anywhere.
 // It also shows the dotfiles auto-updater's alarms, from that updater's own reader (scripts/dotfiles-autoupdate status).
+// A second page, /map, shows each orchestrator lane's milestones, units, owners and what waits on the owner, read from the
+// lane files under ~/orchestrator/lanes (design: docs/agent-observability/project-map.html).
 // Listens on 127.0.0.1 and this Mac's Tailscale address only, never all interfaces, and answers GET for allowlisted
 // Host names only. Run by a Home Manager launchd agent (see nix/user.nix); logs go to ~/Library/Logs.
 import { spawnSync } from 'node:child_process';
@@ -16,6 +18,7 @@ import { fileURLToPath } from 'node:url';
 const PORT = Number(process.env.AGENT_BOARD_PORT ?? 4790);
 const T3_DB = process.env.AGENT_BOARD_T3_DB ?? path.join(os.homedir(), '.t3/userdata/statev2.sqlite');
 const CLAUDE_PROJECTS = process.env.AGENT_BOARD_CLAUDE_PROJECTS ?? path.join(os.homedir(), '.claude/projects');
+const LANES = process.env.AGENT_BOARD_LANES ?? path.join(os.homedir(), 'orchestrator/lanes');
 const SELF = fileURLToPath(import.meta.url);
 const AUTOUPDATE = path.join(path.dirname(SELF), '../../scripts/dotfiles-autoupdate');
 const QUIET_MS = 10 * 60_000; // a running thread with no log write for this long is flagged
@@ -121,7 +124,8 @@ export function readUpdates(script = AUTOUPDATE) {
   return updates;
 }
 
-export function snapshot({ dbPath = T3_DB, logsDir = CLAUDE_PROJECTS, now = Date.now(), autoupdate = AUTOUPDATE } = {}) {
+// autoupdate: null skips the updater, which only the thread page shows.
+export function snapshot({ dbPath = T3_DB, logsDir = CLAUDE_PROJECTS, lanesDir = LANES, now = Date.now(), autoupdate = AUTOUPDATE } = {}) {
   const rows = readThreads(dbPath);
   const logs = indexLogs(logsDir);
   const titles = new Map(rows.map((r) => [r.id, r.title]));
@@ -154,11 +158,198 @@ export function snapshot({ dbPath = T3_DB, logsDir = CLAUDE_PROJECTS, now = Date
   const shown = threads.filter((t) => !t.parentTitle || t.state !== 'idle');
   return {
     now,
-    updates: readUpdates(autoupdate),
+    updates: autoupdate === null ? null : readUpdates(autoupdate),
     needs: shown.filter((t) => t.state === 'needs'),
     running: shown.filter((t) => t.state === 'running'),
     idle: shown.filter((t) => t.state === 'idle'),
+    // Unit owners and lane coordinators may be any open thread, including the idle children hidden above.
+    threads: new Map(threads.map((t) => [t.id, t])),
+    lanes: readLanes(lanesDir, now),
   };
+}
+
+// ---- Lane files (the /map page's source) ----
+// Each lane is ~/orchestrator/lanes/<lane>/ with lane.json, units.tsv and ledger.tsv, written by the orchestrator, the
+// lane coordinator and the verifiers (templates/orchestrator-lane/README.md has the columns). Read on every request
+// and never written. A bad file or row is reported on the page, never guessed at.
+
+export const UNIT_STATES = ['done', 'in-flight', 'review', 'needs-myuser', 'blocked', 'paused', 'queued'];
+const UNIT_ID = /^[a-z0-9][a-z0-9-]*$/;
+// T3 ids as stored: mcp:<uuid>, thread:<...> or a bare uuid. Owner text that looks like neither is prose.
+const THREAD_ID = /^(?:[a-z]+:\S+|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i;
+const SGT_MS = 8 * 3600_000; // Singapore has no daylight saving
+
+// Header names lower-cased; rows keep their 1-based file line for error messages. Blank lines are not rows.
+function readTsv(text) {
+  const lines = text.split('\n').map((l, i) => ({ line: i + 1, text: l.replace(/\r$/, '') })).filter((l) => l.text.trim());
+  if (!lines.length) return { header: [], rows: [] };
+  const header = lines[0].text.split('\t').map((h) => h.trim().toLowerCase());
+  return { header, rows: lines.slice(1).map((l) => ({ line: l.line, fields: l.text.split('\t').map((f) => f.trim()) })) };
+}
+
+// Columns are matched by header name, so order and extra columns do not matter. A row with the wrong field count, a
+// bad or duplicate unit id, or a state outside UNIT_STATES is skipped and reported; the rest render.
+export function parseUnits(text) {
+  const { header, rows } = readTsv(text);
+  const missing = ['unit', 'state'].filter((name) => !header.includes(name));
+  if (missing.length) return { error: `no ${missing.join(' or ')} column`, units: [], skipped: [] };
+  const units = [];
+  const skipped = [];
+  const seen = new Set();
+  for (const { line, fields } of rows) {
+    if (fields.length !== header.length) {
+      skipped.push({ line, why: `${fields.length} fields, header has ${header.length}` });
+      continue;
+    }
+    const get = (name) => (header.includes(name) ? fields[header.indexOf(name)] : '');
+    const id = get('unit').replace(/^#/, '');
+    const state = get('state');
+    const why = !UNIT_ID.test(id) ? `bad unit id "${id}"`
+      : !UNIT_STATES.includes(state) ? `unknown state "${state}"`
+        : seen.has(id) ? `duplicate unit "${id}"` : null;
+    if (why) {
+      skipped.push({ line, why });
+      continue;
+    }
+    seen.add(id);
+    units.push({
+      id, state, line,
+      owner: get('owner'), branch: get('branch'), pr: get('pr').replace(/^#(?=\d+$)/, ''),
+      milestone: get('milestone'), since: get('since'), note: get('note'),
+      after: get('after').split(',').map((s) => s.trim().replace(/^#/, '')).filter(Boolean),
+    });
+  }
+  return { error: null, units, skipped };
+}
+
+// The ledger is append-only, so a PR's last row is its newest verdict.
+export function parseLedger(text) {
+  const { header, rows } = readTsv(text);
+  const missing = ['pr', 'verdict'].filter((name) => !header.includes(name));
+  if (missing.length) return { error: `no ${missing.join(' or ')} column`, verdicts: new Map(), skipped: [] };
+  const verdicts = new Map();
+  const skipped = [];
+  for (const { line, fields } of rows) {
+    const pr = (fields[header.indexOf('pr')] ?? '').replace(/^#/, '');
+    const verdict = fields[header.indexOf('verdict')] ?? '';
+    const why = fields.length !== header.length ? `${fields.length} fields, header has ${header.length}`
+      : !/^\d+$/.test(pr) ? `pr "${pr}" is not a number`
+        : !verdict ? 'no verdict' : null;
+    if (why) skipped.push({ line, why });
+    else verdicts.set(Number(pr), verdict);
+  }
+  return { error: null, verdicts, skipped };
+}
+
+// since is HH:MM today in SGT (yesterday if that is still ahead of now) or an ISO timestamp. undefined = unreadable.
+export function parseSince(text, now) {
+  if (!text) return null;
+  const hm = /^(\d{1,2}):(\d{2})$/.exec(text);
+  if (hm) {
+    if (Number(hm[1]) > 23 || Number(hm[2]) > 59) return undefined;
+    const midnight = Math.floor((now + SGT_MS) / 86_400_000) * 86_400_000 - SGT_MS;
+    const at = midnight + (Number(hm[1]) * 60 + Number(hm[2])) * 60_000;
+    return at > now ? at - 86_400_000 : at;
+  }
+  const at = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(text) ? Date.parse(text) : NaN;
+  return Number.isNaN(at) ? undefined : at;
+}
+
+function readLaneFile(dir, file, lane) {
+  const p = path.join(dir, file);
+  try {
+    const text = fs.readFileSync(p, 'utf8');
+    lane.updatedAt = Math.max(lane.updatedAt ?? 0, fs.statSync(p).mtimeMs);
+    return { text };
+  } catch (error) {
+    return { error: error.code === 'ENOENT' ? 'missing' : error.message.split(',')[0] };
+  }
+}
+
+function readLane(dir, name, now) {
+  const lane = {
+    name, priority: Infinity, repo: null, head: null, headRole: null, milestones: new Map(), notes: [],
+    metaError: null, units: [], skipped: [], badSince: [], verdicts: new Map(), ledgerSkipped: [], updatedAt: null,
+  };
+  const meta = readLaneFile(dir, 'lane.json', lane);
+  let json = null;
+  try {
+    if (meta.error) throw new Error(meta.error);
+    json = JSON.parse(meta.text);
+    if (!json || typeof json !== 'object' || Array.isArray(json)) throw new Error('not a JSON object');
+  } catch (error) {
+    json = null;
+    lane.metaError = error.message;
+    lane.notes.push(`lane.json: ${error.message}`);
+  }
+  if (json) {
+    if (Number.isFinite(json.priority)) lane.priority = json.priority;
+    if (typeof json.repo === 'string' && /^[\w.-]+\/[\w.-]+$/.test(json.repo) && json.github !== false) lane.repo = json.repo;
+    lane.headRole = json.coordinator_thread ? 'coordinator' : json.orchestrator_thread ? 'orchestrator' : null;
+    lane.head = json.coordinator_thread || json.orchestrator_thread || null;
+    for (const m of Array.isArray(json.milestones) ? json.milestones : []) {
+      if (typeof m?.id === 'string' && m.id) lane.milestones.set(m.id, typeof m.title === 'string' ? m.title : '');
+    }
+  }
+
+  const units = readLaneFile(dir, 'units.tsv', lane);
+  if (units.error === 'missing') {
+    // D1: job-tracker keeps its old log under state/ until the approved phase 2 move converts it.
+    lane.notes.push(fs.existsSync(path.join(dir, 'state/units.tsv')) ? 'legacy layout: state/units.tsv converts in phase 2' : 'no units file');
+  } else if (units.error) {
+    lane.notes.push(`units.tsv: ${units.error}`);
+  } else {
+    const parsed = parseUnits(units.text);
+    if (parsed.error) lane.notes.push(`units.tsv: ${parsed.error}`);
+    else if (!parsed.units.length && !parsed.skipped.length) lane.notes.push('no units');
+    lane.units = parsed.units;
+    lane.skipped = parsed.skipped;
+  }
+  for (const u of lane.units) {
+    u.lane = name;
+    u.sinceAt = parseSince(u.since, now);
+    if (u.sinceAt === undefined) lane.badSince.push({ line: u.line, why: `since "${u.since}" is not HH:MM or ISO` });
+  }
+
+  const ledger = readLaneFile(dir, 'ledger.tsv', lane);
+  if (ledger.error && ledger.error !== 'missing') lane.notes.push(`ledger.tsv: ${ledger.error}`);
+  if (ledger.text !== undefined) {
+    const parsed = parseLedger(ledger.text);
+    if (parsed.error) lane.notes.push(`ledger.tsv: ${parsed.error}`);
+    lane.verdicts = parsed.verdicts;
+    lane.ledgerSkipped = parsed.skipped;
+  }
+  return lane;
+}
+
+// Lanes in priority order, a lane without a readable lane.json last. Each unit's after list is resolved across lanes
+// (lane/unit), and an edge whose target can reach the unit back is a cycle. A needs-myuser unit is the owner's turn ("you")
+// once every unit it waits for is done; until then its lane shows "then you". lanes is null without a lanes directory.
+export function readLanes(dir = LANES, now = Date.now()) {
+  let names;
+  try {
+    names = fs.readdirSync(dir).filter((n) => !n.startsWith('.') && fs.statSync(path.join(dir, n), { throwIfNoEntry: false })?.isDirectory());
+  } catch {
+    return { dir, lanes: null };
+  }
+  const lanes = names.map((n) => readLane(path.join(dir, n), n, now))
+    .sort((a, b) => (a.metaError ? 1 : 0) - (b.metaError ? 1 : 0) || a.priority - b.priority || a.name.localeCompare(b.name));
+  const units = lanes.flatMap((lane) => lane.units);
+  const byKey = new Map(units.map((u) => [`${u.lane}/${u.id}`, u]));
+  for (const u of units) {
+    u.deps = u.after.map((name) => ({ name, target: byKey.get(name.includes('/') ? name : `${u.lane}/${name}`) ?? null, cycle: false }));
+  }
+  const reaches = (from, to, seen) => from === to
+    || (!seen.has(from) && seen.add(from) && from.deps.some((d) => d.target && reaches(d.target, to, seen)));
+  for (const u of units) {
+    for (const d of u.deps) if (d.target) d.cycle = reaches(d.target, u, new Set());
+    const ready = u.deps.every((d) => d.target && !d.cycle && d.target.state === 'done');
+    u.shown = u.state !== 'needs-myuser' ? u.state : ready ? 'you' : 'then you';
+    // D3: a unit nests under the first unit it waits for in the same lane and milestone; other edges are written out.
+    u.nest = u.deps.find((d) => d.target && !d.cycle && d.target.lane === u.lane && d.target.milestone === u.milestone) ?? null;
+    u.parent = u.nest?.target ?? null;
+  }
+  return { dir, lanes };
 }
 
 const escape = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
@@ -189,7 +380,7 @@ function card(t, now) {
     tone = 'peach';
   } else if (t.state === 'running') {
     const since = t.lastActivityAt ? ago(now - t.lastActivityAt) : '';
-    label = t.quiet ? `no activity ${since}` : [t.tool, since].filter(Boolean).join(' ') || 'running';
+    label = t.quiet ? `no activity ${since}` : [t.tool ?? 'running', since].filter(Boolean).join(' ');
     tone = t.quiet ? 'red' : 'green';
   } else {
     label = `${RUN_LABELS[t.run] ?? 'new'}${t.lastActivityAt ? ` ${ago(now - t.lastActivityAt)} ago` : ''}`;
@@ -217,23 +408,231 @@ function updatesSection(u) {
     + lines.map(([tone, text]) => `<div class="line ${tone}">${escape(text)}</div>`).join('') + '</div>';
 }
 
+const SGT = (options) => new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Singapore', ...options });
+
+// 14:05 today, Tue 14:05 this week, 9 Oct before that.
+function when(at, now) {
+  const day = (ms) => Math.floor((ms + SGT_MS) / 86_400_000);
+  const hm = SGT({ hour: '2-digit', minute: '2-digit' }).format(at);
+  if (day(at) === day(now)) return hm;
+  if (day(now) - day(at) < 7) return `${SGT({ weekday: 'short' }).format(at)} ${hm}`;
+  return SGT({ day: 'numeric', month: 'short' }).format(at);
+}
+
+const tone = (cls, text) => `<span class="${cls}">${escape(text)}</span>`;
+
+// Both pages share the header, so threads and map are one tap apart. The clock gives way on a phone.
+function pageHeader(page, now) {
+  const link = (name, href) => (name === page ? `<u>${name}</u>` : `<a href="${href}">${name}</a>`);
+  return `<header><h1><span>agent board ·</span> ${link('threads', '/')} · ${link('map', '/map')}</h1>`
+    + `<small><span class="clock">${SGT({ hour: '2-digit', minute: '2-digit', second: '2-digit' }).format(now)} SGT · </span>`
+    + `refreshes every ${REFRESH_S}s</small></header>`;
+}
+
+function page(title, attention, body, wide = false) {
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><meta http-equiv="refresh" content="${REFRESH_S}">
+<title>${attention ? `(${attention}) ` : ''}${title}</title><style>${STYLE}</style></head><body><main${wide ? ' class="wide"' : ''}>
+${body}</main></body></html>`;
+}
+
+// Needs you, on both pages: pending T3 input cards and approvals, plus every lane unit that is the owner's turn. A unit
+// whose owner thread is itself waiting on him takes that thread's place, so nothing is listed twice. Oldest first.
+function needsYou(snap) {
+  const units = (snap.lanes?.lanes ?? []).flatMap((lane) => lane.units.filter((u) => u.shown === 'you'));
+  const owned = new Set(units.map((u) => u.owner));
+  const items = [
+    ...units.map((u) => {
+      const ask = snap.needs.find((t) => t.id === u.owner);
+      return { unit: u, thread: ask, at: ask?.askedAt ?? u.sinceAt ?? null };
+    }),
+    ...snap.needs.filter((t) => !owned.has(t.id)).map((t) => ({ thread: t, at: t.askedAt })),
+  ];
+  return items.sort((a, b) => (a.at ?? Infinity) - (b.at ?? Infinity));
+}
+
+// What a waiting unit's line says about the wait: its owner's input card if it has one, else how long it has waited.
+function unitWait(item, now) {
+  if (item.thread) return `${item.thread.ask}${item.thread.askedAt ? ` · asked ${when(item.thread.askedAt, now)}` : ''}`;
+  return item.unit.sinceAt ? `since ${when(item.unit.sinceAt, now)}` : null;
+}
+
+function unitCard(item, now) {
+  const u = item.unit;
+  const meta = [u.lane, u.note, item.thread?.title, unitWait(item, now)].filter(Boolean).map(escape).join(' · ');
+  return `<div class="t needs"><div class="name">${escape(u.id)}</div><div class="sub"><span class="state peach">you</span> · ${meta}</div></div>`;
+}
+
 export function render(snap) {
-  const time = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Singapore', hour: '2-digit', minute: '2-digit', second: '2-digit' }).format(snap.now);
   const section = (title, list, cls = '', limit = Infinity) => (list.length
     ? `<h2 class="${cls}">${title} · ${list.length}</h2>${list.slice(0, limit).map((t) => card(t, snap.now)).join('')}`
       + (list.length > limit ? `<p class="more">+${list.length - limit} more</p>` : '')
     : '');
-  const threads = section('Needs you', snap.needs, 'attn') + section('Running', snap.running)
-    + section('Idle', snap.idle, '', IDLE_SHOWN);
+  const needs = needsYou(snap);
+  const threads = (needs.length ? `<h2 class="attn">Needs you · ${needs.length}</h2>`
+      + needs.map((item) => (item.unit ? unitCard(item, snap.now) : card(item.thread, snap.now))).join('') : '')
+    + section('Running', snap.running) + section('Idle', snap.idle, '', IDLE_SHOWN);
   const alarmed = snap.updates.alarms.length > 0;
   const updates = updatesSection(snap.updates);
-  const attention = snap.needs.length + (alarmed ? 1 : 0);
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1"><meta http-equiv="refresh" content="${REFRESH_S}">
-<title>${attention ? `(${attention}) ` : ''}agent board</title><style>${STYLE}</style></head><body><main>
-<header><h1>agent board</h1><span>${time} SGT · refreshes every ${REFRESH_S}s</span></header>
+  return page('agent board', needs.length + (alarmed ? 1 : 0), `${pageHeader('threads', snap.now)}
 ${alarmed ? updates : ''}${threads || '<p class="more">No open T3 threads.</p>'}${alarmed ? '' : updates}
-<footer>Read-only view of T3 state. Nothing here can change an agent.</footer></main></body></html>`;
+<footer>Read-only view of T3 state. Nothing here can change an agent.</footer>`);
+}
+
+// ---- /map ----
+
+const STALL_MS = 8 * 3600_000; // review rule, 10 Oct: open 8 hours of work is stalled
+const STALE_MS = 2 * 3600_000; // a running coordinator with no lane file change for this long
+const SHOWN = {
+  queued: 'grey', 'in-flight': 'green', review: 'sapphire', you: 'peach', 'then you': 'peach', blocked: 'red', paused: 'yellow', done: 'grey',
+};
+// The milestone bar, in this order; queued is the empty track.
+const BAR = { done: 'green', 'in-flight': 'teal', review: 'sapphire', 'needs-myuser': 'peach', blocked: 'red', paused: 'yellow' };
+
+const tilde = (p) => (p.startsWith(`${os.homedir()}/`) ? `~${p.slice(os.homedir().length)}` : p);
+
+// A thread's live state as the map shows it: what it is doing now, or how long it has been quiet.
+function live(t, now, brief = false) {
+  if (t.state === 'needs') return tone('peach', t.ask);
+  const quiet = t.lastActivityAt ? ago(now - t.lastActivityAt) : '';
+  if (t.state === 'running') {
+    if (t.quiet) return tone('red', `no activity ${quiet}`);
+    return tone('green', brief || !t.tool ? `running${brief || !quiet ? '' : ` ${quiet}`}` : `${t.tool} ${quiet}`);
+  }
+  return tone('grey', `idle${quiet ? ` ${quiet}` : ''}`);
+}
+
+function ownerLine(u, snap) {
+  if (!u.owner) return u.state === 'needs-myuser' ? [] : ['unassigned'];
+  const t = snap.threads.get(u.owner);
+  if (t) return [escape(t.title), live(t, snap.now)];
+  // A settled, archived or deleted owner reads the same as a wrong id: nobody holds the unit.
+  return THREAD_ID.test(u.owner) ? [tone('peach', 'no owner thread')] : [escape(u.owner)];
+}
+
+function sinceLine(u, now) {
+  if (!u.sinceAt || !['in-flight', 'review', 'blocked', 'needs-myuser'].includes(u.state)) return null;
+  if (u.state !== 'needs-myuser' && now - u.sinceAt > STALL_MS) return tone('yellow', `stalled since ${when(u.sinceAt, now)}`);
+  return `since ${when(u.sinceAt, now)}`;
+}
+
+function prChip(u, lane) {
+  if (!/^\d+$/.test(u.pr)) return escape(u.pr || (u.state === 'done' ? '' : 'no PR'));
+  const verdict = lane.verdicts.get(Number(u.pr)) ?? 'no verdict';
+  const text = `<b>#${u.pr}</b> ${escape(verdict)}`;
+  return lane.repo
+    ? `<a href="https://github.com/${escape(lane.repo)}/pull/${u.pr}" title="${escape(verdict)}" rel="noreferrer">${text}</a>`
+    : `<span title="${escape(verdict)}">${text}</span>`;
+}
+
+function depLine(d) {
+  if (!d.target) return tone('yellow', `? ${d.name}`);
+  if (d.cycle) return tone('yellow', `${d.name} (cycle)`);
+  return `<b>${escape(d.name)}</b>${d.target.state === 'needs-myuser' ? ' (then you)' : ''}`;
+}
+
+function unitRow(u, lane, snap) {
+  const cls = u.shown === 'you' ? ' needs' : u.state === 'done' ? ' done' : '';
+  let html = `<div class="u${cls}"><div class="row"><span class="id"><span class="state ${SHOWN[u.shown]}">${u.shown}</span>`
+    + `${escape(u.id)}</span><span class="pr">${prChip(u, lane)}</span></div>`;
+  if (u.state !== 'done') {
+    const sub = [...ownerLine(u, snap), u.note && escape(u.note), u.branch && escape(u.branch), sinceLine(u, snap.now)].filter(Boolean);
+    if (sub.length) html += `<div class="sub">${sub.join(' · ')}</div>`;
+    const deps = u.deps.filter((d) => d !== u.nest);
+    if (deps.length) html += `<div class="after">${u.nest ? 'also after' : 'after'} ${deps.map(depLine).join(', ')}</div>`;
+  }
+  return `${html}</div>`;
+}
+
+// Units in file order, each nested under the unit it waits for (D3). Nesting edges never form a cycle.
+function unitTree(units, lane, snap, parent = null) {
+  return units.filter((u) => u.parent === parent).map((u) => {
+    const kids = unitTree(units, lane, snap, u);
+    return unitRow(u, lane, snap) + (kids ? `<div class="kids">${kids}</div>` : '');
+  }).join('');
+}
+
+function milestoneHead(id, units, lane) {
+  const title = id ? [id, lane.milestones.get(id)].filter(Boolean).join(' ') : 'No milestone';
+  const done = units.filter((u) => u.state === 'done').length;
+  const bar = Object.entries(BAR).map(([state, colour]) => {
+    const n = units.filter((u) => u.state === state).length;
+    return n ? `<i style="width:${((n / units.length) * 100).toFixed(1)}%;background:var(--${colour})"></i>` : '';
+  }).join('');
+  return `<div class="ms"><b>${escape(title)}</b><span>${done} of ${units.length} done</span></div><div class="bar">${bar}</div>`;
+}
+
+function laneSection(lane, snap) {
+  const head = [];
+  if (Number.isFinite(lane.priority)) head.push(`priority ${lane.priority}`);
+  const t = lane.head ? snap.threads.get(lane.head) : null;
+  if (!lane.head) head.push('no coordinator');
+  else if (!t) head.push(tone('peach', `no ${lane.headRole} thread`));
+  else head.push(`${escape(t.title)} ${live(t, snap.now, true)}`);
+  if (lane.updatedAt) {
+    const updated = `updated ${ago(snap.now - lane.updatedAt)} ago`;
+    head.push(t?.state === 'running' && snap.now - lane.updatedAt > STALE_MS ? tone('yellow', `stale, ${updated}`) : updated);
+  }
+  // Milestones in the order of their first unit, so the coordinator orders them by writing them.
+  const groups = Map.groupBy(lane.units, (u) => u.milestone);
+  const titled = lane.units.some((u) => u.milestone);
+  return `<section><div class="lane"><b>${escape(lane.name)}</b><small>${head.join(' · ')}</small></div>`
+    + lane.notes.map((n) => `<div class="note">${escape(n)}</div>`).join('')
+    + [...groups].map(([id, units]) => (titled ? milestoneHead(id, units, lane) : '') + unitTree(units, lane, snap)).join('')
+    + '</section>';
+}
+
+// One footer sentence per lane with anything skipped: counts, then the first few lines and why.
+function laneIssues(lane) {
+  const deps = lane.units.flatMap((u) => u.deps.filter((d) => !d.target || d.cycle)
+    .map((d) => ({ line: u.line, why: d.target ? `after ${d.name} (cycle)` : `after ? ${d.name}` })));
+  const kinds = [
+    [lane.skipped, (n) => `${n} row${n === 1 ? '' : 's'} skipped`, ''],
+    [deps, (n) => `${n} ${n === 1 ? 'dependency' : 'dependencies'} unresolved`, ''],
+    [lane.badSince, (n) => `${n} since unreadable`, ''],
+    [lane.ledgerSkipped, (n) => `${n} ledger row${n === 1 ? '' : 's'} skipped`, 'ledger.tsv '],
+  ].filter(([list]) => list.length);
+  if (!kinds.length) return '';
+  const details = kinds.flatMap(([list, , file]) => list.map((i) => `${i.why}, ${file}line ${i.line}`));
+  const shown = details.slice(0, 3).join('; ') + (details.length > 3 ? `; ${details.length - 3} more` : '');
+  return ` ${escape(lane.name)}: <b>${kinds.map(([list, count]) => count(list.length)).join(', ')}</b> (${escape(shown)}).`;
+}
+
+// Desktop: lanes fill the left column in priority order until it holds about half the rows; one column on a phone.
+function columns(sections, lanes) {
+  const weight = (lane) => lane.units.length + 2;
+  const total = lanes.reduce((n, lane) => n + weight(lane), 0);
+  let split = 1;
+  let left = weight(lanes[0]);
+  while (split < lanes.length - 1 && left + weight(lanes[split]) / 2 <= total / 2) left += weight(lanes[split++]);
+  return `<div class="cols"><div>${sections.slice(0, split).join('')}</div><div>${sections.slice(split).join('')}</div></div>`;
+}
+
+function needsRow(item, now) {
+  if (!item.unit) {
+    const t = item.thread;
+    const sub = [t.ask, t.askedAt && `asked ${when(t.askedAt, now)}`, t.branch].filter(Boolean).map(escape).join(' · ');
+    return `<div class="u needs"><div class="row"><span class="id"><span class="state peach">you</span>${escape(t.title)}</span>`
+      + `<span class="pr">${escape(t.project ?? '')}</span></div><div class="sub">${sub}</div></div>`;
+  }
+  const u = item.unit;
+  const sub = [u.note, item.thread?.title, unitWait(item, now)].filter(Boolean).map(escape).join(' · ');
+  return `<div class="u needs"><div class="row"><span class="id"><span class="state peach">you</span>${escape(u.id)}</span>`
+    + `<span class="pr">${escape(u.lane)}</span></div>${sub ? `<div class="sub">${sub}</div>` : ''}</div>`;
+}
+
+export function renderMap(snap) {
+  const needs = needsYou(snap);
+  const { dir, lanes } = snap.lanes;
+  let body;
+  if (!lanes) body = `<p class="more">No lanes at ${escape(tilde(dir))}</p>`;
+  else if (!lanes.length) body = `<p class="more">No lanes in ${escape(tilde(dir))}</p>`;
+  else body = columns(lanes.map((lane) => laneSection(lane, snap)), lanes);
+  const issues = (lanes ?? []).map(laneIssues).join('');
+  return page('project map', needs.length, `${pageHeader('map', snap.now)}
+${needs.length ? `<h2 class="attn">Needs you · ${needs.length}</h2>${needs.map((item) => needsRow(item, snap.now)).join('')}` : ''}
+${body}
+<footer>Read-only view of ${escape(tilde(path.dirname(dir)))} lanes and T3 state.${issues}</footer>`, true);
 }
 
 function errorPage(message) {
@@ -246,25 +645,46 @@ function errorPage(message) {
 
 // Catppuccin Mocha and JetBrains Mono (AGENTS.md theme rule). No external assets.
 const STYLE = `:root{--base:#1e1e2e;--mantle:#181825;--crust:#11111b;--surface0:#313244;--surface1:#45475a;--overlay1:#7f849c;
---text:#cdd6f4;--subtext:#a6adc8;--teal:#94e2d5;--green:#a6e3a1;--yellow:#f9e2af;--peach:#fab387;--red:#f38ba8;--lavender:#b4befe;
---mono:'JetBrains Mono','JetBrainsMono Nerd Font',ui-monospace,SFMono-Regular,Menlo,monospace}
+--overlay2:#9399b2;--text:#cdd6f4;--subtext:#a6adc8;--blue:#89b4fa;--sapphire:#74c7ec;--teal:#94e2d5;--green:#a6e3a1;--yellow:#f9e2af;
+--peach:#fab387;--red:#f38ba8;--lavender:#b4befe;--mono:'JetBrains Mono','JetBrainsMono Nerd Font',ui-monospace,SFMono-Regular,Menlo,monospace}
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:var(--crust);color:var(--text);font-family:var(--mono);font-size:14px;line-height:1.5;padding:0 12px 40px}
-main{max-width:720px;margin:0 auto;min-width:0}
+main{max-width:720px;margin:0 auto;min-width:0}main.wide{max-width:1040px}
 header{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:baseline;gap:4px 12px;padding:18px 4px 6px}
-h1{font-size:17px;color:var(--lavender)}header span{font-size:12px;color:var(--overlay1)}
+h1{font-size:17px;color:var(--lavender)}h1 span{color:var(--overlay1);font-weight:400}
+h1 a{color:inherit;text-decoration:none}h1 u{color:var(--text);text-decoration-color:var(--lavender);text-underline-offset:4px}
+header small{font-size:12px;color:var(--overlay1)}
+@media (max-width:480px){.clock{display:none}.u .sub,.t.needs .sub{white-space:normal;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow-wrap:anywhere}}
 h2{font-size:11.5px;letter-spacing:.6px;text-transform:uppercase;color:var(--overlay1);margin:16px 4px 7px;font-weight:500}
 h2.attn{color:var(--peach)}
 .t{background:var(--base);border:1px solid var(--surface0);border-radius:10px;padding:10px 12px;margin-bottom:8px;min-width:0}
-.t.needs{background:#2b2530;border-color:#5a4652}
+.t.needs,.u.needs{background:#2b2530;border-color:#5a4652}
 .name{font-weight:700;font-size:13.5px;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;overflow-wrap:anywhere}
 .sub{font-size:12px;color:var(--subtext);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:3px}
 .line{font-size:12px;color:var(--subtext);margin-top:3px;overflow-wrap:break-word}
 .green{color:var(--green)}.red{color:var(--red)}.peach{color:var(--peach)}.muted{color:var(--overlay1)}
+.grey{color:var(--overlay2)}.sapphire{color:var(--sapphire)}.yellow{color:var(--yellow)}
 .ctx{height:5px;background:var(--surface0);border-radius:3px;margin-top:8px;overflow:hidden}
 .ctx i{display:block;height:100%;background:var(--teal)}.ctx i.warn{background:var(--yellow)}.ctx i.hot{background:var(--red)}
 .more{color:var(--overlay1);font-size:12px;margin:4px}
-footer{color:var(--overlay1);font-size:11px;margin:20px 4px 0}`;
+.lane{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:baseline;gap:2px 10px;margin:20px 4px 6px}
+.lane b{font-size:13.5px;color:var(--lavender)}.lane small{font-size:12px;color:var(--overlay1)}
+.note{font-size:12px;color:var(--overlay2);margin:0 4px 7px}
+.ms{display:flex;justify-content:space-between;align-items:baseline;gap:8px;margin:12px 4px 5px;font-size:12px;color:var(--subtext)}
+.ms b{font-weight:500;color:var(--text)}
+.bar{display:flex;height:4px;background:var(--surface0);border-radius:3px;overflow:hidden;margin:0 4px 8px}.bar i{display:block;height:100%}
+.u{background:var(--base);border:1px solid var(--surface0);border-radius:10px;padding:8px 12px;margin-bottom:7px;min-width:0}
+.u.done{opacity:.62}
+.row{display:flex;justify-content:space-between;align-items:baseline;gap:8px;min-width:0}
+.id{font-weight:700;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.id .state{font-weight:500;margin-right:7px}
+.pr{flex-shrink:0;max-width:55%;font-size:12px;color:var(--subtext);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pr b{font-weight:500}.pr a{color:inherit;text-decoration:none}.pr a b{color:var(--blue)}
+.after{font-size:12px;color:var(--overlay2);margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.after b{font-weight:500;color:var(--subtext)}
+.kids{margin-left:12px;padding-left:10px;border-left:1px solid var(--surface1)}
+@media (min-width:900px){.cols{display:grid;grid-template-columns:minmax(0,3fr) minmax(0,2fr);gap:0 22px;align-items:start}}
+footer{color:var(--overlay1);font-size:11px;margin:20px 4px 0}footer b{font-weight:500;color:var(--yellow)}`;
 
 // The tailnet address is the CGNAT range Tailscale assigns (100.64.0.0/10).
 export function tailnetAddress(interfaces = os.networkInterfaces()) {
@@ -295,18 +715,21 @@ const HEADERS = {
   'x-content-type-options': 'nosniff',
 };
 
+const ROUTES = new Map([['/', 'threads'], ['/map', 'map']]);
+
 function handle(req, res, tailnetIp) {
+  const route = ROUTES.get(req.url.split('?')[0]);
   if (!hostAllowed(req.headers.host, { tailnetIp })) {
     res.writeHead(403, { ...HEADERS, 'content-type': 'text/plain' }).end('Host not allowed.\n');
   } else if (req.method !== 'GET' && req.method !== 'HEAD') {
     res.writeHead(405, { ...HEADERS, allow: 'GET, HEAD', 'content-type': 'text/plain' }).end('Read-only.\n');
-  } else if (req.url !== '/' && !req.url.startsWith('/?')) {
+  } else if (!route) {
     res.writeHead(404, { ...HEADERS, 'content-type': 'text/plain' }).end('Not found.\n');
   } else {
     let status = 200;
     let html;
     try {
-      html = render(snapshot());
+      html = route === 'map' ? renderMap(snapshot({ autoupdate: null })) : render(snapshot());
     } catch (error) {
       status = 500;
       html = errorPage(error.message);
