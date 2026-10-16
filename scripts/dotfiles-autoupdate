@@ -3,17 +3,19 @@
 # 2026, design B). Each step runs where its credential and privilege live.
 #
 #   sync     myuser's launchd agent (nix/user.nix), in his GUI session, where
-#            the login keychain answers. Daily from 04:00: fetch origin and
-#            fast-forward ~/dotfiles, update pnpm globals, brew upgrade,
-#            report pending macOS updates, then hand the fetched origin/main
-#            revision to the daemon. A `--now` run before 04:00 leaves the
-#            day's run to come.
+#            the login keychain answers. Hourly: fetch origin, fast-forward
+#            ~/dotfiles, hand the fetched origin/main revision to the daemon
+#            (sync.status), publish it to the public mirror, and notify
+#            the owner of a switch that needs him.
+#            Daily from 04:00 (daily.status): update pnpm globals, brew
+#            upgrade, report pending macOS updates. A `--now` run does both;
+#            before 04:00 it leaves the day's run to come.
 #            `autoupdate-now` runs the same program in a terminal, which
 #            shows each step and where sudo can prompt for brew.
 #   apply    the root launchd daemon (nix/host.nix). Hourly: switches the
 #            system to exactly the handed-over revision, never the working
 #            tree, and never rolls back a system built from unpushed work.
-#   status   the one reader of both status files, used by the zsh banner, the
+#   status   the one reader of the status files, used by the zsh banner, the
 #            agent board and the SessionStart hook. Prints alarms, info and
 #            the last success of each runner, and alarms on a flake.lock on
 #            origin/main 4 or more days old (check_flake_lock), a Lavish
@@ -37,7 +39,7 @@ daemon_log=/var/log/dotfiles-autoupdate.log
 
 stale_after=$((36 * 3600))    # no successful run for this long is an alarm
 running_after=$((2 * 3600))   # a run unfinished for this long was killed
-push_after=$((36 * 3600))     # waiting for push for this long is an alarm
+push_after=$((2 * 3600))      # waiting for push this long alarms and notifies
 macos_after=$((7 * 86400))    # a same-major macOS update pending this long
 retry_after=86400             # a failed revision is retried at most daily
 
@@ -113,18 +115,21 @@ finish() {
 
 # ── sync: myuser's agent ─────────────────────────────────────────────────────
 cmd_sync() {
-  status=$sync_dir/sync.status
   now=$(date +%s)
   # Every step reads /dev/null, as under launchd, so none of them prompts in
   # a terminal either; only brew gets the terminal, for sudo (sync_brew).
   if { : </dev/tty; } 2>/dev/null; then terminal=1; fi
   exec </dev/null
-  begin
-  if [ "${1:-}" != --now ]; then
-    [ "$(date +%H)" -ge 4 ] || return 0
-    [ "$(cat "$sync_dir/day" 2>/dev/null)" != "$(date +%F)" ] || return 0
-    # A rebuild in flight (it also reloads this agent) runs its own brew.
-    pgrep -qf darwin-rebuild && return 0
+  mkdir -p "$sync_dir" || return 1
+  # Hourly, the hand-over, so a push goes live within the hour (the owner, 16 Oct
+  # 2026). Daily from 04:00, after the cloud routine's 02:00 SGT flake.lock
+  # bump, the heavy steps too. `--now` runs both.
+  local daily=1 now_run=
+  [ "${1:-}" != --now ] || now_run=1
+  if [ -z "$now_run" ]; then
+    if [ "$(date +%H)" -lt 4 ] || [ "$(cat "$sync_dir/day" 2>/dev/null)" = "$(date +%F)" ]; then
+      daily=
+    fi
   fi
   if ! mkdir "$sync_dir/lock" 2>/dev/null; then
     if kill -0 "$(cat "$sync_dir/lock/pid" 2>/dev/null)" 2>/dev/null; then
@@ -135,46 +140,125 @@ cmd_sync() {
   fi
   echo $$ >"$sync_dir/lock/pid"
   trap 'rm -rf "$sync_dir/lock"' EXIT
+  # A switch in flight (a rebuild also reloads this agent) runs its own brew
+  # bundle. Both jobs fire together on wake, so each takes its own lock before
+  # it checks the other's: one of them always sees the other and waits.
+  if switch_running; then
+    [ -z "$now_run" ] || log "a switch is running; retry autoupdate-now after it finishes"
+    return 0
+  fi
+  # Before the hourly split, sync.status held the daily results too. Keep
+  # them, including unresolved failures and note ages, until daily work runs
+  # again. Migrate under the sync lock, before the hourly status is replaced.
+  status=$sync_dir/daily.status
+  if [ ! -f "$status" ] && [ -f "$sync_dir/sync.status" ]; then
+    write_status "$(cat "$sync_dir/sync.status")" || return 1
+  fi
+  for status in "$sync_dir/sync.status" "$sync_dir/daily.status"; do begin || return 1; done
+  notify_switch
 
   # Ticks right after wake can beat Wi-Fi; offline means retry next hour.
   local online='' try
   for try in $(seq 30); do
     curl -fsS -o /dev/null --max-time 5 https://github.com && { online=1; break; }
-    [ "$try" != 1 ] || log "--- waiting up to 5 min for github.com"
+    [ "$try" != 1 ] || log "--- waiting up to 8 min for github.com"
     sleep 10
   done
   [ -n "$online" ] || { log "github.com is unreachable; the next tick retries"; return 0; }
-  # The day's run is the first from 04:00, after the cloud routine's 02:00 SGT
-  # flake.lock bump. A `--now` run before 04:00 is extra: on 16 Oct 2026 one
-  # at 01:40 took the day's place, saw the lock from before the bump, and
-  # nothing handed over the bump that day.
-  [ "$(date +%H)" -lt 4 ] || date +%F >"$sync_dir/day"
-  mark_running
+  # A `--now` run before 04:00 is extra: on 16 Oct 2026 one at 01:40 took the
+  # day's place, saw the lock from before the bump, and nothing handed over
+  # the bump that day.
+  if [ -n "$daily" ]; then
+    [ "$(date +%H)" -lt 4 ] || date +%F >"$sync_dir/day"
+    log "=== sync"
+  fi
   # Ctrl-C in a terminal run reaches the running step (timed); the run then
   # stops after that step, whether the step died of it or handled it, and
   # records why instead of leaving a run that never finished.
   trap 'fail "interrupted (Ctrl-C)"; finish; exit 130' INT
-  log "=== sync"
 
-  local out fetched=
-  log "--- git fetch origin"
+  phase sync
+  local out fetched='' handed
+  [ -z "$daily" ] || log "--- git fetch origin"
   if out=$(GIT_TERMINAL_PROMPT=0 timed 300 git -C "$repo" fetch --quiet origin 2>&1); then
     fetched=$(git -C "$repo" rev-parse --verify -q refs/remotes/origin/main)
   else
     fail "git fetch from origin failed: $(last_line "$out")"
   fi
-
-  [ -z "$fetched" ] || sync_main "$fetched"
-  sync_pnpm
-  sync_brew
-  sync_macos
   if [ -n "$fetched" ]; then
-    # Last, so brew upgrade never races the switch's own brew bundle.
+    sync_main "$fetched"
+    # The daemon waits while this sync holds its lock, so the switch's own
+    # brew bundle never races the brew upgrade below.
+    handed=$(cat "$sync_dir/revision" 2>/dev/null)
     printf '%s\n' "$fetched" >"$sync_dir/revision.tmp" && mv -f "$sync_dir/revision.tmp" "$sync_dir/revision"
-    log "handed origin/main ${fetched:0:12} to the daemon"
+    [ -z "$daily" ] && [ "$fetched" = "$handed" ] || log "handed origin/main ${fetched:0:12} to the daemon"
+    sync_public "$([ -z "$daily" ] && [ "$fetched" = "$handed" ] || echo 1)"
   fi
   finish
+
+  [ -n "$daily" ] || return 0
+  phase daily
+  sync_pnpm
+  if switch_running; then
+    # A rebuild the owner started during pnpm: leave brew to it, and the day's
+    # run to the next tick.
+    rm -f "$sync_dir/day"
+    log "a switch started; brew upgrade waits for the next tick"
+    finish
+    return 0
+  fi
+  sync_brew
+  sync_macos
+  finish
   log "=== sync done"
+}
+
+# switch_running: a darwin-rebuild, or the daemon between its check of the
+# sync lock and its switch. The daemon runs as root, so kill -0 cannot probe
+# its pid from here; ps can.
+switch_running() {
+  pgrep -qf darwin-rebuild && return 0
+  local pid
+  pid=$(cat "$daemon_dir/switching" 2>/dev/null)
+  [ -n "$pid" ] && ps -p "$pid" >/dev/null 2>&1
+}
+
+phase() { # phase <sync|daily>: the steps that follow report to that status file
+  status=$sync_dir/$1.status
+  records=()
+  failed=0
+  mark_running
+}
+
+# The switch runs as root, which cannot reach the owner's screen. This agent runs
+# in his GUI session, so it posts a notification for each switch state he
+# must act on: a failed switch, or one waiting longer than push_after. Each
+# state notifies once; a state that clears and comes back notifies again.
+# Nothing else notifies: the board and the zsh banner show every alarm. The
+# daemon starts a note's clock at ten past and this agent reads it on the
+# hour, so a waiting notification follows the board's alarm by under an hour.
+notify_switch() {
+  local file=$daemon_dir/status sent=$sync_dir/notified kind a b c d key keys='' text
+  [ -f "$file" ] || return 0
+  while IFS='	' read -r kind a b c d; do
+    case $kind in
+      fail) key="fail $a" text=$a ;;
+      note) [ "$c" -gt 0 ] && [ $((now - b)) -ge "$c" ] || continue
+            key="note $a" text=$d ;;
+      *) continue ;;
+    esac
+    # A notification that did not post is tried again next tick.
+    if grep -qxF -- "$key" "$sent" 2>/dev/null \
+      || timed 30 osascript -e 'on run argv' \
+        -e 'display notification (item 1 of argv) with title "dotfiles auto-update"' \
+        -e 'end run' "$text" >/dev/null 2>&1; then
+      keys="$keys$key
+"
+    else
+      log "could not post a notification: $text"
+    fi
+  done <"$file"
+  printf '%s' "$keys" >"$sent.tmp" && mv -f "$sent.tmp" "$sent"
 }
 
 # Fast-forwards the checkout the live links point at. Local commits that are
@@ -199,6 +283,22 @@ sync_main() {
     else
       note main 0 "local main has $ahead commits not on origin/main and lacks $behind from it; waiting for push"
     fi
+  fi
+}
+
+# Only origin/main reaches the public mirror (docs/public-mirror.md), and
+# this agent publishes it: public-sync needs the owner's git credentials for both
+# repos. It fetches and gates origin/main with that commit's own rules, and
+# is a no-op when the mirror holds it already. A failure leaves the mirror
+# behind main until a run succeeds.
+public_sync=${AUTOUPDATE_PUBLIC_SYNC:-$repo/scripts/public-sync}
+sync_public() { # sync_public <1 to log the result>
+  local out
+  if out=$(GIT_TERMINAL_PROMPT=0 timed 600 "$public_sync" --from-origin 2>&1); then
+    [ -z "$1" ] || log "public mirror: $(last_line "$out")"
+  else
+    printf '%s\n' "$out"
+    fail "the public mirror is behind main: public-sync --from-origin failed: $(last_line "$out")"
   fi
 }
 
@@ -348,6 +448,11 @@ cmd_apply() {
     return 0
   fi
 
+  # The other half of cmd_sync's lock check: mark the switch, then look for a
+  # sync that started since the check above.
+  echo $$ >"$daemon_dir/switching"
+  trap 'rm -f "$daemon_dir/switching"' EXIT
+  kill -0 "$(cat "$sync_dir/lock/pid" 2>/dev/null)" 2>/dev/null && return 0
   mark_running
   log "=== switching to ${want:0:12} (running: $running)"
   # Nix opens the repo through libgit2, which lets root read a repo another
@@ -485,6 +590,13 @@ check_flake_lock() {
 cmd_status() {
   now=$(date +%s)
   read_status sync "$sync_dir/sync.status" "$sync_log"
+  # The board runs status from the checkout, live on push, before the switch
+  # reloads the agent that writes daily.status.
+  if [ -f "$sync_dir/sync.status" ] && [ ! -f "$sync_dir/daily.status" ]; then
+    info "daily: no run yet; the sync agent starts it after the next switch"
+  else
+    read_status daily "$sync_dir/daily.status" "$sync_log"
+  fi
   read_status switch "$daemon_dir/status" "$daemon_log"
   check_flake_lock
   check_lavish

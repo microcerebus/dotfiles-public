@@ -21,7 +21,7 @@ tool-adoption backlog; check it before adding workflow tooling).
 - The daily auto-updater (`scripts/dotfiles-autoupdate`) remains authorized to run without an attended request.
   The `dotfiles-sync` launchd agent (`nix/user.nix`) fast-forwards the main checkout to `origin/main` and updates pnpm globals and brew.
   The `dotfiles-autoupdate` launchd daemon (`nix/host.nix`) switches the system to the exact `origin/main` revision the agent fetched, never to the working tree.
-  Anything pushed to `main` is live on the machine within a day.
+  Anything pushed to `main` is live on the machine within about an hour: the agent hands over origin/main hourly, and its heavy steps (pnpm, brew, macOS updates) run daily from 04:00.
   Unpushed or uncommitted work is never applied by the updater; a system that `rebuild` built from such work stays until the push.
   Alarms reach the zsh banner, the agent board and agent sessions through `dotfiles-autoupdate status`.
 - Preserve unrelated changes.
@@ -31,7 +31,8 @@ tool-adoption backlog; check it before adding workflow tooling).
 - Do not edit `~/.ssh`, keychain, or login items.
 - **Whatever reaches `main` is republished to a sanitized public mirror** (`docs/public-mirror.md`).
   Treat anything committed here as publishable: new personal detail needs a rule in `scripts/public-sync`, or the leak gate in the pre-push hook aborts the push.
-  After pushing `main`, run `scripts/public-sync --from-origin` until the sync agent does it; a non-zero exit means the mirror is behind main and must be fixed.
+  The hourly sync agent runs `scripts/public-sync --from-origin` after it fetches, so a push is published within about an hour; run it by hand to publish sooner.
+  A failure is a sync alarm, "the public mirror is behind main", and must be fixed.
   Never commit to `~/dotfiles-public` - it is regenerated.
 
 ## Architecture rules
@@ -114,8 +115,9 @@ tool-adoption backlog; check it before adding workflow tooling).
   only; fzf-tab is the always-on completion layer (2026-07-05).
 - `homebrew.onActivation.cleanup = "zap"` uninstalls (and zaps prefs of) any
   brew formula/cask not declared in `nix/host.nix` - a plain `brew install`
-  lasts only until the next `rebuild`. Declare everything; adopt already-present
-  apps with `brew install --cask --adopt <cask>` (2026-07-06).
+  lasts only until the next switch, which runs within about an hour of any
+  push to main (the owner kept zap for that, 2026-10-16). Declare everything; adopt
+  already-present apps with `brew install --cask --adopt <cask>` (2026-07-06).
 - Removing a cask from `nix/host.nix` runs its *zap* stanza, which can trash
   data shared with other installs (claude-code's zap deletes `~/.claude.json*`
   and the native `~/.local/share/claude`). Before dropping a cask, read its

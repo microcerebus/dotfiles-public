@@ -175,12 +175,6 @@
 
   # ── Sensible macOS defaults (small on purpose; grow via reviewed diffs) ──
   system.defaults = {
-    dock = {
-      autohide = true;
-      orientation = "right"; # dock on the right edge
-      tilesize = 128;
-    };
-
     finder = {
       AppleShowAllExtensions = true;
       CreateDesktop = false; # clean desktop: Finder draws no icons on it
@@ -211,6 +205,15 @@
     };
 
     CustomUserPreferences = {
+      # The Dock, here rather than in system.defaults.dock: any dock key there
+      # makes every switch run `killall Dock`, and the root daemon switches
+      # within the hour of a push, mid-session. A change here shows at the
+      # next login, or after `killall Dock`.
+      "com.apple.dock" = {
+        autohide = true;
+        orientation = "right"; # dock on the right edge
+        tilesize = 128;
+      };
       # cmd+space → Raycast. Symbolic hotkey 64 is Spotlight search; disabling
       # it frees the chord. Keys absent from this dict keep macOS defaults.
       # Takes effect after logout/login (macOS caches symbolic hotkeys).
@@ -279,9 +282,10 @@
   # scripts/dotfiles-autoupdate, tests in tests/autoupdate_test.sh. The
   # dotfiles-sync agent (nix/user.nix) fetches origin in myuser's GUI session,
   # where the login keychain answers, and hands over the origin/main revision
-  # it fetched. Hourly, this daemon switches to exactly that revision, never
-  # the working tree, so uncommitted or unpushed work is never applied as
-  # root, and a running system built from such work waits for the push.
+  # it fetched, hourly on the hour. At ten past, this daemon switches to
+  # exactly that revision, never the working tree, so uncommitted or unpushed
+  # work is never applied as root, and a running system built from such work
+  # waits for the push.
   # Until 11 Oct 2026 one root daemon did all of it and never once succeeded:
   # the keychain refuses a background session, a boot read as "already
   # switched today", and failures reached only a banner nobody opened.
@@ -298,7 +302,7 @@
     };
     serviceConfig = {
       Label = "com.${username}.dotfiles-autoupdate";
-      StartInterval = 3600;
+      StartCalendarInterval = [ { Minute = 10; } ];
       RunAtLoad = true;
       AbandonProcessGroup = true;
       StandardOutPath = "/var/log/dotfiles-autoupdate.log";

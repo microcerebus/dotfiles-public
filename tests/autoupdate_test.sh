@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Tests for scripts/dotfiles-autoupdate against a sandboxed origin, checkout
 # and fake system generations, with stub darwin-rebuild, nix-store, pnpm,
-# brew, softwareupdate, sudo, curl, codesign and a clock. The terminal case (20) runs
+# brew, softwareupdate, sudo, curl, codesign, osascript and a clock. The terminal case (20) runs
 # the program `autoupdate-now` names, built from this flake.
 # Never touches the real system and writes only to a temp dir and the Nix
 # store. The network is used only by Nix, to fetch what that build needs.
@@ -40,9 +40,14 @@ shift
 exec "$@"
 EOF
 # sudo -u <user> [-H] [env VAR=...] cmd: runs cmd as the caller, keeping the
-# stub PATH whatever the caller asked for.
+# stub PATH whatever the caller asked for. STUB_SYNC_STARTS=<pid>: a sync
+# takes its lock as pid <pid> while the daemon asks git about the repo.
 cat >"$stubs/sudo" <<'EOF'
 #!/usr/bin/env bash
+if [ -n "${STUB_SYNC_STARTS:-}" ]; then
+  mkdir -p "$AUTOUPDATE_HOME/.local/state/dotfiles-autoupdate/lock"
+  echo "$STUB_SYNC_STARTS" >"$AUTOUPDATE_HOME/.local/state/dotfiles-autoupdate/lock/pid"
+fi
 while [ $# -gt 0 ]; do
   case $1 in -u) shift 2 ;; -H|--set-home) shift ;; *) break ;; esac
 done
@@ -90,9 +95,19 @@ cat >"$stubs/codesign" <<'EOF'
 if [ -z "${STUB_SILL_TEAM:-}" ]; then echo "$2: code object is not signed at all" >&2; exit 1; fi
 printf 'Executable=%s/Contents/MacOS/Sill\nIdentifier=me.saffer.sill.mac\nTeamIdentifier=%s\n' "$2" "$STUB_SILL_TEAM" >&2
 EOF
+# osascript: records each notification instead of posting it.
+# STUB_OSASCRIPT_FAIL: the notification does not post.
+cat >"$stubs/osascript" <<'EOF'
+#!/bin/sh
+[ "${STUB_OSASCRIPT_FAIL:-0}" = 0 ] || exit 1
+for a; do last=$a; done
+echo "notify $last" >>"$STUB_LOG/calls"
+EOF
+# pgrep: a rebuild runs with STUB_REBUILD_RUNNING, or once a stub started one
+# ($STUB_LOG/rebuilding).
 cat >"$stubs/pgrep" <<'EOF'
 #!/bin/sh
-[ "${STUB_REBUILD_RUNNING:-0}" = 1 ]
+[ "${STUB_REBUILD_RUNNING:-0}" = 1 ] || [ -e "$STUB_LOG/rebuilding" ]
 EOF
 cat >"$stubs/sw_vers" <<'EOF'
 #!/bin/sh
@@ -104,6 +119,7 @@ stub-terminal-check softwareupdate
 echo softwareupdate >>"$STUB_LOG/calls"
 if [ -s "$STUB_LOG/updates" ]; then cat "$STUB_LOG/updates"; else echo "No new software available." >&2; fi
 EOF
+# STUB_PNPM_STARTS_REBUILD: the owner starts a rebuild while pnpm updates.
 # STUB_PNPM_CTRL_C: the owner presses Ctrl-C during `pnpm update`, which the
 # terminal sends to its foreground process group. The step handles it and
 # finishes its own work, the harder case for the run to notice.
@@ -115,6 +131,7 @@ if [ "${STUB_PNPM_CTRL_C:-0}" = 1 ] && [ "$1" = update ]; then
   trap '' INT
   kill -INT -- "-$(ps -o tpgid= -p $$ | tr -d ' ')"
 fi
+[ "${STUB_PNPM_STARTS_REBUILD:-0}" = 0 ] || [ "$1" != update ] || touch "$STUB_LOG/rebuilding"
 case $1 in
   ls) echo '[{"dependencies":{"gh-axi":{},"lavish-axi":{},"chrome-devtools-axi":{},"agent-device":{}}}]' ;;
   *) [ "${STUB_PNPM_FAIL:-0}" = 0 ] ;;
@@ -150,6 +167,15 @@ if [ "${STUB_BREW_SUDO:-0}" = 1 ]; then
     exit 1
   fi
 fi
+EOF
+# public-sync --from-origin: records the publish. STUB_PUBLIC_FAIL: the
+# leak gate or the mirror push failed.
+cat >"$stubs/public-sync" <<'EOF'
+#!/bin/sh
+stub-terminal-check public-sync
+echo "public-sync $*" >>"$STUB_LOG/calls"
+if [ "${STUB_PUBLIC_FAIL:-0}" = 1 ]; then echo "[public-sync] LEAK GATE FAILED: 1 hit" >&2; exit 1; fi
+echo "[public-sync] mirror already at origin/main"
 EOF
 # nix-store -qR <system>: the fake system's closure file.
 cat >"$stubs/nix-store" <<'EOF'
@@ -207,8 +233,9 @@ fresh() {
   export AUTOUPDATE_USER=testuser AUTOUPDATE_HOST=testhost AUTOUPDATE_HOME="$home"
   export AUTOUPDATE_SYSTEM="$s/current-system" AUTOUPDATE_DAEMON_DIR="$s/daemon"
   export AUTOUPDATE_STAMP="$s/daemon/stamp" AUTOUPDATE_SILL_APP="$s/Applications/Sill.app"
+  export AUTOUPDATE_PUBLIC_SYNC="$stubs/public-sync"
   export HM_GCROOT="$home/.local/state/home-manager/gcroots/current-home"
-  unset STUB_OFFLINE STUB_REBUILD_RUNNING STUB_PNPM_FAIL STUB_PNPM_CTRL_C STUB_BREW_OUTPUT STUB_BREW_SUDO STUB_TTY STUB_BREW_KILL STUB_SWITCH_EXIT STUB_HM_BROKEN STUB_SILL_TEAM
+  unset STUB_OFFLINE STUB_REBUILD_RUNNING STUB_PNPM_FAIL STUB_PNPM_CTRL_C STUB_BREW_OUTPUT STUB_BREW_SUDO STUB_TTY STUB_BREW_KILL STUB_SWITCH_EXIT STUB_HM_BROKEN STUB_SILL_TEAM STUB_OSASCRIPT_FAIL STUB_PNPM_STARTS_REBUILD STUB_SYNC_STARTS STUB_PUBLIC_FAIL
   at "2026-10-11 12:00"
   git init -q --bare -b main "$s/origin.git"
   git clone -q "$s/origin.git" "$s/upstream" 2>/dev/null
@@ -357,7 +384,7 @@ fresh
 at "2026-10-12 02:00"; commit_upstream "C: flake.lock bump" flake.lock
 C=$(git -C "$s/upstream" rev-parse HEAD)
 at "2026-10-12 03:00"; tick
-expect_eq "nothing runs before 04:00" "$(built)" ""
+expect_eq "nothing heavy runs before 04:00" "$(calls brew)" 0
 at "2026-10-12 04:10"; tick; tick
 at "2026-10-12 05:10"; tick
 expect_eq "origin/main is switched to exactly once" "$(built | tr '\n' ' ')" "$C "
@@ -480,7 +507,7 @@ for d in 12 13 14 15 16 17 18; do
   at "2026-10-$d 01:00"; commit_upstream "lock $d" flake.lock
   at "2026-10-$d 05:00"; tick; tick
 done
-expect_report "a same-major macOS update is reported from day 1" "info: sync: macOS Tahoe 26.7.2"
+expect_report "a same-major macOS update is reported from day 1" "info: daily: macOS Tahoe 26.7.2"
 expect_no_alarm "a same-major macOS update pending 6 days is not an alarm"
 at "2026-10-19 01:00"; commit_upstream "lock 19" flake.lock
 at "2026-10-19 05:00"; tick; tick
@@ -516,11 +543,12 @@ at "2026-10-12 05:00"; tick
 unset STUB_BREW_SUDO
 at "2026-10-12 07:00"
 expect_eq "status reports alarms, info and successes in that order" "$(report)" \
-"alarm: sync: brew upgrade failed for karabiner-elements; run autoupdate-now in a terminal, where sudo can prompt; see $home/Library/Logs/dotfiles-sync.log
+"alarm: daily: brew upgrade failed for karabiner-elements; run autoupdate-now in a terminal, where sudo can prompt; see $home/Library/Logs/dotfiles-sync.log
 info: sync: local main is 1 commits ahead of origin/main, waiting for push
+ok: sync: last good run 2 h ago
 ok: switch: last good run 2 h ago"
 expect_eq "status --alarms is the banner and SessionStart text" "$(alarms)" \
-"dotfiles auto-update: sync: brew upgrade failed for karabiner-elements; run autoupdate-now in a terminal, where sudo can prompt; see $home/Library/Logs/dotfiles-sync.log
+"dotfiles auto-update: daily: brew upgrade failed for karabiner-elements; run autoupdate-now in a terminal, where sudo can prompt; see $home/Library/Logs/dotfiles-sync.log
   details: dotfiles-autoupdate status"
 legacy=$(env -i HOME="$home" TZ="$TZ" PATH="$stubs:/usr/bin:/bin" FAKE_NOW="$FAKE_NOW" \
   AUTOUPDATE_HOME="$home" AUTOUPDATE_DAEMON_DIR="$AUTOUPDATE_DAEMON_DIR" AUTOUPDATE_SILL_APP="$AUTOUPDATE_SILL_APP" \
@@ -533,7 +561,7 @@ expect_eq "status reads the same under macOS's bash 3.2" "$legacy" "$(report)"
 fresh
 at "2026-10-12 03:00"; tick
 at "2026-10-12 03:30"
-expect_report "an installed runner that has not run yet is reported" "^ok: sync: no run yet, installed 30 min ago$"
+expect_report "an installed runner that has not run yet is reported" "^ok: daily: no run yet, installed 30 min ago$"
 export STUB_SWITCH_EXIT=1
 at "2026-10-12 04:00"; commit_upstream "C: push"
 at "2026-10-12 05:00"; tick
@@ -649,7 +677,7 @@ as_path="$repo/scripts:$terminal:$real:/usr/bin:/bin:/usr/sbin:/sbin" \
   as "$home" "$coreutils/bin/env" --default-signal=INT \
   script -q "$s/log/terminal" bash -c "$alias_cmd" </dev/null >/dev/null 2>&1 || true
 expect_eq "Ctrl-C in a terminal run stops it before the next step" "$(calls brew)" 0
-expect_alarm "a run stopped by Ctrl-C says so" "sync: interrupted \(Ctrl-C\)"
+expect_alarm "a run stopped by Ctrl-C says so" "daily: interrupted \(Ctrl-C\)"
 
 # 22. A Lavish server left running from a package that a pnpm update deleted
 # answers 500 for its page assets and every page is blank (16 Oct 2026).
@@ -692,10 +720,159 @@ at "2026-10-16 01:50"; commit_upstream "C: flake.lock bump" flake.lock
 C=$(git -C "$s/upstream" rev-parse HEAD)
 at "2026-10-16 04:00"; tick; tick
 expect_eq "a --now run before 04:00 leaves the day's run to come" "$(calls brew)" 2
-expect_eq "the day's run hands over a bump pushed after that --now run" "$(running_rev)" "$C"
 fresh
 at "2026-10-16 08:30"; sync_now
 at "2026-10-16 09:00"; tick
 expect_eq "a --now run from 04:00 is the day's run" "$(calls brew)" 1
+
+# 25. Pushed work goes live within the hour (the owner, 16 Oct 2026): every
+# hourly sync hands origin/main over and the daemon switches to it. The heavy
+# steps (pnpm, brew, macOS updates) still run once a day, from 04:00, and
+# report as their own runner, so the sync's last good run is the hand-over.
+fresh
+at "2026-10-12 05:00"; tick; tick
+at "2026-10-12 13:20"; commit_upstream "C: midday push"
+C=$(git -C "$s/upstream" rev-parse HEAD)
+at "2026-10-12 14:00"; tick
+expect_eq "a midday push is switched to within the hour" "$(running_rev)" "$C"
+expect_eq "the checkout fast-forwards hourly" "$(git -C "$home/dotfiles" rev-parse main)" "$C"
+at "2026-10-12 15:00"; tick
+expect_eq "the heavy steps run once a day" "$(calls brew) $(calls softwareupdate) $(calls 'pnpm update')" "1 1 1"
+expect_report "the hourly hand-over is the sync's last good run" "^ok: sync: last good run 0 min ago$"
+expect_report "the heavy steps report their own last good run" "^ok: daily: last good run 10 h ago$"
+expect_eq "a routine switch notifies nobody" "$(calls notify)" 0
+fresh
+export STUB_PNPM_FAIL=1
+for d in 12 13; do at "2026-10-$d 05:00"; tick; done
+at "2026-10-13 18:00"; tick
+expect_alarm "failing heavy steps go stale as the daily runner" "^dotfiles auto-update: daily: no successful run for 37 h"
+got=$(alarms)
+if grep -q "sync: no successful run" <<<"$got"; then bad "failing heavy steps leave the hourly hand-over good" "got: $got"
+else ok "failing heavy steps leave the hourly hand-over good"; fi
+
+# 26. The switch runs as root, which cannot reach the owner's screen, so the sync
+# agent in his GUI session notifies him when a switch fails or has waited on
+# him for 2 h: once per state, not every hour.
+fresh
+export STUB_SWITCH_EXIT=1
+at "2026-10-12 04:30"; commit_upstream "C: push"
+for h in 05 06 07 08; do at "2026-10-12 $h:00"; tick; done
+expect_eq "a failed switch notifies once, not hourly" "$(grep -c '^notify switch to [0-9a-f]* failed (exit 1)' "$s/log/calls")" 1
+fresh
+at "2026-10-12 05:00"; tick
+at "2026-10-12 10:00"; commit_local "L: unpushed"
+ln -sfn "$(PATH="$stubs:$PATH" mksystem "$(git -C "$home/dotfiles" rev-parse HEAD)")" "$AUTOUPDATE_SYSTEM"
+ln -sfn "$(cat "$AUTOUPDATE_SYSTEM/closure")" "$HM_GCROOT"
+for h in 11 12; do at "2026-10-12 $h:00"; tick; done
+expect_eq "a switch waiting for a push does not notify at first" "$(calls notify)" 0
+for h in 13 14 15; do at "2026-10-12 $h:00"; tick; done
+expect_eq "a switch waiting for a push notifies once after 2 h" "$(grep -c '^notify the running system is built from .* waiting for push$' "$s/log/calls")" 1
+expect_alarm "a switch waiting for a push alarms after 2 h" "switch: the running system is built from .* waiting for push \(for 4 h\)"
+fresh
+export STUB_SWITCH_EXIT=1 STUB_OSASCRIPT_FAIL=1
+at "2026-10-12 04:30"; commit_upstream "C: push"
+for h in 05 06 07; do at "2026-10-12 $h:00"; tick; done
+unset STUB_OSASCRIPT_FAIL
+for h in 08 09; do at "2026-10-12 $h:00"; tick; done
+expect_eq "a notification that did not post is posted at the next tick, once" \
+  "$(grep -c '^notify switch to [0-9a-f]* failed (exit 1)' "$s/log/calls")" 1
+
+# 27. Both jobs fire together on wake. Each takes its own lock before it
+# checks the other's, so the switch's brew bundle never races brew upgrade.
+fresh
+at "2026-10-12 04:30"; commit_upstream "C: push"
+C=$(git -C "$s/upstream" rev-parse HEAD)
+/bin/sleep 60 & held=$!
+echo "$held" >"$AUTOUPDATE_DAEMON_DIR/switching"
+at "2026-10-12 05:00"
+as "$home" bash "$script" sync </dev/null >>"$s/log/out" 2>&1 || true
+expect_eq "a sync waits for a switch past its lock check" "$(calls brew) $(cat "$home/.local/state/dotfiles-autoupdate/revision" 2>/dev/null)" "0 "
+# Seed a real pending handoff so apply reaches its final lock check.
+git -C "$home/dotfiles" fetch -q origin
+echo "$C" >"$home/.local/state/dotfiles-autoupdate/revision"
+STUB_SYNC_STARTS=$held as "$root_home" bash "$script" apply </dev/null >>"$s/log/out" 2>&1 || true
+expect_eq "the wake-race probe actually starts a sync" "$(cat "$home/.local/state/dotfiles-autoupdate/lock/pid" 2>/dev/null)" "$held"
+expect_eq "a switch waits for a sync that took its lock after the switch checked" "$(built)" ""
+kill "$held" 2>/dev/null; wait "$held" 2>/dev/null || true
+rm -rf "$home/.local/state/dotfiles-autoupdate/lock"
+at "2026-10-12 06:00"; tick
+expect_eq "the switch follows at the next tick" "$(running_rev)" "$C"
+expect_eq "a finished switch leaves no marker" "$(ls "$AUTOUPDATE_DAEMON_DIR/switching" 2>/dev/null)" ""
+fresh
+export STUB_PNPM_STARTS_REBUILD=1
+at "2026-10-12 05:00"; tick
+expect_eq "a rebuild started during pnpm leaves brew to it" "$(calls brew)" 0
+unset STUB_PNPM_STARTS_REBUILD
+rm -f "$s/log/rebuilding"
+at "2026-10-12 06:00"; tick
+expect_eq "the next tick runs the day's brew upgrade" "$(calls brew)" 1
+
+# A forced sync overrides the schedule, while still excluding a switch.
+fresh
+/bin/sleep 60 & held=$!
+echo "$held" >"$AUTOUPDATE_DAEMON_DIR/switching"
+at "2026-10-12 05:00"; sync_now
+expect_eq "a forced sync waits for an active switch" "$(calls brew) $(calls 'pnpm update')" "0 0"
+expect_eq "a deferred forced sync leaves the daily run due" "$(cat "$home/.local/state/dotfiles-autoupdate/day" 2>/dev/null)" ""
+kill "$held" 2>/dev/null; wait "$held" 2>/dev/null || true
+fresh
+export STUB_PNPM_STARTS_REBUILD=1
+at "2026-10-12 05:00"; sync_now
+expect_eq "a forced sync also checks for a rebuild after pnpm" "$(calls brew)" 0
+unset STUB_PNPM_STARTS_REBUILD
+rm -f "$s/log/rebuilding"
+at "2026-10-12 06:00"; tick
+expect_eq "a forced sync interrupted by a rebuild leaves daily work due" "$(calls brew)" 1
+
+# 28. Right after a push the board runs the new status from the checkout,
+# while the old agent still writes only sync.status (in its old format, with
+# the daily steps' results) until the switch reloads it.
+fresh
+mkdir -p "$home/.local/state/dotfiles-autoupdate"
+printf 'installed\t%s\nok\t%s\nran\t%s\n' "$FAKE_NOW" "$FAKE_NOW" "$FAKE_NOW" \
+  >"$home/.local/state/dotfiles-autoupdate/sync.status"
+cp "$home/.local/state/dotfiles-autoupdate/sync.status" "$AUTOUPDATE_DAEMON_DIR/status"
+expect_no_alarm "a sync.status with no daily.status yet is no alarm"
+expect_report "a sync.status with no daily.status yet says the daily run is to come" "^info: daily: no run yet"
+printf 'installed\t%s\nran\t%s\nfail\tbrew upgrade failed for some-cask\n' "$FAKE_NOW" "$FAKE_NOW" \
+  >"$home/.local/state/dotfiles-autoupdate/sync.status"
+at "2026-10-12 13:00"; tick
+expect_no_alarm "the first new sync replaces an old-format sync.status"
+
+# Legacy daily results survive an hourly sync after today's run was used.
+fresh
+printf 'Error: some-cask: upgrade failed\n' >"$s/brew-failure"
+export STUB_BREW_OUTPUT="$s/brew-failure"
+at "2026-10-12 05:00"; tick
+# Model the previous version, which wrote daily results to sync.status.
+mv "$home/.local/state/dotfiles-autoupdate/daily.status" "$home/.local/state/dotfiles-autoupdate/sync.status"
+legacy_status=$(cat "$home/.local/state/dotfiles-autoupdate/sync.status")
+expect_alarm "the legacy brew failure is actionable before migration" "brew upgrade failed for some-cask"
+at "2026-10-12 13:00"; tick
+expect_eq "migration preserves all daily results and timestamps" "$(cat "$home/.local/state/dotfiles-autoupdate/daily.status")" "$legacy_status"
+expect_alarm "migration keeps the unresolved daily failure visible" "daily: brew upgrade failed for some-cask"
+expect_eq "migration does not rerun consumed daily work" "$(calls brew)" 1
+unset STUB_BREW_OUTPUT STUB_BREW_SUDO
+at "2026-10-13 05:00"; tick
+expect_no_alarm "a successful daily retry clears the migrated failure"
+
+# 29. The sync agent publishes origin/main to the public mirror on every
+# tick (a no-op when the mirror holds it), and a failure alarms: the mirror
+# is then behind main.
+fresh
+at "2026-10-12 05:00"; tick
+at "2026-10-12 06:00"; tick
+expect_eq "every sync publishes origin/main to the public mirror" "$(grep -c '^public-sync --from-origin$' "$s/log/calls")" 2
+export STUB_PUBLIC_FAIL=1
+at "2026-10-12 07:00"; tick
+expect_alarm "a failed publish alarms that the mirror is behind main" \
+  "^dotfiles auto-update: sync: the public mirror is behind main: public-sync --from-origin failed: \\[public-sync\\] LEAK GATE FAILED: 1 hit; see "
+unset STUB_PUBLIC_FAIL
+at "2026-10-12 08:00"; tick
+expect_no_alarm "the next good publish clears it"
+fresh
+export STUB_OFFLINE=1
+at "2026-10-12 05:00"; tick
+expect_eq "an offline tick publishes nothing" "$(calls public-sync)" 0
 
 exit "$fail"
