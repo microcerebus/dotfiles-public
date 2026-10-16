@@ -1,15 +1,20 @@
 #!/usr/bin/env python3
-"""Check every skill under files/.claude/skills (or the directory given).
+"""Check every skill under files/.claude/skills and .claude/skills.
 
 For each skill: SKILL.md frontmatter parses as YAML, `name` matches the
 directory, `description` is present, a LICENSE is present unless the skill is
 listed in NO_LICENSE, and every relative link or backticked path it mentions
-resolves. Every skill directory must also have its home.file line in
-nix/user.nix, and every such line must point at a skill directory.
-Prints one line per skill plus the size of the always-loaded description list,
-and exits 1 if anything fails.
+resolves. Every skill directory in files/.claude/skills must also have its
+home.file line in nix/user.nix, and every such line must point at a skill
+directory. Skills in .claude/skills are repo-local: they register only in
+sessions inside this repo, so they must have no home.file line and must not
+share a name with a global skill.
+Prints one line per skill plus the size of the description lists, and exits
+1 if anything fails.
 
-Usage: python3 -I scripts/check-skills [skills-dir] [--nix <user.nix>]
+Usage: python3 -I scripts/check-skills [skills-dir [--local <dir>]] [--nix <user.nix>]
+With no skills-dir it checks both trees of this repo; with one, only that
+tree, plus --local's.
 Needs PyYAML, which nix/user.nix adds to python3. Before a rebuild has applied
 that, run it under the flake's pinned Python:
   nix shell --impure --expr '(builtins.getFlake (toString ./.)).inputs.nixpkgs.legacyPackages.${builtins.currentSystem}.python3.withPackages (p: [p.pyyaml])' -c python3 -I scripts/check-skills
@@ -33,6 +38,7 @@ NO_LICENSE = {
     "grilling": "mattpocock/skills ships no per-skill LICENSE",
     "lavish": "vendored SKILL.md from the pnpm package",
     "no-mistakes": "vendored from the pinned no-mistakes tag",
+    "verify-agent-board": "own authorship",
 }
 MD_LINK = re.compile(r"\]\(([^)\s]+)\)")
 TICKED = re.compile(r"`([^`\s]+)`")
@@ -64,7 +70,13 @@ def frontmatter(text):
     return meta
 
 
-def targets(md, skill_dir, skills_dir):
+def in_skills(token, skills_dirs):
+    """Resolve <name>/... against the first skills tree that has <name>."""
+    name = token.split("/")[0]
+    return next((d / token for d in skills_dirs if (d / name).is_dir()), skills_dirs[0] / token)
+
+
+def targets(md, skill_dir, skills_dirs):
     """Yield (mention, resolved path) for each relative path a file mentions."""
     text = md.read_text(encoding="utf-8")
     for m in MD_LINK.finditer(text):
@@ -78,13 +90,13 @@ def targets(md, skill_dir, skills_dir):
         if any(c in token for c in "<>*{}$"):
             continue
         sf = SKILL_FILE.match(token)
-        if SKILL_MD.match(token) or (sf and (skills_dir / sf.group(1)).is_dir()):
-            yield token, skills_dir / token
+        if SKILL_MD.match(token) or (sf and any((d / sf.group(1)).is_dir() for d in skills_dirs)):
+            yield token, in_skills(token, skills_dirs)
         elif LOCAL_PATH.match(token):
             yield token, skill_dir / token
 
 
-def check(skill_dir, skills_dir):
+def check(skill_dir, skills_dirs):
     problems = []
     skill_md = skill_dir / "SKILL.md"
     if not skill_md.is_file():
@@ -103,7 +115,7 @@ def check(skill_dir, skills_dir):
         problems.append("no LICENSE (add the upstream one, or a NO_LICENSE entry with a reason)")
     refs = 0
     for md in sorted(skill_dir.rglob("*.md")):
-        for mention, path in targets(md, skill_dir, skills_dir):
+        for mention, path in targets(md, skill_dir, skills_dirs):
             refs += 1
             if not path.exists():
                 problems.append(f"{md.relative_to(skill_dir)}: {mention} does not resolve")
@@ -118,38 +130,60 @@ def nix_links(nix_file):
     return links
 
 
-def main(argv):
-    root = Path(__file__).resolve().parent.parent
-    args = list(argv)
-    nix_file = root / "nix/user.nix"
-    if "--nix" in args:
-        i = args.index("--nix")
-        nix_file = Path(args[i + 1])
-        del args[i:i + 2]
-    skills_dir = Path(args[0]) if args else root / "files/.claude/skills"
-    links = nix_links(nix_file)
+def check_tree(skills_dir, links, nix_name, skills_dirs, global_names=None):
+    """Check one skills tree; global_names is set for a repo-local tree.
+
+    Returns (failed count, listing chars, skill names)."""
     failed = 0
     listing = 0
-    skill_dirs = sorted(p for p in skills_dir.iterdir() if p.is_dir())
+    skill_dirs = sorted(p for p in skills_dir.iterdir() if p.is_dir()) if skills_dir.is_dir() else []
     for skill_dir in skill_dirs:
-        problems, meta, refs = check(skill_dir, skills_dir)
-        if skill_dir.name not in links:
-            problems.append(f"no home.file line for it in {nix_file.name}")
+        problems, meta, refs = check(skill_dir, skills_dirs)
+        if global_names is not None:
+            if skill_dir.name in links:
+                problems.append("is repo-local, so it needs no home.file line; one would also load it in every other repo")
+            if skill_dir.name in global_names:
+                problems.append("has the same name as a global skill in files/.claude/skills")
+        elif skill_dir.name not in links:
+            problems.append(f"no home.file line for it in {nix_name}")
         elif links[skill_dir.name]:
-            problems.append(f"{nix_file.name} {links[skill_dir.name]}")
+            problems.append(f"{nix_name} {links[skill_dir.name]}")
         invocable = meta.get("disable-model-invocation") is not True
         desc = len(meta.get("description") or "")
         if meta and invocable:
             listing += len(str(meta.get("name", ""))) + desc
         state = "FAIL" if problems else "ok"
-        print(f"{state} {skill_dir.name}: invocable={'yes' if invocable else 'no'} refs_checked={refs} desc={desc}")
+        where = " (repo-local)" if global_names is not None else ""
+        print(f"{state} {skill_dir.name}{where}: invocable={'yes' if invocable else 'no'} refs_checked={refs} desc={desc}")
         for p in problems:
             print(f"  - {p}")
         failed += bool(problems)
-    for name in sorted(set(links) - {p.name for p in skill_dirs}):
+    return failed, listing, {p.name for p in skill_dirs}
+
+
+def main(argv):
+    root = Path(__file__).resolve().parent.parent
+    args = list(argv)
+    opts = {"--nix": root / "nix/user.nix", "--local": None}
+    for flag in opts:
+        if flag in args:
+            i = args.index(flag)
+            opts[flag] = Path(args[i + 1])
+            del args[i:i + 2]
+    nix_file = opts["--nix"]
+    skills_dir = Path(args[0]) if args else root / "files/.claude/skills"
+    local_dir = opts["--local"] or (None if args else root / ".claude/skills")
+    links = nix_links(nix_file)
+    skills_dirs = [d for d in (local_dir, skills_dir) if d]
+    failed, listing, names = check_tree(skills_dir, links, nix_file.name, skills_dirs)
+    for name in sorted(set(links) - names):
         print(f"FAIL {name}: {nix_file.name} links it, but {skills_dir.name}/{name} is not a directory")
         failed += 1
     print(f"model-invocable listing: {listing} chars of name plus description")
+    if local_dir:
+        local_failed, local_listing, _ = check_tree(local_dir, links, nix_file.name, skills_dirs, global_names=names)
+        failed += local_failed
+        print(f"repo-local listing: {local_listing} more chars, in sessions inside this repo only")
     print(f"{failed} failed" if failed else "all skills ok")
     return 1 if failed else 0
 

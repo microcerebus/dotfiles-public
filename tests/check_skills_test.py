@@ -31,6 +31,7 @@ class CheckSkillsTest(unittest.TestCase):
         self.root = Path(self.tmp.name)
         self.skills = self.root / "skills"
         self.nix = self.root / "user.nix"
+        self.local = self.root / "repo-skills"
         self.add_skill("good", GOOD.format(name="good"))
         (self.skills / "good/references").mkdir()
         (self.skills / "good/references/notes.md").write_text("notes\n")
@@ -53,13 +54,20 @@ class CheckSkillsTest(unittest.TestCase):
         with self.nix.open("a") as f:
             f.write(f'  home.file.".claude/skills/{name}".source = link "files/.claude/skills/{name}";\n')
 
-    def run_checker(self):
-        r = subprocess.run([sys.executable, "-I", str(CHECKER), str(self.skills), "--nix", str(self.nix)],
+    def run_checker(self, local=False):
+        extra = ["--local", str(self.local)] if local else []
+        r = subprocess.run([sys.executable, "-I", str(CHECKER), str(self.skills), "--nix", str(self.nix), *extra],
                            capture_output=True, text=True)
         return r.returncode, r.stdout + r.stderr
 
-    def assert_fails(self, needle):
-        code, out = self.run_checker()
+    def add_local(self, name, skill_md):
+        d = self.local / name
+        d.mkdir(parents=True)
+        (d / "SKILL.md").write_text(skill_md, encoding="utf-8")
+        (d / "LICENSE").write_text("MIT\n")
+
+    def assert_fails(self, needle, local=False):
+        code, out = self.run_checker(local)
         self.assertEqual(code, 1, out)
         self.assertIn(needle, out)
 
@@ -113,6 +121,27 @@ class CheckSkillsTest(unittest.TestCase):
         self.assertIn(line, text)
         self.nix.write_text(text.replace(line, line.replace('link "files/.claude/skills/good"', 'link "files/.claude/skills/other"')))
         self.assert_fails("links .claude/skills/good to files/.claude/skills/other")
+
+    # Repo-local skills (.claude/skills) register only inside the repo, so nix must not link them.
+    def test_repo_local_skill_without_a_nix_line_passes(self):
+        self.add_local("here", GOOD.format(name="here").replace("`references/notes.md`, then ", ""))
+        code, out = self.run_checker(local=True)
+        self.assertEqual(code, 0, out)
+        self.assertIn("ok here (repo-local)", out)
+        self.assertIn("repo-local listing:", out)
+
+    def test_repo_local_skill_with_a_nix_line_fails(self):
+        self.add_local("here", GOOD.format(name="here").replace("`references/notes.md`, then ", ""))
+        self.link("here")
+        self.assert_fails("is repo-local, so it needs no home.file line", local=True)
+
+    def test_repo_local_skill_named_like_a_global_one_fails(self):
+        self.add_local("good", GOOD.format(name="good").replace("`references/notes.md`, then ", ""))
+        self.assert_fails("has the same name as a global skill", local=True)
+
+    def test_repo_local_mention_of_a_missing_skill_fails(self):
+        self.add_local("here", GOOD.format(name="here").replace("`references/notes.md`, then `other/SKILL.md`", "`hw/SKILL.md`"))
+        self.assert_fails("hw/SKILL.md does not resolve", local=True)
 
 
 if __name__ == "__main__":
