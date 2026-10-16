@@ -15,14 +15,19 @@ So each product repo gets a verification skill and a Feature Map before it gets 
 | Role | Team analogy | Lives in | Owns | Never does | Model |
 | --- | --- | --- | --- | --- | --- |
 | the owner | Product owner | Phone, T3, Lavish | Goals, irreversible calls, taste | Babysitting runs | - |
-| Orchestrator | Engineering manager | One pinned T3 thread, fresh each day | `board.md`, routing between lanes, the morning brief | Lane work, code | Opus 5.5 xhigh |
+| Orchestrator | Engineering manager | One pinned T3 thread, fresh each day | `board.md`, routing between lanes, the morning brief | Lane work, code | Opus 5.5 High for routine coordination, xhigh for open-ended work |
 | Heartbeat | On-call | A fresh scheduled thread every hour | Usage, context and stall checks, `log.md` | Long work, messages without a reason | Opus 5.5 xhigh (low effort is proposed, pending the owner's OK) |
-| Lane coordinator | Tech lead | One T3 thread per lane, rotated at 200k tokens | Briefs, the lane's units, ledger and decisions | Writing code | Opus 5.5 xhigh |
-| Worker | Engineer | One thread and one worktree per unit | One PR, proven with the verification skill | Merging its own PR, touching other units | Opus 5.5 xhigh; Codex `gpt-6.1-sol` for clear-spec bulk work |
+| Lane coordinator | Tech lead | One T3 thread per lane, rotated at 200k tokens | Briefs, the lane's units, ledger and decisions | Writing code | Opus 5.5 High for routine coordination, xhigh for open-ended judgment |
+| Worker | Engineer | One thread and one worktree per unit | One PR, proven with the verification skill | Merging its own PR, touching other units | Opus 5.5 High for scoped implementation, xhigh for unresolved complexity; Codex `gpt-6.1-sol` for clear-spec bulk work |
 | Verifier | Reviewer and QA | A fresh thread per review round, read-only | One verdict row in the ledger | Fixing what it reviews | Fable 5.1 for risky PRs, Opus 5.5 xhigh in a fresh context for the rest |
 | Retro | Staff engineer | A fresh scheduled thread each day | Proposals that turn repeated mistakes into rules, checks or skills | Applying them live | Opus 5.5 xhigh |
 
 Subagents inside any role do mechanical reading (logs, CI output, transcripts) at low effort and return summaries.
+
+Use the role and uncertainty rules in [model routing](model-routing.md#opus-55-reasoning-effort) when selecting effort.
+Routine coordination and scoped implementation use High; Opus review, verify and judge stages use Extra High.
+The automation table below records baseline selections, not a requirement to use Extra High for every routine action.
+Apply role-specific effort at launch or a committed task boundary; this documentation does not reconfigure existing schedules or running threads.
 
 ## Standards
 

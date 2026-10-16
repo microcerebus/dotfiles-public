@@ -55,5 +55,6 @@ Runners, workers, and reviewers use `model: "opus"`, and a Claude-only judge use
 Give a writing seat `isolation: "worktree"`, and tell a read-only seat to change nothing.
 Spawn every Claude seat in one message with `run_in_background: true`.
 
-Set effort per `~/.claude/CLAUDE.md`: high for runners, reviewers, and judges, which are judgment stages, and low for mechanical swarm slices.
+Arena explicitly uses High for runners, reviewers and judges, and Low for mechanical swarm slices.
+This per-stage setting takes precedence over the general role defaults in `~/dotfiles/docs/model-routing.md`.
 Never use Haiku, and keep Fast off.

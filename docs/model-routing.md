@@ -33,9 +33,28 @@ Glossary: "intelligence" = how hard a problem the model can handle unsupervised.
   Workflow token budgets count Claude tokens only - codex work is invisible to `budget.spent()`.
   Codex calls can time out - treat a timeout as retryable once, then report it.
 
+## Opus 5.5 reasoning effort
+
+Use **High** for routine coordination and clearly scoped implementation with explicit acceptance checks.
+Use **Extra High** (`xhigh`) for open-ended architecture, difficult root-cause debugging, and work with material unresolved uncertainty.
+Opus review, verification and judge stages use Extra High.
+For non-Opus judgment stages, retain the model-specific setting; use High when no more specific rule applies.
+A skill's explicit per-stage effort setting takes precedence over these general Opus role defaults; changing that stage requires a separate deliberate update.
+Escalate a High task when its output misses the acceptance bar or exposes harder judgment; a long task alone is not a reason to increase effort.
+Keep mechanical collection at Low on its assigned reader or Codex model, and keep Fast off unless requested.
+The model-selection rules above still decide which provider/model performs reviews and design.
+Independent review, reproduction, evidence and merge gates stay required at either effort.
+
+This guideline follows the [17 October matched replay](claude-process/opus-effort-replay-2026-10-17.md), which found equal aggregate blind scores with less elapsed time and fewer provider output tokens at High.
+It is a small-sample operating guideline, not proof that the two efforts are equivalent for long implementation, real tool use or UI design.
+Track review findings and fix rounds in actual use, and revise this guideline when they show a quality difference.
+Do not interrupt uncommitted work or change existing threads merely to match a new guideline; apply it at a safe task boundary.
+
 ## T3 Code fallback routing
 
 New T3 Code chats default to Claude Opus 5.5 at xhigh effort with Fast off.
+Set High when launching or delegating a routine role, or at an explicit committed task boundary.
+The guideline does not make the app default role-dependent or authorize mid-task reconfiguration.
 Codex is the fallback only while Claude is usage-limited.
 When Claude reports a usage or quota limit, use the Codex fallback below without asking for permission.
 This fallback overrides the Claude-only review and workflow-wrapper rules above while Claude is unavailable, including for user-facing work.

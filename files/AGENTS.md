@@ -58,13 +58,14 @@ These are common instructions for my agents across all scenarios.
 
 ## Reasoning effort
 
-- Default main chats to Opus 5.5 at xhigh, including routine implementation.
-  Codex fallbacks stay at High.
-  Use lower effort only when the owner requests it or for the mechanical subagent/workflow stages below.
+- Default open-ended main chats to Opus 5.5 at xhigh.
+  Use High for routine coordination and clearly scoped implementation, following the evidence and escalation guideline in `~/dotfiles/docs/model-routing.md`.
+  Codex fallbacks stay at High or below according to their routing table.
+  Use Low for mechanical stages, and use another lower effort when the owner requests it.
 - Hard cap at xhigh; max is banned.
   Do not reach for ultracode casually either.
 - Effort applies per tool call, not per run: a long task needs more steps, not higher effort.
-- When spawning subagents or workflow stages, set effort low for mechanical stages (scanning, formatting, collection) and high for judgment stages (verify, judge, review).
+- When spawning subagents or workflow stages, use Low for mechanical stages (scanning, formatting, collection) and the role-specific High or Extra High setting in `~/dotfiles/docs/model-routing.md` for judgment stages.
 
 ## Writing
 
@@ -93,7 +94,7 @@ Each rule below is a correction the owner had to give more than once, or a failu
   The resume note lists every in-flight native worker with its brief path; they die with the thread, so the successor respawns them first.
 - Coordinators coordinate: they write briefs, read results and decide.
   Code, restacks and conflicted merges go to workers in their own worktrees.
-- When Codex is out of quota, continue on Claude Opus 5.5 at xhigh without asking.
+- When Codex is out of quota, continue on Claude Opus 5.5 without asking, using the role-specific effort in `~/dotfiles/docs/model-routing.md`.
   While Codex is out of quota, Claude agents also drive the agent Chrome themselves with chrome-devtools-axi, never Brave.
   Native macOS apps and iOS Simulators go through the agent-device skill the same way; codex-computer-use is the route again once Codex is back.
   Before any provider or model switch, or when a usage-limit warning appears, commit work in progress.
