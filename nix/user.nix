@@ -507,6 +507,37 @@ in
     };
   };
 
+  # Restarts a Lavish server whose package a pnpm update deleted, which serves
+  # every page blank (16 Oct 2026; scripts/lavish-axi says why). Runs on every
+  # change to pnpm's global packages, whoever made it: the daily sync, an
+  # agent's `pnpm add -g`, a reinstall. Every lavish-axi command checks too,
+  # and `dotfiles-autoupdate status` alarms on a server whose assets fail.
+  # Silent unless it restarts something. AbandonProcessGroup: the server it
+  # starts outlives the job.
+  launchd.agents.lavish-restart = {
+    enable = true;
+    config = {
+      Label = "com.myuser.lavish-restart";
+      ProgramArguments = [ "${pkgs.nodejs_22}/bin/node" "${config.home.homeDirectory}/dotfiles/scripts/lavish-axi" "--restart-stale-server" ];
+      WatchPaths = [
+        "${config.home.homeDirectory}/Library/pnpm/global/v11"
+        "${config.home.homeDirectory}/Library/pnpm/bin"
+      ];
+      RunAtLoad = true;
+      AbandonProcessGroup = true;
+      EnvironmentVariables = {
+        PNPM_HOME = "${config.home.homeDirectory}/Library/pnpm";
+        PATH = lib.concatStringsSep ":" [
+          "/etc/profiles/per-user/${username}/bin"
+          "/run/current-system/sw/bin"
+          "/usr/bin" "/bin" "/usr/sbin" "/sbin"
+        ];
+      };
+      StandardOutPath = "${config.home.homeDirectory}/Library/Logs/lavish-restart.log";
+      StandardErrorPath = "${config.home.homeDirectory}/Library/Logs/lavish-restart.log";
+    };
+  };
+
   # Agent board: read-only phone view of open T3 threads (who waits on the owner,
   # what runs, context use, quiet runs) at http://<mac>.<tailnet>.ts.net:4790,
   # and a project map of the ~/orchestrator lanes at /map.

@@ -70,8 +70,15 @@ cat >"$stubs/git" <<EOF
 stub-terminal-check git
 exec $(command -v git) "\$@"
 EOF
+# STUB_LAVISH=<code>: a Lavish server on :4387 answers <code> for its page
+# assets; STUB_LAVISH_APP names the app its /health reports. Only status
+# probes Lavish, never a sync step, so the terminal check skips it.
 cat >"$stubs/curl" <<'EOF'
 #!/bin/sh
+case "$*" in
+  *:4387/chrome.css*) [ -n "${STUB_LAVISH:-}" ] || exit 7; printf '%s' "$STUB_LAVISH"; exit 0 ;;
+  *:4387/health*) [ -n "${STUB_LAVISH:-}" ] || exit 7; printf '{"app":"%s"}' "${STUB_LAVISH_APP:-lavish-axi}"; exit 0 ;;
+esac
 stub-terminal-check curl
 [ "${STUB_OFFLINE:-0}" = 0 ]
 EOF
@@ -615,5 +622,19 @@ as_path="$repo/scripts:$terminal:$real:/usr/bin:/bin:/usr/sbin:/sbin" \
   script -q "$s/log/terminal" bash -c "$alias_cmd" </dev/null >/dev/null 2>&1 || true
 expect_eq "Ctrl-C in a terminal run stops it before the next step" "$(calls brew)" 0
 expect_alarm "a run stopped by Ctrl-C says so" "sync: interrupted \(Ctrl-C\)"
+
+# 22. A Lavish server left running from a package that a pnpm update deleted
+# answers 500 for its page assets and every page is blank (16 Oct 2026).
+# status alarms on it, never on a healthy server, no server, or another app.
+fresh
+at "2026-10-12 05:00"; tick
+expect_no_alarm "no Lavish server running is no alarm"
+STUB_LAVISH=200 expect_no_alarm "a Lavish server serving its assets is no alarm"
+STUB_LAVISH=404 STUB_LAVISH_APP=other expect_no_alarm "another app on the Lavish port is no alarm"
+STUB_LAVISH=500 expect_alarm "a Lavish server failing its assets alarms with the fix" \
+  "^dotfiles auto-update: lavish: the server on :4387 answers 500 for its page assets, so every Lavish page is blank; run lavish-axi --restart-stale-server$"
+legacy=$(env -i HOME="$home" TZ="$TZ" PATH="$stubs:/usr/bin:/bin" FAKE_NOW="$FAKE_NOW" STUB_LAVISH=500 \
+  AUTOUPDATE_HOME="$home" AUTOUPDATE_DAEMON_DIR="$AUTOUPDATE_DAEMON_DIR" /bin/bash "$script" status)
+expect_eq "the Lavish alarm reads the same under macOS's bash 3.2" "$legacy" "$(STUB_LAVISH=500 report)"
 
 exit "$fail"

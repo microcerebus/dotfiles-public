@@ -92,6 +92,15 @@
       "logi-options+"        # Logitech Options+ (mouse/keyboard driver)
       "lunar"                # adaptive brightness for external displays
       "rectangle"            # window snapping
+      # Sill (Saffsanity/sill, open source): streams a Mac window or the
+      # desktop to the iPhone/iPad app, with touch, Pencil and keyboard. Not
+      # in homebrew/cask; this is the developer's own tap, installing the
+      # signed release DMG with its SHA-256 checked. nix-darwin marks a
+      # fully-qualified cask trusted (Homebrew's Tap Trust), so only this
+      # cask is trusted, not the tap. brew bundle adopts the hand-installed
+      # /Applications/Sill.app (same 0.5.1 build, checked 16 Oct 2026).
+      # It has no self-updater; the daily `brew upgrade` updates it.
+      "saffsanity/sill/sill"
       "handy"                # voice typing, local Whisper/Parakeet (cjpais/Handy, MIT).
                              # Picked 2026-10-07 over VoiceInk (unclear license),
                              # FluidVoice (beta), Hex; OpenSuperWhisper didn't work.
@@ -132,6 +141,7 @@
 
     taps = [
       "dashlane/tap"
+      "saffsanity/sill" # Sill, cask above
     ];
 
     brews = [

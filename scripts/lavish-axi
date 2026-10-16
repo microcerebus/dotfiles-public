@@ -1,8 +1,30 @@
 #!/usr/bin/env node
 // Lavish's upstream opener ignores BROWSER on macOS. Always target Chrome.
-const { spawnSync } = require("node:child_process");
+//
+// A Lavish server reads its page assets, and some of its code, from its
+// package directory as it runs, and a pnpm update deletes the old directory.
+// On 16 Oct 2026 the server outlived an update and answered 500 for
+// /chrome.css and /chrome-client.js, so every page was blank. Its POSTs can
+// fail too, /shutdown included (400: body parsing loads iconv-lite's
+// encodings lazily), so upstream's `stop` may not stop it. Upstream replaces
+// a server only when a newer CLI next reaches it, and never when a reinstall
+// keeps the version. So each command that reaches the server first restarts
+// one whose package file is gone, from the current install with the same
+// arguments. Sessions live in the state file, and open pages reconnect on
+// their own. `--restart-stale-server` does only that, for the launchd job
+// that watches pnpm's global dir (nix/user.nix). Only server processes are
+// touched: a running `poll` loses its connection and is re-run, as with
+// upstream's own upgrade restart.
+// Tests: tests/lavish_chrome_test.cjs, tests/lavish_server_test.cjs.
+const { spawn, spawnSync } = require("node:child_process");
+const fs = require("node:fs");
 const { homedir } = require("node:os");
-const { join } = require("node:path");
+const { dirname, join } = require("node:path");
+
+const RESTART = "--restart-stale-server";
+// Commands that never reach a running server. `stop` is checked too, as a
+// stale server may refuse its HTTP stop.
+const NO_SERVER = new Set(["server", "setup", "update", "--help", "-h", "--version", "-v", "-V"]);
 
 function isArtifactOpen(args) {
   return args.some((arg) => !arg.startsWith("-") && /\.html?$/i.test(arg));
@@ -56,5 +78,135 @@ function run(args, env, spawn = spawnSync, io = process) {
   return 0;
 }
 
-module.exports = { isArtifactOpen, sessionUrl, run };
-if (require.main === module) process.exitCode = run(process.argv.slice(2), process.env);
+function lavishPort(env) { return Number(env.LAVISH_AXI_PORT || 4387); }
+
+// This user's Lavish servers for the CLI's port: `node <pkg>/dist/server.mjs
+// server --port N`, as upstream starts them, or `<pkg>/dist/cli.mjs server`.
+function lavishServers(env, deps) {
+  return deps.ps().split("\n").flatMap((line) => {
+    const m = line.match(/^\s*(\d+)\s+\S*node\s+(\S+\/lavish-axi\/dist\/(?:server|cli)\.mjs)\s+(server(?:\s.*)?)$/);
+    if (!m) return [];
+    const args = m[3].trim().split(/\s+/);
+    const at = args.indexOf("--port");
+    return (at < 0 ? 4387 : Number(args[at + 1])) === lavishPort(env) ? [{ pid: Number(m[1]), entry: m[2], args }] : [];
+  });
+}
+
+function staleServers(env, deps) {
+  return lavishServers(env, deps).filter((server) => !deps.exists(server.entry));
+}
+
+// The current install, as pnpm reports it. Run from home, so no project's
+// packageManager field can pick another pnpm with another global dir.
+function packageDir() {
+  const listed = spawnSync("pnpm", ["ls", "-g", "--depth", "0", "--json"], { cwd: homedir(), encoding: "utf8" });
+  try { return JSON.parse(listed.stdout)[0].dependencies["lavish-axi"].path; } catch { return null; }
+}
+
+function waitGone(pid, ms, deps) {
+  for (let waited = 0; waited < ms; waited += 100) {
+    if (!deps.alive(pid)) return true;
+    deps.sleep(100);
+  }
+  return !deps.alive(pid);
+}
+
+// One restart at a time: the launchd job and an agent's command can find the
+// same stale server together.
+function withLock(deps, fn) {
+  const pidFile = join(deps.lockDir, "pid");
+  fs.mkdirSync(dirname(deps.lockDir), { recursive: true });
+  for (let waited = 0; ; waited += 100) {
+    try { fs.mkdirSync(deps.lockDir); break; } catch (error) { if (error.code !== "EEXIST") throw error; }
+    let holder = 0;
+    try { holder = Number(fs.readFileSync(pidFile, "utf8")); } catch {}
+    // A dead holder, a holder that never wrote its pid, or one stuck past
+    // any restart's length leaves a stale lock.
+    if ((holder && !deps.alive(holder)) || (!holder && waited >= 5000) || waited >= 90000) {
+      fs.rmSync(deps.lockDir, { recursive: true, force: true });
+    } else deps.sleep(100);
+  }
+  fs.writeFileSync(pidFile, String(process.pid));
+  try { return fn(); } finally { fs.rmSync(deps.lockDir, { recursive: true, force: true }); }
+}
+
+function restartStaleServer(env, deps, io = process) {
+  if (staleServers(env, deps).length === 0) return 0;
+  return withLock(deps, () => {
+    const stale = staleServers(env, deps);
+    if (stale.length === 0) return 0; // restarted while this one waited for the lock
+    const port = lavishPort(env);
+    const say = (line) => io.stderr.write(`${new Date().toISOString()} lavish-axi: ${line}\n`);
+    const pkg = deps.packageDir();
+    let manifest = null;
+    try { manifest = JSON.parse(fs.readFileSync(join(pkg, "package.json"), "utf8")); } catch {}
+    const bin = typeof manifest?.bin === "string" ? manifest.bin : manifest?.bin?.["lavish-axi"];
+    const cli = bin && join(pkg, bin);
+    const entry = cli && [join(pkg, "dist/server.mjs"), cli].find((file) => deps.exists(file));
+    if (!entry) {
+      say(`the Lavish server on :${port} (pid ${stale[0].pid}) runs from a deleted package, and pnpm reports no usable lavish-axi install to restart it from`);
+      return 1;
+    }
+    // Signalled, not stopped over HTTP, which a stale server may refuse.
+    for (const { pid } of stale) {
+      deps.kill(pid, "SIGTERM");
+      if (!waitGone(pid, 3000, deps)) deps.kill(pid, "SIGKILL");
+    }
+    // Started as upstream's startServer does: detached, logging to the state
+    // dir. process.execPath, not the old server's node, which a flake bump
+    // can also remove.
+    const log = join(env.LAVISH_AXI_STATE_DIR || join(homedir(), ".lavish-axi"), "server.log");
+    fs.mkdirSync(dirname(log), { recursive: true });
+    const fd = fs.openSync(log, "a");
+    let child;
+    try {
+      child = deps.spawn(process.execPath, [entry, ...stale[0].args],
+        { detached: true, stdio: ["ignore", fd, fd], env: { ...env, LAVISH_AXI_NO_OPEN: "1" } });
+      child.unref();
+    } finally { fs.closeSync(fd); }
+    const served = deps.spawnSync("curl", ["-fsS", "-o", "/dev/null", "--retry", "20", "--retry-delay", "1",
+      "--retry-all-errors", "--retry-max-time", "20", `http://127.0.0.1:${port}/chrome.css`], { stdio: "ignore" }).status === 0;
+    const from = `lavish-axi ${manifest.version}`;
+    if (!served) {
+      say(`restarted the Lavish server on :${port} from ${from} as pid ${child.pid}, but its page assets still fail; see ${log}`);
+      return 1;
+    }
+    say(`restarted the Lavish server on :${port}: pid ${stale[0].pid} ran a deleted package and served blank pages; pid ${child.pid} runs ${from}`);
+    return 0;
+  });
+}
+
+function defaultDeps() {
+  return {
+    // pgrep narrows it to this user's candidates first: ps reading every
+    // process's arguments takes 100-300 ms, on every command.
+    ps: () => {
+      const pids = (spawnSync("/usr/bin/pgrep", ["-u", String(process.getuid()), "-f", "lavish-axi/dist/(server|cli)\\.mjs server"],
+        { encoding: "utf8" }).stdout ?? "").split(/\s+/).filter(Boolean);
+      return pids.length === 0 ? ""
+        : spawnSync("/bin/ps", ["-ww", "-o", "pid=,command=", "-p", pids.join(",")], { encoding: "utf8" }).stdout ?? "";
+    },
+    exists: fs.existsSync,
+    packageDir,
+    lockDir: join(homedir(), ".local/state/lavish-axi-restart.lock"),
+    alive: (pid) => { try { process.kill(pid, 0); return true; } catch (error) { return error.code === "EPERM"; } },
+    kill: (pid, signal) => { try { process.kill(pid, signal); } catch {} },
+    sleep: (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms),
+    spawn,
+    spawnSync,
+    restartStaleServer,
+  };
+}
+
+function main(args, env, deps = defaultDeps(), io = process) {
+  if (args[0] === RESTART) return deps.restartStaleServer(env, deps, io);
+  if (!NO_SERVER.has(args[0])) {
+    // A failed check never blocks the command; upstream starts a server
+    // itself when none is running.
+    try { deps.restartStaleServer(env, deps, io); } catch (error) { io.stderr.write(`lavish-axi: stale-server check failed: ${error.message}\n`); }
+  }
+  return run(args, env, deps.spawnSync, io);
+}
+
+module.exports = { isArtifactOpen, sessionUrl, run, lavishServers, staleServers, restartStaleServer, defaultDeps, main };
+if (require.main === module) process.exitCode = main(process.argv.slice(2), process.env);

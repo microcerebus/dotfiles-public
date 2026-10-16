@@ -14,7 +14,8 @@
 #            tree, and never rolls back a system built from unpushed work.
 #   status   the one reader of both status files, used by the zsh banner, the
 #            agent board and the SessionStart hook. Prints alarms, info and
-#            the last success of each runner.
+#            the last success of each runner, and alarms on a Lavish server
+#            whose page assets fail after a pnpm update (check_lavish).
 #
 # launchd runs /nix/store copies of this file; root never runs the checkout.
 # `status` must also run under macOS's bash 3.2 (the agent board calls it).
@@ -429,10 +430,23 @@ read_status() { # read_status <name> <file> <log>
   fi
 }
 
+# A Lavish server left running from a package that a pnpm update deleted
+# serves every page blank (16 Oct 2026). The lavish-restart launchd job and
+# every lavish-axi command restart it (scripts/lavish-axi); this catches one
+# they missed. Nothing listening is fine: Lavish starts on demand.
+check_lavish() {
+  local base=${AUTOUPDATE_LAVISH_URL:-http://127.0.0.1:${LAVISH_AXI_PORT:-4387}} code
+  code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 1 "$base/chrome.css" 2>/dev/null) || return 0
+  [ "$code" != 200 ] || return 0
+  curl -s --max-time 1 "$base/health" 2>/dev/null | grep -q '"app":"lavish-axi"' || return 0
+  alarm "lavish: the server on :${base##*:} answers ${code:-nothing} for its page assets, so every Lavish page is blank; run lavish-axi --restart-stale-server"
+}
+
 cmd_status() {
   now=$(date +%s)
   read_status sync "$sync_dir/sync.status" "$sync_log"
   read_status switch "$daemon_dir/status" "$daemon_log"
+  check_lavish
   if [ "${1:-}" = --alarms ]; then
     [ -n "$alarm_lines" ] || return 0
     printf '%s' "$alarm_lines" | sed 's/^/dotfiles auto-update: /'
