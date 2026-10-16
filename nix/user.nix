@@ -157,7 +157,8 @@ in
     # enabled-by-default toolchains (kept lean; projects use devShells)
     nodejs_22       # TypeScript/Node/React baseline (tsc etc. per-project)
     pnpm            # package manager, same layer as npm (not a toolchain)
-    python3         # Python basics
+    (python3.withPackages (ps: [ ps.pyyaml ]))
+                    # Python basics; pyyaml for scripts/check-skills frontmatter
     uv
   ];
 
@@ -429,10 +430,19 @@ in
   # "Needs the owner"; arena, architect, interrogate and swarm share
   # arena/references/model-families.md (Codex via `codex exec`, Claude-only
   # fallback with a Fable judge). The rest stay slash-command only, as
-  # upstream ships them. Skipped on purpose: poteto-mode (read from GitHub),
+  # upstream ships them. poteto-mode (added 2026-10-16, same pin) is the one
+  # model-invocable entry: its body routes by task type to one playbook in
+  # references/, and the playbooks run the slash-only skills by reading their
+  # SKILL.md. 13 playbooks kept or merged from upstream's 24; Cursor's PR
+  # machinery (babysit, shipping, autopilot-*, orchestrate, opening-a-pr,
+  # bugbot-triage, watch-pr and orch scripts) and the playbooks that are
+  # skills here (session-pickup, pause-safely) were dropped. check-plan.py
+  # is our own, matched to the plan skeleton. Skipped on purpose:
   # setup-pstack, poteto-help, make-bot-ui, bro, no-comments,
   # benchmark-checklist, automate-me, and the principle-* leaves (summarized
-  # in files/OPINIONS.md). Update procedure: docs/workflow-north-star.md.
+  # in files/OPINIONS.md). Check every skill with scripts/check-skills.
+  # Update procedure: docs/workflow-north-star.md.
+  home.file.".claude/skills/poteto-mode".source = link "files/.claude/skills/poteto-mode";
   home.file.".claude/skills/correct".source = link "files/.claude/skills/correct";
   home.file.".claude/skills/show-me-your-work".source = link "files/.claude/skills/show-me-your-work";
   home.file.".claude/skills/create-verification-skill".source = link "files/.claude/skills/create-verification-skill";

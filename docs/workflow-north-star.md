@@ -62,6 +62,13 @@ agents), commit. Local edits to keep: lavish and chrome-devtools-axi call the
 bare command (the scripts/ wrappers), never `pnpm dlx`, and chrome-devtools-axi
 keeps its "Which browser" and "Sharing the agent Chrome" sections. Bump no-mistakes by changing the flake input tag + vendorHash.
 pstack skills are pinned to cursor/plugins 1e5c90a4 (pstack 0.15.24, 2026-10-14); nix/user.nix lists them, the skipped ones, and every local edit.
+poteto-mode is the entry point (2026-10-16).
+The only other model-invocable pstack skills are unslop, correct and show-me-your-work, which are vendored from pstack and opened up here as a local edit (listed in nix/user.nix).
+Its body routes the task to one playbook in `poteto-mode/references/`, and each playbook runs the slash-only skills it needs (how, why, teach, architect, arena, figure-it-out, technical-writing, tdd, blast-radius, codex-review, interrogate) by reading their SKILL.md.
+in-your-own-words, ketchup and grilling are held unrouted until the owner OKs a route for them.
+Keep it that way: a new pstack skill stays slash-only and gets a route from a playbook, so the always-loaded skill list does not grow.
+`python3 -I scripts/check-skills` checks every skill's frontmatter (as YAML), LICENSE, links and `home.file` line.
+`python3 -I tests/check_skills_test.py` and `python3 -I tests/check_plan_test.py` test it and poteto-mode's `scripts/check-plan.py`.
 the owner asked on 2026-10-14 for the rest of the pstack set, which overrides the earlier "install only after a failure mode shows up twice" rule for pstack.
 To update: clone cursor/plugins, check out the old pin's `pstack/skills` next to the new one, and save `diff -ru old/<name> files/.claude/skills/<name>` as the local patch.
 Copy the new upstream dir over, re-apply the patch, and fix rejected hunks by hand.

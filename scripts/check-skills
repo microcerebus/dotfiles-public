@@ -1,0 +1,158 @@
+#!/usr/bin/env python3
+"""Check every skill under files/.claude/skills (or the directory given).
+
+For each skill: SKILL.md frontmatter parses as YAML, `name` matches the
+directory, `description` is present, a LICENSE is present unless the skill is
+listed in NO_LICENSE, and every relative link or backticked path it mentions
+resolves. Every skill directory must also have its home.file line in
+nix/user.nix, and every such line must point at a skill directory.
+Prints one line per skill plus the size of the always-loaded description list,
+and exits 1 if anything fails.
+
+Usage: python3 -I scripts/check-skills [skills-dir] [--nix <user.nix>]
+Needs PyYAML, which nix/user.nix adds to python3. Before a rebuild has applied
+that, run it under the flake's pinned Python:
+  nix shell --impure --expr '(builtins.getFlake (toString ./.)).inputs.nixpkgs.legacyPackages.${builtins.currentSystem}.python3.withPackages (p: [p.pyyaml])' -c python3 -I scripts/check-skills
+"""
+import re
+import sys
+from pathlib import Path
+
+try:
+    import yaml
+except ImportError:
+    sys.exit("check-skills: PyYAML is missing; see the usage note at the top of scripts/check-skills")
+
+# Own authorship, or upstream ships no LICENSE file. A new skill missing here
+# needs a LICENSE (vendored) or an entry with its reason (own authorship).
+NO_LICENSE = {
+    "agent-device": "own authorship",
+    "chrome-devtools-axi": "vendored SKILL.md from the pnpm package",
+    "codex-computer-use": "own authorship",
+    "codex-review": "own authorship",
+    "grilling": "mattpocock/skills ships no per-skill LICENSE",
+    "lavish": "vendored SKILL.md from the pnpm package",
+    "no-mistakes": "vendored from the pinned no-mistakes tag",
+}
+MD_LINK = re.compile(r"\]\(([^)\s]+)\)")
+TICKED = re.compile(r"`([^`\s]+)`")
+# `<name>/SKILL.md` always names a skill. `<name>/references/...` and
+# `<name>/scripts/...` may be paths in another repo, so they are checked only
+# when <name> is a skill here.
+SKILL_MD = re.compile(r"^([a-z0-9-]+)/SKILL\.md$")
+SKILL_FILE = re.compile(r"^([a-z0-9-]+)/(references|scripts)/[\w./-]+$")
+LOCAL_PATH = re.compile(r"^(references|scripts)/[\w./-]+$")
+NIX_LINK = re.compile(r'home\.file\."\.claude/skills/([^"]+)"\.source\s*=\s*link\s+"files/\.claude/skills/([^"]+)"')
+
+
+def frontmatter(text):
+    lines = text.splitlines()
+    if not lines or lines[0] != "---":
+        raise ValueError("no opening --- line")
+    try:
+        end = lines.index("---", 1)
+    except ValueError:
+        raise ValueError("no closing --- line")
+    try:
+        meta = yaml.safe_load("\n".join(lines[1:end]))
+    except yaml.YAMLError as e:
+        mark = getattr(e, "problem_mark", None)
+        where = f"line {mark.line + 2}: " if mark else ""
+        raise ValueError(f"{where}{getattr(e, 'problem', None) or e}")
+    if not isinstance(meta, dict):
+        raise ValueError("not a key: value mapping")
+    return meta
+
+
+def targets(md, skill_dir, skills_dir):
+    """Yield (mention, resolved path) for each relative path a file mentions."""
+    text = md.read_text(encoding="utf-8")
+    for m in MD_LINK.finditer(text):
+        link = m.group(1).split("#")[0]
+        # A bare word such as (url) is a template placeholder, not a path.
+        if re.search(r"[./]", link) and not re.match(r"^[a-z]+:", link) and not link.startswith(("/", "~")):
+            yield link, md.parent / link
+    # A backticked label inside [`label`](target) is checked through its target.
+    for m in TICKED.finditer(re.sub(r"\[[^\]]*\]\(", "(", text)):
+        token = m.group(1)
+        if any(c in token for c in "<>*{}$"):
+            continue
+        sf = SKILL_FILE.match(token)
+        if SKILL_MD.match(token) or (sf and (skills_dir / sf.group(1)).is_dir()):
+            yield token, skills_dir / token
+        elif LOCAL_PATH.match(token):
+            yield token, skill_dir / token
+
+
+def check(skill_dir, skills_dir):
+    problems = []
+    skill_md = skill_dir / "SKILL.md"
+    if not skill_md.is_file():
+        return ["no SKILL.md"], {}, 0
+    try:
+        meta = frontmatter(skill_md.read_text(encoding="utf-8"))
+    except ValueError as e:
+        return [f"frontmatter: {e}"], {}, 0
+    if meta.get("name") != skill_dir.name:
+        problems.append(f"name {meta.get('name')!r} does not match the directory")
+    if not isinstance(meta.get("description"), str) or not meta["description"].strip():
+        problems.append("no description")
+    if not isinstance(meta.get("disable-model-invocation", False), bool):
+        problems.append("disable-model-invocation must be true or false")
+    if not (skill_dir / "LICENSE").is_file() and skill_dir.name not in NO_LICENSE:
+        problems.append("no LICENSE (add the upstream one, or a NO_LICENSE entry with a reason)")
+    refs = 0
+    for md in sorted(skill_dir.rglob("*.md")):
+        for mention, path in targets(md, skill_dir, skills_dir):
+            refs += 1
+            if not path.exists():
+                problems.append(f"{md.relative_to(skill_dir)}: {mention} does not resolve")
+    return problems, meta, refs
+
+
+def nix_links(nix_file):
+    """Return {skill name: problem or None} for each home.file skill line."""
+    links = {}
+    for target, source in NIX_LINK.findall(nix_file.read_text(encoding="utf-8")):
+        links[target] = None if target == source else f"links .claude/skills/{target} to files/.claude/skills/{source}"
+    return links
+
+
+def main(argv):
+    root = Path(__file__).resolve().parent.parent
+    args = list(argv)
+    nix_file = root / "nix/user.nix"
+    if "--nix" in args:
+        i = args.index("--nix")
+        nix_file = Path(args[i + 1])
+        del args[i:i + 2]
+    skills_dir = Path(args[0]) if args else root / "files/.claude/skills"
+    links = nix_links(nix_file)
+    failed = 0
+    listing = 0
+    skill_dirs = sorted(p for p in skills_dir.iterdir() if p.is_dir())
+    for skill_dir in skill_dirs:
+        problems, meta, refs = check(skill_dir, skills_dir)
+        if skill_dir.name not in links:
+            problems.append(f"no home.file line for it in {nix_file.name}")
+        elif links[skill_dir.name]:
+            problems.append(f"{nix_file.name} {links[skill_dir.name]}")
+        invocable = meta.get("disable-model-invocation") is not True
+        desc = len(meta.get("description") or "")
+        if meta and invocable:
+            listing += len(str(meta.get("name", ""))) + desc
+        state = "FAIL" if problems else "ok"
+        print(f"{state} {skill_dir.name}: invocable={'yes' if invocable else 'no'} refs_checked={refs} desc={desc}")
+        for p in problems:
+            print(f"  - {p}")
+        failed += bool(problems)
+    for name in sorted(set(links) - {p.name for p in skill_dirs}):
+        print(f"FAIL {name}: {nix_file.name} links it, but {skills_dir.name}/{name} is not a directory")
+        failed += 1
+    print(f"model-invocable listing: {listing} chars of name plus description")
+    print(f"{failed} failed" if failed else "all skills ok")
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
