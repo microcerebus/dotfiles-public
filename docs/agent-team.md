@@ -28,7 +28,7 @@ Subagents inside any role do mechanical reading (logs, CI output, transcripts) a
 
 - **Global rules**: `~/AGENTS.md`, including the rule-to-enforcer table in "Agent operations".
 - **Lane rules**: `standing-orders.md`, numbered, in the owner's words, pasted verbatim into every brief and resume.
-- **Briefs**: GOAL, SCOPE, CONTEXT, ACCEPTANCE, VERIFY, TIMEBOX, FORBIDDEN, REPORT, STANDING. A missing field means the brief is not sent (`standing-orders` skill).
+- **Briefs**: GOAL, SCOPE, CONTEXT, ACCEPTANCE, VERIFY, TIMEBOX, FORBIDDEN, REPORT, PRACTICES, STANDING, from `templates/orchestrator-lane/briefs/TEMPLATE.md`. A missing field means the brief is not sent (`standing-orders` skill).
 - **Definition of done**, recorded per unit in `ledger.tsv` (pstack orchestrate):
 
   | Verdict | Means |

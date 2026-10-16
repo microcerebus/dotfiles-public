@@ -30,20 +30,15 @@ Each file has exactly one writer, the orchestrator, unless the file says otherwi
 
 ## Worker brief template
 
+Start every brief from `~/dotfiles/templates/orchestrator-lane/briefs/TEMPLATE.md`, not from a lane's copy, which goes stale.
 Every field is required.
 A brief with a missing field is not sent.
 
-```text
-GOAL: <outcome and finish condition, countable>
-SCOPE: <repo, worktree, branch, files or packages in bounds>
-CONTEXT: <links: issue, PR, resume note, feature map entry>
-ACCEPTANCE: <what must be true, observable>
-VERIFY: <the proof: verification skill command, screenshots, test names>
-TIMEBOX: <hours or context budget; finish under about 150k tokens; pause-safely at 200k, never past 250k>
-FORBIDDEN: <actions needing the owner: deploys, provider settings, containers, merges outside the gates>
-REPORT: <who to tell, in what format: plain language, at most 5 lines, no raw IDs>
-STANDING: <standing-orders.md pasted verbatim>
-```
+- Fill each `<placeholder>`; keep the text around it.
+- Paste the PRACTICES lines unchanged, even where one does not apply yet: they carry pstack's working habits to every worker.
+- Size the unit to fit the context budget in `~/AGENTS.md`; split it if it does not.
+- Add a line only for what this unit needs beyond the template.
+  A rule every agent already loads from `~/AGENTS.md` gets a pointer, not a copy.
 
 ## Status relays to the owner
 

@@ -21,7 +21,7 @@ Copy this directory to `~/orchestrator/lanes/<lane>/` and fill in the placeholde
     ledger.tsv                  verdict per head SHA (verifiers append)
     decisions.tsv               show-me-your-work log (coordinator and workers append)
     status.md                   derived by `orch status`; never hand-edited
-    briefs/<unit>.md            one brief per unit, linted before sending
+    briefs/<unit>.md            one brief per unit, written from ~/dotfiles/templates/orchestrator-lane/briefs/TEMPLATE.md, linted before sending
     resume/                     pointers to resume notes in worktrees
 ```
 
