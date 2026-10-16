@@ -62,6 +62,48 @@ Keep the same quality standards.
   This table authorizes agent routing; it is not an app-level error handler.
   If a provider limit prevents the agent from running at all, T3 or the owner must switch the thread before the agent can continue.
 
+### Fallback watcher trial
+
+`scripts/claude-fallback --dry-run` runs one manual decision tick against T3's local database, opened read-only.
+It prints decision counts and appends the details to `~/Library/Logs/claude-fallback.tsv`.
+The script has `LIVE = False`; production `--live` is rejected.
+No launchd job or recurring task runs it, and the manual routing rule above still applies.
+
+The trial considers only a thread whose latest executed run failed on a Claude usage limit, whose reset is still ahead, and whose T3 recovery is armed for that run.
+It skips settled or archived threads, recent human activity, pending requests, changed selections, and held messages with attachments or missing text.
+A Claude meter below 95% in the affected window makes the limit look transient, so the tick skips it.
+An available Codex limit signal also blocks the plan.
+Missing meter data means headroom is unknown.
+
+The proposed switch uses Astra High Standard, or Sol Low Standard for a low-effort thread.
+The live transport can check the catalog and substitute Sol High if Astra is absent; dry-run does not acquire a token for that check.
+Held text messages would be cancelled, then replayed in order after configuring Codex and sending the continuation.
+After Claude's reset, an idle thread would return to its original selection once the meter is below 100%, or after a ten-minute grace period if the meter is unavailable.
+If Codex also stopped on a limit, restoration would send a continuation.
+Any later selection event, including reselecting the same model, prevents restoration.
+Fixtures cover these writes; a real switch-and-restore integration proof is still required before a future live activation.
+One live recovery case remains unfinished: if Codex hits a limit with follow-ups still queued, the current busy check defers restoration.
+Before activation, restoration must preserve those messages and rebind them to Claude; simply ignoring queued runs would let their stored Codex selections switch the thread back.
+
+The private state directory is `~/.local/state/claude-fallback/`, with separate dry-run and live ledgers and a single tick lock.
+The ledger includes held message text so an interrupted cancellation can be recovered manually; do not publish it or the audit log.
+Pre-write failures can retry on later ticks, up to three attempts.
+Before retrying an unfinished switch, the watcher checks Codex headroom again and retains any already-cancelled follow-up text while it waits.
+An interrupted or failed mutation with an unknown outcome stops the episode for manual reconciliation, because a fresh OAuth session has a different request-id namespace.
+Stopped episodes do not expire automatically; they may contain the only recoverable copy of cancelled follow-ups.
+Do not delete that ledger to force a retry: inspect T3's selection, runs, and held queue first, then recover any cancelled text deliberately.
+
+Every tick, even a dry run with no eligible threads, sweeps only MCP sessions and pairing codes bearing the watcher's exact `claude-fallback` label.
+Sessions must also have the `mcp-client` subject; unrelated devices and sessions are preserved.
+The reserved label must not be used by another client.
+Dry-run mints no token and sends no messages or alerts.
+The future live path holds its token only in memory, revokes by ID on normal exit, constructor failure, or SIGTERM, and relies on the next tick's label sweep after SIGKILL.
+T3 fixes these tokens at 30 days, so a killed manual tick requires another manual dry run for prompt cleanup.
+A failed cleanup exits nonzero and must be resolved before another live attempt.
+
+Run `bash tests/claude_fallback_test.sh` for the SQLite decision fixtures, ordered mutation and retry cases, and token lifecycle tests.
+All mutation and token tests use local fixtures; none acquire real credentials or change a T3 thread.
+
 ## Reader trial (Thu 15 Oct to Thu 22 Oct 2026, 16:00 SGT)
 
 the owner's yes, 14 Oct 18:14: try Haiku 5.5 and Sonnet 5.5 as low-effort readers, lifting the Haiku ban for this trial only.

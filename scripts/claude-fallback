@@ -1,0 +1,737 @@
+#!/usr/bin/env python3
+# claude-fallback: keep T3 Code threads working on Codex while Claude is
+# usage-limited, and move them back after the reset.
+#
+# the owner, 16 Oct 2026: "Find a way to use our codex or ChatGPT usage when
+# claude runs out". T3 already snoozes a limited thread and sends "Continue
+# where you left off." at the reset, on the same provider. This covers the
+# hours in between. This build runs manually in dry-run mode. Each tick:
+#   1. finds threads whose latest run failed on a Claude usage limit that T3
+#      armed for recovery (statev2.sqlite, read-only), and confirms the limit
+#      with the Claude usage meter when it answers;
+#   2. switches nothing if Codex is also out, and alerts once instead;
+#   3. leaves threads the owner opened or wrote in within 15 minutes;
+#   4. moves the rest to the Codex row of docs/model-routing.md, sends one
+#      continue message, and re-sends any held follow-ups so they run on Codex;
+#   5. after the reset, moves each idle thread back to its Claude selection,
+#      unless someone changed the thread's model in between.
+# Every decision is one row in ~/Library/Logs/claude-fallback.tsv.
+#
+# T3 writes need a full-access MCP client: a tick that acts mints a one-time
+# pairing code, exchanges it through T3's MCP OAuth approval for a token, and
+# revokes its session by ID when it finishes. Exact-label MCP leftovers are
+# swept on the next tick, including idle dry runs. Tokens never go to disk.
+#
+# Usage: claude-fallback [--dry-run | --live]
+# Tests: bash tests/claude_fallback_test.sh (env overrides below are for it).
+import argparse, base64, datetime as dt, fcntl, glob, hashlib, json, os, secrets
+import signal, sqlite3, subprocess, sys, urllib.error, urllib.parse, urllib.request
+from zoneinfo import ZoneInfo
+
+# Production stays dry-run, including --live, until this gate is reviewed.
+# Tests may exercise the switch algorithm with the file-only stub transport.
+LIVE = False
+
+HOME = os.path.expanduser("~")
+DB = os.environ.get("CLAUDE_FALLBACK_DB", f"{HOME}/.t3/userdata/statev2.sqlite")
+STATE = os.environ.get("CLAUDE_FALLBACK_STATE", f"{HOME}/.local/state/claude-fallback")
+LOG = os.environ.get("CLAUDE_FALLBACK_LOG", f"{HOME}/Library/Logs/claude-fallback.tsv")
+METER = os.environ.get("CLAUDE_FALLBACK_METER")
+ALERT = os.environ.get("CLAUDE_FALLBACK_ALERT", f"{HOME}/dotfiles/scripts/telegram-alert")
+CODEX_SESSIONS = os.environ.get("CLAUDE_FALLBACK_CODEX_SESSIONS", f"{HOME}/.codex/sessions")
+T3_STUB = os.environ.get("CLAUDE_FALLBACK_T3_STUB")
+T3_BIN = os.environ.get("CLAUDE_FALLBACK_T3_BIN", f"{HOME}/.t3/bin/t3")
+T3_URL = "http://127.0.0.1:3773"
+LABEL = "claude-fallback"
+
+CLAUDE = "claudeAgent"
+CODEX = "codex"
+ACTIVE = ("queued", "preparing", "starting", "running", "waiting")
+NEAR_FULL = 95  # percent: a limit is real, or Codex is out, at or above this
+QUIET = dt.timedelta(minutes=15)  # the owner touched the thread this recently
+NO_METER_GRACE = dt.timedelta(minutes=10)
+STALE_ROLLOUT = dt.timedelta(hours=6)
+MAX_ATTEMPTS = 3
+KEEP = dt.timedelta(days=14)
+WINDOWS = {"five_hour": "5-hour", "seven_day": "weekly"}
+
+
+def sel(model, effort):
+    return {"instanceId": CODEX, "model": model, "options": [
+        {"id": "reasoningEffort", "value": effort}, {"id": "serviceTier", "value": "default"}]}
+
+
+def utc(s):
+    return dt.datetime.fromisoformat(s.replace("Z", "+00:00")) if s else None
+
+
+def iso(t):
+    return t.astimezone(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+
+def sgt(t):
+    return t.astimezone(ZoneInfo("Asia/Singapore")).strftime("%a %H:%M SGT")
+
+
+def effort_of(selection):
+    return next((o.get("value") for o in (selection or {}).get("options") or []
+                 if o.get("id") in ("effort", "reasoningEffort")), None)
+
+
+def same(a, b):
+    def normalized(selection):
+        value = dict(selection or {})
+        value["options"] = sorted(value.get("options") or [], key=lambda option: option["id"])
+        return value
+    return normalized(a) == normalized(b)
+
+
+class Ledger:
+    """Episodes this watcher acted on, and notes it already logged once."""
+
+    def __init__(self, mode, now):
+        os.makedirs(STATE, exist_ok=True)
+        self.path = os.path.join(STATE, f"ledger-{mode}.json")
+        try:
+            with open(self.path) as f:
+                data = json.load(f)
+        except FileNotFoundError:
+            data = {}
+        self.episodes = data.get("episodes", {})
+        self.notes = data.get("notes", {})
+        cutoff = iso(now - KEEP)
+        self.episodes = {k: e for k, e in self.episodes.items()
+                         if e["state"] in ("planned", "switched", "gave-up")
+                         or max(e["updated"], e["reset"]) > cutoff}
+        self.notes = {k: t for k, t in self.notes.items() if t > cutoff}
+        self.now = now
+
+    def once(self, key):
+        if key in self.notes:
+            return False
+        self.notes[key] = iso(self.now)
+        self.save()
+        return True
+
+    def save(self):
+        tmp = self.path + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump({"episodes": self.episodes, "notes": self.notes}, f, indent=1)
+        os.replace(tmp, self.path)
+
+
+class Tick:
+    def __init__(self, mode, now):
+        self.mode, self.now = mode, now
+        self.ledger = Ledger(mode, now)
+        self.db = sqlite3.connect(f"file:{DB}?mode=ro", uri=True, timeout=10)
+        self.db.row_factory = sqlite3.Row
+        self.t3 = None
+        self._meter = False
+        self.decisions = {}
+
+    def q(self, sql, *args):
+        return self.db.execute(sql, args).fetchall()
+
+    def audit(self, action, title, frm="", to="", reason="", reset=""):
+        self.decisions[action] = self.decisions.get(action, 0) + 1
+        new = not os.path.exists(LOG)
+        with open(LOG, "a") as f:
+            if new:
+                f.write("time\tmode\taction\tthread\tfrom\tto\treason\treset\n")
+            row = [iso(self.now), self.mode, action, title, frm, to, reason, reset]
+            cells = [str(c).replace("\t", " ").replace("\n", " ").replace("\r", " ") for c in row]
+            f.write("\t".join("'" + c if c.startswith(("=", "+", "-", "@")) else c for c in cells) + "\n")
+
+    def alert(self, text):
+        if self.mode != "live":
+            return
+        try:
+            subprocess.run([ALERT, "--", text], stdin=subprocess.DEVNULL, capture_output=True, timeout=60)
+        except (OSError, subprocess.SubprocessError) as e:
+            print(f"claude-fallback: alert failed: {e}", file=sys.stderr)
+
+    def client(self):
+        if self.t3 is None:
+            self.t3 = StubT3() if T3_STUB else T3()
+        return self.t3
+
+    # Readings ---------------------------------------------------------------
+
+    def meter(self):
+        """{window: (percent, reset)} from the Claude usage meter, or None."""
+        if self._meter is not False:
+            return self._meter
+        self._meter = None
+        try:
+            if METER:
+                out = subprocess.run([METER], capture_output=True, text=True, timeout=30, stdin=subprocess.DEVNULL)
+                lines = out.stdout.splitlines() if out.returncode == 0 else []
+            else:
+                lines = claude_usage()
+            reading = {}
+            for line in lines:
+                parts = line.split()
+                if len(parts) >= 2 and parts[1] not in ("None", "null"):
+                    reading[parts[0]] = (float(parts[1]), parts[2] if len(parts) > 2 else None)
+            self._meter = reading or None
+        except Exception as e:  # the meter is a confirmation, never a blocker
+            print(f"claude-fallback: meter failed: {type(e).__name__}", file=sys.stderr)
+        return self._meter
+
+    def codex_out(self):
+        """Why Codex cannot take the work, or None."""
+        now = iso(self.now)
+        err = self.q("""SELECT max(i.updated_at) AS at, max(json_extract(i.payload_json,'$.failure.resetAt')) AS reset
+            FROM orchestration_v2_projection_turn_items i JOIN orchestration_v2_projection_runs r ON r.run_id=i.run_id
+            WHERE i.type='error' AND json_extract(i.payload_json,'$.failure.class')='usage_limit'
+              AND r.provider_instance_id=? AND json_extract(i.payload_json,'$.failure.resetAt') > ?""", CODEX, now)[0]
+        ok = self.q("SELECT max(completed_at) AS at FROM orchestration_v2_projection_runs WHERE provider_instance_id=? AND status='completed'", CODEX)[0]["at"]
+        if err["at"] and (not ok or err["at"] > ok):
+            return f"T3 shows a Codex limit until {sgt(utc(err['reset']))}"
+        files = glob.glob(os.path.join(CODEX_SESSIONS, "**", "rollout-*.jsonl"), recursive=True)
+        if not files:
+            return None
+        newest = max(files, key=os.path.getmtime)
+        if self.now - dt.datetime.fromtimestamp(os.path.getmtime(newest), dt.timezone.utc) > STALE_ROLLOUT:
+            return None
+        limits = None
+        with open(newest, errors="replace") as f:
+            for line in f:
+                if '"rate_limits"' in line:
+                    try:
+                        limits = find_key(json.loads(line), "rate_limits") or limits
+                    except ValueError:
+                        pass
+        if not isinstance(limits, dict):
+            return None
+        reached = limits.get("rate_limit_reached_type")
+        if reached:
+            reset = (limits.get(reached) or {}).get("resets_at") if reached in ("primary", "secondary") else None
+            if reset is None or reset > self.now.timestamp():
+                return f"Codex reports its {reached} limit reached"
+        for name in ("primary", "secondary"):
+            w = limits.get(name) or {}
+            resets = w.get("resets_at")
+            if (w.get("used_percent") or 0) >= NEAR_FULL and (not resets or resets > self.now.timestamp()):
+                return f"Codex {name} window at {w['used_percent']}%"
+        return None
+
+    def latest_run(self, thread_id, cancelled=()):
+        # Only our recorded queue cancellations may be ignored. An unrelated
+        # cancellation can mean somebody stopped the work and must block us.
+        ignore = f" AND NOT (status='cancelled' AND run_id IN ({','.join('?' for _ in cancelled)}))" if cancelled else ""
+        rows = self.q("""SELECT run_id, ordinal, status, provider_instance_id, payload_json FROM orchestration_v2_projection_runs
+            WHERE thread_id=? AND status!='queued'""" + ignore + " ORDER BY ordinal DESC LIMIT 1", thread_id, *cancelled)
+        return rows[0] if rows else None
+
+    def limit_of(self, run_id):
+        err = self.q("""SELECT json_extract(payload_json,'$.failure') AS f FROM orchestration_v2_projection_turn_items
+            WHERE run_id=? AND type='error' AND json_extract(payload_json,'$.failure.class')='usage_limit'
+            ORDER BY ordinal DESC LIMIT 1""", run_id)
+        if not err:
+            return None
+        failure = json.loads(err[0]["f"])
+        window = "unknown"
+        for n in self.q("""SELECT json_extract(payload_json,'$.nativeItemRef.nativeId') AS id FROM orchestration_v2_projection_turn_items
+            WHERE run_id=? AND type='system_notice'""", run_id):
+            parts = (n["id"] or "").split(":")
+            if (n["id"] or "").startswith("usage-limit:") and len(parts) >= 2:
+                window = parts[-2]
+        return {"reset": failure.get("resetAt"), "code": failure.get("code"), "window": window}
+
+    def recently_touched(self, thread_id, payload):
+        visited = utc(payload.get("lastVisitedAt"))
+        if visited and self.now - visited < QUIET:
+            return True
+        wrote = self.q("""SELECT max(updated_at) AS at FROM orchestration_v2_projection_turn_items
+            WHERE thread_id=? AND type='user_message' AND json_extract(payload_json,'$.createdBy')='user'""", thread_id)[0]["at"]
+        return bool(wrote and self.now - utc(wrote) < QUIET)
+
+    def held(self, thread_id, after):
+        rows = self.q("""SELECT r.run_id, i.payload_json AS item FROM orchestration_v2_projection_runs r
+            LEFT JOIN orchestration_v2_projection_turn_items i ON i.thread_id=r.thread_id AND i.type='user_message'
+              AND json_extract(i.payload_json,'$.messageId')=json_extract(r.payload_json,'$.userMessageId')
+            WHERE r.thread_id=? AND r.status='queued' AND r.ordinal>? ORDER BY r.ordinal""", thread_id, after)
+        held = []
+        for row in rows:
+            item = json.loads(row["item"]) if row["item"] else {}
+            held.append({"run": row["run_id"], "text": item.get("text"),
+                         "unsupported": not item.get("text") or bool(item.get("attachments"))})
+        return held
+
+    def selection_sequence(self, thread_id):
+        return self.q("""SELECT coalesce(max(sequence),0) AS seq FROM orchestration_events
+            WHERE stream_id=? AND event_type IN ('thread.provider-switched','thread.model-selection-updated')""", thread_id)[0]["seq"]
+
+    def selection_changed(self, thread_id, since):
+        return bool(self.q("""SELECT 1 FROM orchestration_events WHERE stream_id=? AND sequence>?
+            AND event_type IN ('thread.provider-switched','thread.model-selection-updated') LIMIT 1""", thread_id, since))
+
+    def pending_request(self, thread_id):
+        return bool(self.q("""SELECT 1 FROM orchestration_v2_projection_runtime_requests
+            WHERE thread_id=? AND status='pending' LIMIT 1""", thread_id))
+
+    def candidates(self):
+        """Threads stopped on a Claude limit that T3 armed, with the reset ahead."""
+        out = []
+        rows = self.q("""SELECT thread_id, title, payload_json FROM orchestration_v2_projection_threads
+            WHERE archived_at IS NULL AND deleted_at IS NULL AND json_extract(payload_json,'$.limitRecovery.resetAt') > ?""", iso(self.now))
+        for t in rows:
+            p = json.loads(t["payload_json"])
+            settled, unsettled = p.get("settledAt"), p.get("unsettledAt")
+            if settled and (not unsettled or settled > unsettled):
+                continue
+            run = self.latest_run(t["thread_id"])
+            if not run or run["run_id"] != p["limitRecovery"].get("runId") or run["status"] != "failed" or run["provider_instance_id"] != CLAUDE:
+                continue
+            limit = self.limit_of(run["run_id"])
+            if not limit or not limit["reset"]:
+                continue
+            selection = json.loads(run["payload_json"]).get("modelSelection") or p.get("modelSelection")
+            if not selection or not same(selection, p.get("modelSelection")):
+                continue
+            if not p["limitRecovery"].get("autoResume") or utc(limit["reset"]) <= self.now:
+                continue
+            out.append({"thread": t["thread_id"], "title": t["title"], "payload": p, "run": run["run_id"],
+                        "ordinal": run["ordinal"], "selection": selection, **limit})
+        return out
+
+    def unarmed(self):
+        """Claude limits in the last 6 hours that T3 did not arm, so nothing will resume them."""
+        since = iso(self.now - STALE_ROLLOUT)
+        return self.q("""SELECT r.run_id, r.thread_id, t.title FROM orchestration_v2_projection_runs r
+            JOIN orchestration_v2_projection_threads t ON t.thread_id=r.thread_id
+            JOIN orchestration_v2_projection_turn_items i ON i.run_id=r.run_id AND i.type='error'
+              AND json_extract(i.payload_json,'$.failure.class')='usage_limit'
+            WHERE r.provider_instance_id=? AND r.status='failed' AND r.completed_at > ? AND t.archived_at IS NULL AND t.deleted_at IS NULL
+              AND (json_extract(i.payload_json,'$.failure.resetAt') IS NULL
+                   OR json_extract(t.payload_json,'$.limitRecovery.runId') IS NOT r.run_id)""", CLAUDE, since)
+
+    # Decisions --------------------------------------------------------------
+
+    def run(self):
+        for u in self.unarmed():
+            latest = self.latest_run(u["thread_id"])
+            if latest and latest["run_id"] == u["run_id"] and self.ledger.once(f"unarmed|{u['run_id']}"):
+                self.audit("alert-unarmed", u["title"], CLAUDE, "", "Claude limit with no reset time or no T3 resume armed")
+                self.alert(f"claude-fallback: '{u['title']}' stopped on a Claude limit that T3 will not resume. Check it.")
+        todo = [c for c in self.candidates() if self.key(c) not in self.ledger.episodes]
+        if todo:
+            self.switch_all(todo)
+        for key, e in list(self.ledger.episodes.items()):
+            if e["state"] == "planned":
+                self.switch(e)
+            elif e["state"] == "switched":
+                self.switch_back(e)
+
+    @staticmethod
+    def key(c):
+        return f"{c['thread']}|{c['run']}|{c['reset']}"
+
+    def switch_all(self, todo):
+        meter = self.meter() or {}
+        real = []
+        for c in todo:
+            reading = meter.get(c["window"])
+            if reading and reading[0] < NEAR_FULL:
+                if self.ledger.once(f"transient|{c['run']}"):
+                    self.audit("skip-transient", c["title"], CLAUDE, "", f"{c['code']} but the {c['window']} meter reads {reading[0]:g}%", c["reset"])
+                continue
+            if self.recently_touched(c["thread"], c["payload"]):
+                if self.ledger.once(f"visited|{c['run']}"):
+                    self.audit("skip-visited", c["title"], CLAUDE, "", "the owner opened or wrote in it within 15 minutes", c["reset"])
+                continue
+            held = self.held(c["thread"], c["ordinal"])
+            if self.pending_request(c["thread"]) or any(h["unsupported"] for h in held):
+                if self.ledger.once(f"unsupported|{c['run']}"):
+                    self.audit("skip-manual", c["title"], CLAUDE, "", "pending request or held content cannot be safely replayed", c["reset"])
+                continue
+            real.append(c)
+        if not real:
+            return
+        why = self.codex_out()
+        if why:
+            episode = min(c["reset"] for c in real)
+            if self.ledger.once(f"codex-out|{episode}"):
+                self.audit("codex-out", f"{len(real)} thread(s)", CLAUDE, CODEX, why, episode)
+                self.alert(f"claude-fallback: Claude is limited until {sgt(utc(episode))} and {why}, so {len(real)} thread(s) wait for the reset. No paid use was enabled.")
+            return
+        for c in real:
+            low = effort_of(c["selection"]) in ("low", "minimal")
+            e = {"thread": c["thread"], "title": c["title"], "run": c["run"], "ordinal": c["ordinal"], "reset": c["reset"],
+                 "window": c["window"], "original": c["selection"], "target": sel("gpt-6.1-sol", "low") if low else sel("gpt-6-astra", "high"),
+                 "held": self.held(c["thread"], c["ordinal"]), "state": "planned", "done": [], "attempts": 0, "updated": iso(self.now)}
+            e["selection_sequence"] = self.selection_sequence(c["thread"])
+            self.ledger.episodes[self.key(c)] = e
+            self.ledger.save()  # ledger first, then T3
+
+    def switch(self, e):
+        target = e["target"]
+        if e.get("inflight"):
+            e.update(state="gave-up", updated=iso(self.now))
+            self.ledger.save()
+            self.audit("stop-ambiguous", e["title"], reason="interrupted mutation needs reconciliation before retry")
+            self.alert("claude-fallback: an interrupted switch needs manual review; its ledger is preserved.")
+            return
+        # Existing plans do not pass through switch_all again. Recheck before
+        # continuing a partial switch, keeping cancelled text in the ledger.
+        # After the continuation landed, finish replaying held text instead.
+        if "continue" not in e["done"]:
+            why = self.codex_out()
+            if why:
+                if self.ledger.once(f"retry-codex-out|{self.key(e)}"):
+                    self.audit("defer-codex-out", e["title"], CLAUDE, CODEX, why, e["reset"])
+                    self.alert("claude-fallback: Codex is limited; the pending switch and any cancelled follow-ups remain in the ledger.")
+                return
+        if self.mode != "live":
+            e.update(state="switched", updated=iso(self.now))
+            self.ledger.save()
+            self.audit("would-switch", e["title"], e["original"]["model"], target["model"], f"{len(e['held'])} held follow-up(s) to re-send", e["reset"])
+            return
+        try:
+            t3 = self.client()
+            if "catalog" not in e["done"]:
+                if target["model"] == "gpt-6-astra" and not t3.has_model("gpt-6-astra"):
+                    e["target"] = target = sel("gpt-6.1-sol", "high")
+                self.step(e, "catalog")
+            for h in e["held"]:
+                if f"cancel:{h['run']}" not in e["done"]:
+                    self.mutate(e, "cancel", "t3_queue_cancel", {"threadId": e["thread"], "queuedRunId": h["run"]})
+                    self.step(e, f"cancel:{h['run']}")
+            if "configure" not in e["done"]:
+                self.mutate(e, "configure", "t3_thread_configure", {"threadId": e["thread"], "modelSelection": target})
+                e["selection_sequence"] = self.selection_sequence(e["thread"])
+                self.step(e, "configure")
+            if "continue" not in e["done"]:
+                window = WINDOWS.get(e["window"], "usage")
+                self.mutate(e, "continue", "t3_thread_send", {"threadId": e["thread"], "mode": "auto", "message":
+                        f"Claude hit its {window} limit, resetting {sgt(utc(e['reset']))}. This thread now runs on Codex {target['model']} "
+                        f"({effort_of(target).title()}). Continue where you left off; check partial results of any interrupted action before retrying it."})
+                self.step(e, "continue")
+            for h in e["held"]:
+                if h["text"] and f"resend:{h['run']}" not in e["done"]:
+                    self.mutate(e, "resend", "t3_thread_send", {"threadId": e["thread"], "mode": "queue", "message": h["text"]})
+                    self.step(e, f"resend:{h['run']}")
+            e.update(state="switched", updated=iso(self.now))
+            self.ledger.save()
+            self.audit("switch", e["title"], e["original"]["model"], target["model"], f"{len(e['held'])} held follow-up(s) re-sent", e["reset"])
+        except Exception as ex:
+            self.failed(e, "switch", ex)
+
+    def switch_back(self, e):
+        if e.get("inflight"):
+            self.switch(e)  # shares the fail-closed handling of an unknown outcome
+            return
+        reset = utc(e["reset"])
+        if self.now < reset:
+            return
+        meter = self.meter()
+        reading = (meter or {}).get(e["window"])
+        if reading and reading[0] >= 100:
+            return
+        if not reading and self.now < reset + NO_METER_GRACE:
+            return
+        rows = self.q("SELECT payload_json FROM orchestration_v2_projection_threads WHERE thread_id=? AND archived_at IS NULL AND deleted_at IS NULL", e["thread"])
+        payload = json.loads(rows[0]["payload_json"]) if rows else {}
+        current = payload.get("modelSelection")
+        expected = e["original"] if self.mode != "live" or "restore" in e["done"] else e["target"]
+        if not same(current, expected) or self.selection_changed(e["thread"], e.get("selection_sequence", 0)):
+            e.update(state="done", updated=iso(self.now))
+            self.ledger.save()
+            self.audit("leave-moved", e["title"], e["target"]["model"], (current or {}).get("model", "gone"), "model changed since the switch", e["reset"])
+            return
+        busy = self.q(f"SELECT count(*) AS n FROM orchestration_v2_projection_runs WHERE thread_id=? AND status IN ({','.join('?' * len(ACTIVE))})", e["thread"], *ACTIVE)[0]["n"]
+        if busy or self.pending_request(e["thread"]) or self.recently_touched(e["thread"], payload):
+            return
+        if self.mode != "live":
+            e.update(state="done", updated=iso(self.now))
+            self.ledger.save()
+            self.audit("would-switch-back", e["title"], e["target"]["model"], e["original"]["model"], "reset passed", e["reset"])
+            return
+        try:
+            if "restore" not in e["done"]:
+                self.mutate(e, "restore", "t3_thread_configure", {"threadId": e["thread"], "modelSelection": e["original"]})
+                e["selection_sequence"] = self.selection_sequence(e["thread"])
+                self.step(e, "restore")
+            latest = self.latest_run(e["thread"])
+            stuck = latest and latest["status"] == "failed" and latest["provider_instance_id"] == CODEX and self.limit_of(latest["run_id"])
+            if stuck and "resume-claude" not in e["done"]:
+                self.mutate(e, "resume-claude", "t3_thread_send", {"threadId": e["thread"], "mode": "auto", "message":
+                        "Claude's limit has reset and Codex ran out meanwhile, so this thread is back on Claude. Continue where you left off."})
+                self.step(e, "resume-claude")
+            e.update(state="done", updated=iso(self.now))
+            self.ledger.save()
+            self.audit("switch-back", e["title"], e["target"]["model"], e["original"]["model"], "Codex was limited too; continue sent" if stuck else "reset passed", e["reset"])
+        except Exception as ex:
+            self.failed(e, "switch-back", ex)
+
+    def step(self, e, name):
+        e["done"].append(name)
+        e.pop("inflight", None)
+        self.ledger.save()
+
+    def mutate(self, e, operation, tool, arguments):
+        # New OAuth sessions have different idempotency namespaces. Persist an
+        # ambiguous outcome and stop next tick, rather than replaying a write.
+        client = self.client()
+        rows = self.q("SELECT payload_json FROM orchestration_v2_projection_threads WHERE thread_id=? AND archived_at IS NULL AND deleted_at IS NULL", e["thread"])
+        payload = json.loads(rows[0]["payload_json"]) if rows else None
+        if payload is None or self.recently_touched(e["thread"], payload) or self.pending_request(e["thread"]):
+            raise RuntimeError("thread no longer safe to change")
+        if self.selection_changed(e["thread"], e["selection_sequence"]):
+            raise RuntimeError("selection changed since planning")
+        if not T3_STUB:
+            expected = e["target"] if "configure" in e["done"] else e["original"]
+            if operation == "resume-claude":
+                expected = e["original"]
+            if not same(payload.get("modelSelection"), expected):
+                raise RuntimeError("selection changed since planning")
+        if operation in ("cancel", "configure", "continue"):
+            cancelled = [h["run"] for h in e["held"] if f"cancel:{h['run']}" in e["done"]]
+            latest = self.latest_run(e["thread"], cancelled)
+            if not latest or latest["run_id"] != e["run"] or self.now >= utc(e["reset"]):
+                raise RuntimeError("limited run is no longer current")
+            if not T3_STUB:
+                remaining = [h for h in e["held"] if h["run"] not in cancelled]
+                if self.held(e["thread"], e["ordinal"]) != remaining:
+                    raise RuntimeError("held messages changed since planning")
+        e["inflight"] = operation
+        self.ledger.save()
+        return client.call(tool, arguments)
+
+    def failed(self, e, what, ex):
+        e["attempts"] += 1
+        reason = type(ex).__name__  # transport errors can contain private text
+        if e["attempts"] >= MAX_ATTEMPTS:
+            e.update(state="gave-up", updated=iso(self.now))
+            self.alert(f"claude-fallback: gave up on the {what} for '{e['title']}' after {MAX_ATTEMPTS} tries: {reason}")
+        self.ledger.save()
+        self.audit(f"error-{what}", e["title"], "", "", f"try {e['attempts']}: {reason}", e["reset"])
+
+    def close(self):
+        try:
+            if self.t3:
+                self.t3.close()
+        finally:
+            self.db.close()
+
+
+def find_key(obj, key):
+    if isinstance(obj, dict):
+        if key in obj:
+            return obj[key]
+        obj = list(obj.values())
+    if isinstance(obj, list):
+        for v in obj:
+            found = find_key(v, key)
+            if found is not None:
+                return found
+    return None
+
+
+def claude_usage():
+    """Claude 5-hour and weekly utilization, read like the overnight preflight meter."""
+    raw = subprocess.run(["security", "find-generic-password", "-s", "Claude Code-credentials", "-w"],
+                         capture_output=True, text=True, timeout=10, stdin=subprocess.DEVNULL).stdout.strip()
+    token = json.loads(raw)["claudeAiOauth"]["accessToken"]
+    req = urllib.request.Request("https://api.anthropic.com/api/oauth/usage",
+                                 headers={"Authorization": "Bearer " + token, "anthropic-beta": "oauth-2025-04-20"})
+    with urllib.request.urlopen(req, timeout=20) as r:
+        data = json.load(r)
+    return [f"{k} {v.get('utilization')} {v.get('resets_at')}" for k, v in data.items() if isinstance(v, dict) and "utilization" in v]
+
+
+class StubT3:
+    """Test transport: records each tool call as one JSON line."""
+
+    def call(self, tool, args):
+        with open(T3_STUB, "a") as f:
+            f.write(json.dumps({"tool": tool, "args": args}, separators=(",", ":")) + "\n")
+        return {}
+
+    def has_model(self, model):
+        return True
+
+    def close(self):
+        pass
+
+
+class T3:
+    """T3's /mcp as a full-access OAuth client, for one tick only."""
+
+    def __init__(self):
+        self.headers = {}
+        self.session_ids = []
+        self.pairing_id = None
+        try:
+            self.sweep()
+            self.open()
+        except BaseException:
+            # __init__ may fail after T3 issued a token but before returning it.
+            self.close()
+            raise
+
+    def open(self):
+        pairing = self.cli("auth", "pairing", "create", "--ttl", "2m", "--label", LABEL, "--scope", "orchestration:read",
+                           "--scope", "orchestration:operate", "--scope", "settings:write", "--scope", "source-control:write")
+        self.pairing_id = pairing["id"]
+        redirect = "http://127.0.0.1:9/callback"
+        client = self.http("/oauth/mcp/register", {"client_name": LABEL, "redirect_uris": [redirect], "token_endpoint_auth_method": "none"})
+        verifier = secrets.token_urlsafe(48)
+        challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
+        state = secrets.token_urlsafe(12)
+        authz = {"response_type": "code", "client_id": client["client_id"], "redirect_uri": redirect, "code_challenge": challenge,
+                 "code_challenge_method": "S256", "state": state, "resource": f"{T3_URL}/mcp"}
+        decision = self.http("/oauth/mcp/decision", {"authorization": authz,
+                             "decision": {"_tag": "pairing-code", "access": "full-access", "code": pairing["credential"]}})
+        query = urllib.parse.parse_qs(urllib.parse.urlparse(decision["redirectTo"]).query)
+        if query.get("state") != [state] or "code" not in query:
+            raise RuntimeError(f"T3 approval failed: {query.get('error', ['no code'])[0]}")
+        token = self.http("/oauth/mcp/token", {"grant_type": "authorization_code", "code": query["code"][0], "redirect_uri": redirect,
+                          "client_id": client["client_id"], "code_verifier": verifier, "resource": f"{T3_URL}/mcp"}, form=True)
+        self.headers = {"Authorization": f"Bearer {token['access_token']}", "Accept": "application/json, text/event-stream",
+                        "MCP-Protocol-Version": "2025-06-18"}
+        self.session_ids = [s["sessionId"] for s in self.entries("session") if self.owned_session(s)]
+        if len(self.session_ids) != 1:
+            raise RuntimeError("could not identify the watcher session")
+        self.ids = 0
+        self.rpc("initialize", {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": LABEL, "version": "1"}})
+        self.rpc("notifications/initialized", None)
+
+    @staticmethod
+    def cli(*args):
+        out = subprocess.run([T3_BIN, *args, "--json"], capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL)
+        if out.returncode != 0:
+            raise RuntimeError(f"t3 {args[0]} {args[1]} failed with exit {out.returncode}")
+        return json.loads(out.stdout)
+
+    @staticmethod
+    def owned_session(session):
+        return session.get("subject") == "mcp-client" and (session.get("client") or {}).get("label") == LABEL
+
+    @classmethod
+    def entries(cls, kind):
+        result = cls.cli("auth", kind, "list")
+        return result if isinstance(result, list) else result[kind + "s"]
+
+    @staticmethod
+    def revoke(kind, identifier):
+        # CLI revoke is positional and does not accept --json. Never revoke all.
+        out = subprocess.run([T3_BIN, "auth", kind, "revoke", identifier], capture_output=True,
+                             timeout=30, stdin=subprocess.DEVNULL)
+        if out.returncode:
+            raise RuntimeError(f"watcher {kind} revocation failed")
+
+    @classmethod
+    def sweep(cls):
+        """Only this watcher's MCP sessions and exact-label pairing leftovers."""
+        for session in cls.entries("session"):
+            if cls.owned_session(session):
+                cls.revoke("session", session["sessionId"])
+        for pairing in cls.entries("pairing"):
+            if pairing.get("label") == LABEL:
+                cls.revoke("pairing", pairing["id"])
+        if any(cls.owned_session(s) for s in cls.entries("session")) or any(
+                p.get("label") == LABEL for p in cls.entries("pairing")):
+            raise RuntimeError("watcher credential cleanup incomplete")
+
+    @staticmethod
+    def http(path, body, headers=None, form=False):
+        data = urllib.parse.urlencode(body).encode() if form else json.dumps(body).encode()
+        h = {"Content-Type": "application/x-www-form-urlencoded" if form else "application/json", **(headers or {})}
+        req = urllib.request.Request(T3_URL + path, data=data, method="POST", headers=h)
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                text, session = r.read().decode(), r.headers.get("Mcp-Session-Id")
+        except urllib.error.HTTPError as e:
+            raise RuntimeError(f"{path} answered {e.code}") from None
+        if "event-stream" in (r.headers.get("Content-Type") or ""):
+            text = next((ln[5:].strip() for ln in text.splitlines() if ln.startswith("data:")), "")
+        result = json.loads(text) if text.strip() else {}
+        if session:
+            result["_session"] = session
+        return result
+
+    def rpc(self, method, params):
+        msg = {"jsonrpc": "2.0", "method": method}
+        if params is not None:
+            self.ids += 1
+            msg.update(id=self.ids, params=params)
+        reply = self.http("/mcp", msg, self.headers)
+        if reply.get("_session"):
+            self.headers["Mcp-Session-Id"] = reply["_session"]
+        if "error" in reply:
+            raise RuntimeError(f"{method}: {reply['error'].get('message')}")
+        return reply.get("result", {})
+
+    def call(self, tool, args):
+        result = self.rpc("tools/call", {"name": tool, "arguments": args})
+        text = " ".join(c.get("text", "") for c in result.get("content", []) if isinstance(c, dict))
+        if result.get("isError"):
+            raise RuntimeError(f"{tool}: {text[:200]}")
+        return text
+
+    def has_model(self, model):
+        return f'"{model}"' in self.call("orchestrator_capabilities", {})
+
+    def close(self):
+        # A second TERM must not interrupt cleanup. SIGKILL is recovered by sweep.
+        old_term = signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        try:
+            self.headers.clear()
+            for identifier in self.session_ids:
+                self.revoke("session", identifier)
+            if self.pairing_id:
+                self.revoke("pairing", self.pairing_id)
+            self.sweep()  # covers an issued token whose HTTP response was lost
+        finally:
+            signal.signal(signal.SIGTERM, old_term)
+
+
+def terminated(signum, _frame):
+    raise SystemExit(128 + signum)
+
+
+def main():
+    ap = argparse.ArgumentParser(description="Move Claude-limited T3 threads to Codex and back.")
+    g = ap.add_mutually_exclusive_group()
+    g.add_argument("--dry-run", action="store_true", help="log decisions without switching threads; sweep own auth leftovers")
+    g.add_argument("--live", action="store_true", help="fixture transport only while the live gate is closed")
+    args = ap.parse_args()
+    if args.live and not LIVE and not T3_STUB:
+        ap.error("live switching is disabled in this dry-run build")
+    signal.signal(signal.SIGTERM, terminated)
+    os.umask(0o077)
+    mode = "live" if args.live or (LIVE and not args.dry_run) else "dry-run"
+    now = utc(os.environ["CLAUDE_FALLBACK_NOW"]) if os.environ.get("CLAUDE_FALLBACK_NOW") else dt.datetime.now(dt.timezone.utc)
+    os.makedirs(STATE, exist_ok=True)
+    with open(os.path.join(STATE, "lock"), "w") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return 0
+        if not T3_STUB:
+            # Even an idle/dry tick must clean up a previously killed tick.
+            T3.sweep()
+        if not os.path.exists(DB):
+            return 0
+        os.makedirs(os.path.dirname(os.path.abspath(LOG)), exist_ok=True)
+        tick = Tick(mode, now)
+        try:
+            tick.run()
+            if mode == "dry-run":
+                summary = ", ".join(f"{action}={count}" for action, count in sorted(tick.decisions.items()))
+                print("claude-fallback: dry-run " + (summary or "no new decisions"))
+        finally:
+            tick.close()
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except Exception as error:
+        # Never echo transport bodies, credentials, or user message contents.
+        print(f"claude-fallback: tick failed ({type(error).__name__}); inspect local state and retry", file=sys.stderr)
+        sys.exit(1)
