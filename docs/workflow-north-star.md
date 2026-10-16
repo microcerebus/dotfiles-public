@@ -61,6 +61,7 @@ To update: re-fetch the raw SKILL.md, diff it, security-read it (they instruct
 agents), commit. Local edits to keep: lavish and chrome-devtools-axi call the
 bare command (the scripts/ wrappers), never `pnpm dlx`, and chrome-devtools-axi
 keeps its "Which browser" and "Sharing the agent Chrome" sections. Bump no-mistakes by changing the flake input tag + vendorHash.
+When you refresh the no-mistakes SKILL.md from a new tag, keep its "PR descriptions (dotfiles addition)" section and its own `references/pr-description.md`.
 pstack skills are pinned to cursor/plugins 1e5c90a4 (pstack 0.15.24, 2026-10-14); nix/user.nix lists them, the skipped ones, and every local edit.
 poteto-mode is the entry point (2026-10-16).
 The only other model-invocable pstack skills are unslop, correct and show-me-your-work, which are vendored from pstack and opened up here as a local edit (listed in nix/user.nix).

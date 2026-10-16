@@ -74,6 +74,8 @@ These are common instructions for my agents across all scenarios.
 - Both files are living documents.
   When a decision or correction in a session contradicts them, propose the update in that session.
   Each file carries a `Last reviewed:` date; if it is more than 7 days old, review the file against recent sessions and refresh it before ending the session.
+- Write PR bodies from `~/.claude/skills/no-mistakes/references/pr-description.md`, and after each create or edit run `~/dotfiles/scripts/check-pr-description.mjs` on the body GitHub holds.
+  The checker covers structure only, so check the user flow on the exact preview or tool, open the media as a reviewer, and report those claims separately.
 
 ## Agent operations
 
