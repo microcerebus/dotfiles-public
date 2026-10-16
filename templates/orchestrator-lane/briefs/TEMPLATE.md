@@ -8,6 +8,7 @@ FORBIDDEN: <what needs the owner: deploys, provider settings, containers, merges
 REPORT: <who to tell>; at most 5 plain lines, no raw IDs
 PRACTICES:
 - First reply: restate the goal in your own words, then start.
+- Before starting, load the `poteto-mode` skill and follow the one playbook it picks for the task type.
 - A change to a route, label, heading or status text updates the Feature Map in the same PR.
 - A throwaway script that drives or debugs the app becomes a subcommand of the repo's CLI (e.g. `jt`) with `--json`, `--dry-run` and a test, in the same PR.
 - Open design questions get a prototype, not a review of the abstract design.
