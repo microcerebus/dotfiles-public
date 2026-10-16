@@ -11,10 +11,17 @@
 // keeps the version. So each command that reaches the server first restarts
 // one whose package file is gone, from the current install with the same
 // arguments. Sessions live in the state file, and open pages reconnect on
-// their own. `--restart-stale-server` does only that, for the launchd job
-// that watches pnpm's global dir (nix/user.nix). Only server processes are
-// touched: a running `poll` loses its connection and is re-run, as with
-// upstream's own upgrade restart.
+// their own. `--restart-stale-server` does that and also starts a server
+// when none runs, for the launchd job that watches pnpm's global dir and
+// checks every minute (nix/user.nix). Only server processes are touched: a
+// running `poll` loses its connection and is re-run, as with upstream's own
+// upgrade restart.
+//
+// Upstream's server also stops itself after 30 minutes with no page or poll
+// connected. On 16 Oct 2026 it did so at 11:57, and the owner's links were dead
+// when he next opened one. So every server this wrapper starts, directly or
+// through upstream's CLI, gets LAVISH_AXI_IDLE_TIMEOUT_MS=off unless the
+// caller sets a value.
 // Tests: tests/lavish_chrome_test.cjs, tests/lavish_server_test.cjs.
 const { spawn, spawnSync } = require("node:child_process");
 const fs = require("node:fs");
@@ -130,11 +137,16 @@ function withLock(deps, fn) {
   try { return fn(); } finally { fs.rmSync(deps.lockDir, { recursive: true, force: true }); }
 }
 
-function restartStaleServer(env, deps, io = process) {
-  if (staleServers(env, deps).length === 0) return 0;
+// Restarts a server whose package is gone. With startIfDown, as the launchd
+// job runs it, also starts one when none runs on the port. A plain command
+// leaves a down server to upstream, which starts one when it needs it.
+function restartStaleServer(env, deps, io = process, { startIfDown = false } = {}) {
+  const needed = (servers) => servers.some((server) => !deps.exists(server.entry)) || (startIfDown && servers.length === 0);
+  if (!needed(lavishServers(env, deps))) return 0;
   return withLock(deps, () => {
-    const stale = staleServers(env, deps);
-    if (stale.length === 0) return 0; // restarted while this one waited for the lock
+    const servers = lavishServers(env, deps);
+    if (!needed(servers)) return 0; // restarted or started while this one waited for the lock
+    const stale = servers.filter((server) => !deps.exists(server.entry));
     const port = lavishPort(env);
     const say = (line) => io.stderr.write(`${new Date().toISOString()} lavish-axi: ${line}\n`);
     const pkg = deps.packageDir();
@@ -144,7 +156,9 @@ function restartStaleServer(env, deps, io = process) {
     const cli = bin && join(pkg, bin);
     const entry = cli && [join(pkg, "dist/server.mjs"), cli].find((file) => deps.exists(file));
     if (!entry) {
-      say(`the Lavish server on :${port} (pid ${stale[0].pid}) runs from a deleted package, and pnpm reports no usable lavish-axi install to restart it from`);
+      say(stale.length > 0
+        ? `the Lavish server on :${port} (pid ${stale[0].pid}) runs from a deleted package, and pnpm reports no usable lavish-axi install to restart it from`
+        : `no Lavish server runs on :${port}, and pnpm reports no usable lavish-axi install to start one from`);
       return 1;
     }
     // Signalled, not stopped over HTTP, which a stale server may refuse.
@@ -153,14 +167,16 @@ function restartStaleServer(env, deps, io = process) {
       if (!waitGone(pid, 3000, deps)) deps.kill(pid, "SIGKILL");
     }
     // Started as upstream's startServer does: detached, logging to the state
-    // dir. process.execPath, not the old server's node, which a flake bump
+    // dir, with the old server's arguments, or with upstream's own when none
+    // ran. process.execPath, not the old server's node, which a flake bump
     // can also remove.
+    const args = stale.length > 0 ? stale[0].args : ["server", "--port", String(port)];
     const log = join(env.LAVISH_AXI_STATE_DIR || join(homedir(), ".lavish-axi"), "server.log");
     fs.mkdirSync(dirname(log), { recursive: true });
     const fd = fs.openSync(log, "a");
     let child;
     try {
-      child = deps.spawn(process.execPath, [entry, ...stale[0].args],
+      child = deps.spawn(process.execPath, [entry, ...args],
         { detached: true, stdio: ["ignore", fd, fd], env: { ...env, LAVISH_AXI_NO_OPEN: "1" } });
       child.unref();
     } finally { fs.closeSync(fd); }
@@ -168,10 +184,12 @@ function restartStaleServer(env, deps, io = process) {
       "--retry-all-errors", "--retry-max-time", "20", `http://127.0.0.1:${port}/chrome.css`], { stdio: "ignore" }).status === 0;
     const from = `lavish-axi ${manifest.version}`;
     if (!served) {
-      say(`restarted the Lavish server on :${port} from ${from} as pid ${child.pid}, but its page assets still fail; see ${log}`);
+      say(`${stale.length > 0 ? "restarted" : "started"} the Lavish server on :${port} from ${from} as pid ${child.pid}, but its page assets still fail; see ${log}`);
       return 1;
     }
-    say(`restarted the Lavish server on :${port}: pid ${stale[0].pid} ran a deleted package and served blank pages; pid ${child.pid} runs ${from}`);
+    say(stale.length > 0
+      ? `restarted the Lavish server on :${port}: pid ${stale[0].pid} ran a deleted package and served blank pages; pid ${child.pid} runs ${from}`
+      : `started the Lavish server on :${port}, as none was running: pid ${child.pid} runs ${from}`);
     return 0;
   });
 }
@@ -199,7 +217,9 @@ function defaultDeps() {
 }
 
 function main(args, env, deps = defaultDeps(), io = process) {
-  if (args[0] === RESTART) return deps.restartStaleServer(env, deps, io);
+  // Blank counts as unset, as upstream reads it.
+  if (!env.LAVISH_AXI_IDLE_TIMEOUT_MS?.trim()) env = { ...env, LAVISH_AXI_IDLE_TIMEOUT_MS: "off" };
+  if (args[0] === RESTART) return deps.restartStaleServer(env, deps, io, { startIfDown: true });
   if (!NO_SERVER.has(args[0])) {
     // A failed check never blocks the command; upstream starts a server
     // itself when none is running.

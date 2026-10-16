@@ -512,8 +512,12 @@ in
   # change to pnpm's global packages, whoever made it: the daily sync, an
   # agent's `pnpm add -g`, a reinstall. Every lavish-axi command checks too,
   # and `dotfiles-autoupdate status` alarms on a server whose assets fail.
-  # Silent unless it restarts something. AbandonProcessGroup: the server it
-  # starts outlives the job.
+  # It also starts a server when none runs, at login and every minute: a page
+  # link on the owner's phone cannot start one, and the server that stopped
+  # itself at 11:57 on 16 Oct left every link dead until an agent ran a
+  # command. A check that finds the server up costs a pgrep and a ps.
+  # Silent unless it restarts or starts something. AbandonProcessGroup: the
+  # server it starts outlives the job.
   launchd.agents.lavish-restart = {
     enable = true;
     config = {
@@ -524,6 +528,7 @@ in
         "${config.home.homeDirectory}/Library/pnpm/bin"
       ];
       RunAtLoad = true;
+      StartInterval = 60;
       AbandonProcessGroup = true;
       EnvironmentVariables = {
         PNPM_HOME = "${config.home.homeDirectory}/Library/pnpm";
