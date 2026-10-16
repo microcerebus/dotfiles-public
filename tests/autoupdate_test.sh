@@ -259,10 +259,13 @@ tick() {
   as "$home" bash "$script" sync </dev/null >>"$s/log/out" 2>&1 || true
   as "$root_home" bash "$script" apply </dev/null >>"$s/log/out" 2>&1 || true
 }
+# sync_now: autoupdate-now's sync, as an agent shell runs it, with no terminal.
+sync_now() { as "$home" bash "$script" sync --now </dev/null >>"$s/log/out" 2>&1 || true; }
 # alarms: what reaches the owner (zsh banner, agent board, SessionStart hook).
-alarms() { as "$home" bash "$script" status --alarms; }
+# status never runs inside a terminal run (STUB_TTY), so neither does it here.
+alarms() { STUB_TTY='' as "$home" bash "$script" status --alarms; }
 # report: everything the updater reports, alarms and info.
-report() { as "$home" bash "$script" status; }
+report() { STUB_TTY='' as "$home" bash "$script" status; }
 # ─────────────────────────────────────────────────────────────────────────
 
 running_rev() { sed -n 's/.*"configurationRevision": *"\([^"]*\)".*/\1/p' "$AUTOUPDATE_SYSTEM/darwin-version.json"; }
@@ -427,9 +430,26 @@ at "2026-10-12 06:00"; tick
 expect_eq "the switch follows once the rebuild is done" "$(built)" "$(git -C "$s/upstream" rev-parse HEAD)"
 
 # 13. The cloud routine watchdog: flake.lock on origin/main older than 3 days.
+# status reads it from the last fetch. On 16 Oct 2026 the sync recorded the
+# age as its own failure, which raised "no successful run" too and kept both
+# up for a day after the routine was back.
 fresh
 at "2026-10-16 05:00"; tick; tick
-expect_alarm "an old flake.lock raises an alarm" "flake.lock"
+expect_alarm "an old flake.lock raises an alarm" \
+  "^dotfiles auto-update: routine: flake.lock on origin/main was last updated 4 days ago; is the cloud update routine running\? \(claude\.ai/code/routines\)$"
+expect_report "an old flake.lock does not fail the sync" "^ok: sync: last good run 0 min ago$"
+legacy=$(env -i HOME="$home" TZ="$TZ" PATH="$stubs:/usr/bin:/bin" FAKE_NOW="$FAKE_NOW" \
+  AUTOUPDATE_HOME="$home" AUTOUPDATE_DAEMON_DIR="$AUTOUPDATE_DAEMON_DIR" AUTOUPDATE_SILL_APP="$AUTOUPDATE_SILL_APP" \
+  /bin/bash "$script" status)
+expect_eq "the flake.lock alarm reads the same under macOS's bash 3.2" "$legacy" "$(report)"
+at "2026-10-16 05:10"; commit_upstream "C: flake.lock bump" flake.lock
+git -C "$home/dotfiles" fetch -q origin
+expect_no_alarm "fetching a fresh flake.lock clears the alarm without a sync"
+git -C "$home/dotfiles" update-ref -d refs/remotes/origin/main
+expect_alarm "a git that cannot read the flake.lock age alarms instead of going quiet" \
+  "^dotfiles auto-update: routine: could not read the flake.lock age from origin/main in $home/dotfiles: "
+rm -rf "$home/dotfiles"
+expect_no_alarm "no checkout is no flake.lock alarm"
 
 # 14. A sync killed mid-run is not silent.
 fresh
@@ -662,5 +682,20 @@ legacy=$(env -i HOME="$home" TZ="$TZ" PATH="$stubs:/usr/bin:/bin" FAKE_NOW="$FAK
   AUTOUPDATE_HOME="$home" AUTOUPDATE_DAEMON_DIR="$AUTOUPDATE_DAEMON_DIR" AUTOUPDATE_SILL_APP="$AUTOUPDATE_SILL_APP" \
   /bin/bash "$script" status)
 expect_eq "the Sill alarm reads the same under macOS's bash 3.2" "$legacy" "$(STUB_SILL_TEAM=ABCDE12345 report)"
+
+# 24. The day's run is the first from 04:00, after the cloud routine's 02:00
+# flake.lock bump. On 16 Oct 2026 a `--now` run at 01:40 took its place, so
+# the 01:50 bump waited a day to be handed over.
+fresh
+at "2026-10-16 01:40"; sync_now
+at "2026-10-16 01:50"; commit_upstream "C: flake.lock bump" flake.lock
+C=$(git -C "$s/upstream" rev-parse HEAD)
+at "2026-10-16 04:00"; tick; tick
+expect_eq "a --now run before 04:00 leaves the day's run to come" "$(calls brew)" 2
+expect_eq "the day's run hands over a bump pushed after that --now run" "$(running_rev)" "$C"
+fresh
+at "2026-10-16 08:30"; sync_now
+at "2026-10-16 09:00"; tick
+expect_eq "a --now run from 04:00 is the day's run" "$(calls brew)" 1
 
 exit "$fail"

@@ -5,8 +5,9 @@
 #   sync     myuser's launchd agent (nix/user.nix), in his GUI session, where
 #            the login keychain answers. Daily from 04:00: fetch origin and
 #            fast-forward ~/dotfiles, update pnpm globals, brew upgrade,
-#            report pending macOS updates, check the flake.lock age, then hand
-#            the fetched origin/main revision to the daemon.
+#            report pending macOS updates, then hand the fetched origin/main
+#            revision to the daemon. A `--now` run before 04:00 leaves the
+#            day's run to come.
 #            `autoupdate-now` runs the same program in a terminal, which
 #            shows each step and where sudo can prompt for brew.
 #   apply    the root launchd daemon (nix/host.nix). Hourly: switches the
@@ -14,9 +15,11 @@
 #            tree, and never rolls back a system built from unpushed work.
 #   status   the one reader of both status files, used by the zsh banner, the
 #            agent board and the SessionStart hook. Prints alarms, info and
-#            the last success of each runner, and alarms on a Lavish server
-#            whose page assets fail after a pnpm update (check_lavish) and
-#            on a Sill.app signed by anyone but its developer (check_sill).
+#            the last success of each runner, and alarms on a flake.lock on
+#            origin/main 4 or more days old (check_flake_lock), a Lavish
+#            server whose page assets fail after a pnpm update
+#            (check_lavish) and a Sill.app signed by anyone but its
+#            developer (check_sill).
 #
 # launchd runs /nix/store copies of this file; root never runs the checkout.
 # `status` must also run under macOS's bash 3.2 (the agent board calls it).
@@ -141,7 +144,11 @@ cmd_sync() {
     sleep 10
   done
   [ -n "$online" ] || { log "github.com is unreachable; the next tick retries"; return 0; }
-  date +%F >"$sync_dir/day"
+  # The day's run is the first from 04:00, after the cloud routine's 02:00 SGT
+  # flake.lock bump. A `--now` run before 04:00 is extra: on 16 Oct 2026 one
+  # at 01:40 took the day's place, saw the lock from before the bump, and
+  # nothing handed over the bump that day.
+  [ "$(date +%H)" -lt 4 ] || date +%F >"$sync_dir/day"
   mark_running
   # Ctrl-C in a terminal run reaches the running step (timed); the run then
   # stops after that step, whether the step died of it or handled it, and
@@ -162,9 +169,6 @@ cmd_sync() {
   sync_brew
   sync_macos
   if [ -n "$fetched" ]; then
-    local lock_age=$(( (now - $(git -C "$repo" log -1 --format=%ct "$fetched" -- flake.lock)) / 86400 ))
-    [ "$lock_age" -le 3 ] \
-      || fail "flake.lock on origin/main is $lock_age days old; is the cloud update routine running? (claude.ai/code/routines)"
     # Last, so brew upgrade never races the switch's own brew bundle.
     printf '%s\n' "$fetched" >"$sync_dir/revision.tmp" && mv -f "$sync_dir/revision.tmp" "$sync_dir/revision"
     log "handed origin/main ${fetched:0:12} to the daemon"
@@ -457,10 +461,32 @@ check_sill() {
   alarm "sill: $app is signed by $team, not its developer's team $sill_team; quit it and check the saffsanity/sill tap before opening it again"
 }
 
+# The cloud routine bumps flake.lock on origin/main daily at 02:00 SGT; a
+# lock 4 or more days old means it stopped. This reads the last fetch, never
+# the network: the daily sync's, or any fetch in a ~/dotfiles worktree, which
+# share its refs. So the alarm clears with the first fetch of a fresh lock.
+# The sync used to record the age as its own failure, which kept the alarm
+# and "no successful run" up for a day after the routine was back (16 Oct
+# 2026). No checkout is fine; a git that fails here (the board runs
+# /usr/bin/git, which a macOS upgrade can break) is an alarm, not silence.
+check_flake_lock() {
+  local stamp days
+  [ -e "$repo/.git" ] || return 0
+  if ! stamp=$(git -C "$repo" log -1 --format=%ct refs/remotes/origin/main -- flake.lock 2>&1); then
+    alarm "routine: could not read the flake.lock age from origin/main in $repo: $(last_line "$stamp")"
+    return 0
+  fi
+  [ -n "$stamp" ] || return 0
+  days=$(( (now - stamp) / 86400 ))
+  [ "$days" -le 3 ] \
+    || alarm "routine: flake.lock on origin/main was last updated $days days ago; is the cloud update routine running? (claude.ai/code/routines)"
+}
+
 cmd_status() {
   now=$(date +%s)
   read_status sync "$sync_dir/sync.status" "$sync_log"
   read_status switch "$daemon_dir/status" "$daemon_log"
+  check_flake_lock
   check_lavish
   check_sill
   if [ "${1:-}" = --alarms ]; then
