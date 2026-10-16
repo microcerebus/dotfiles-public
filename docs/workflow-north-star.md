@@ -68,6 +68,9 @@ Its body routes the task to one playbook in `poteto-mode/references/`, and each 
 in-your-own-words, ketchup and grilling are held unrouted until the owner OKs a route for them.
 Keep it that way: a new pstack skill stays slash-only and gets a route from a playbook, so the always-loaded skill list does not grow.
 `python3 -I scripts/check-skills` checks every skill's frontmatter (as YAML), LICENSE, links and `home.file` line.
+`.githooks/pre-push` runs the pushed commit's checker against an exported copy of that commit before the public mirror leak gate on pushes to `main`.
+Skill validation fails closed, including when the checker or PyYAML is missing; `PUBLIC_SYNC_SKIP=1` skips only the leak gate.
+`bash tests/pre_push_test.sh` covers committed and dirty skill failures, a different checked-out branch, gate order and missing checker dependencies.
 `python3 -I tests/check_skills_test.py` and `python3 -I tests/check_plan_test.py` test it and poteto-mode's `scripts/check-plan.py`.
 the owner asked on 2026-10-14 for the rest of the pstack set, which overrides the earlier "install only after a failure mode shows up twice" rule for pstack.
 To update: clone cursor/plugins, check out the old pin's `pstack/skills` next to the new one, and save `diff -ru old/<name> files/.claude/skills/<name>` as the local patch.
