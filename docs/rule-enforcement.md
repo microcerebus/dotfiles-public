@@ -11,7 +11,7 @@ The `correct` skill keeps it current: when the owner corrects something a rule a
 | No containers or VMs | `bash_guard.py` blocks them unless the owner wrote an unexpired `~/.claude/containers-approved-until` |
 | Context limits | `turn_context.py`: a nudge on each prompt past 200k; past the 250k hard stop, the stop on each prompt and after main-thread tool calls, repeated once per 5k tokens of growth (never a block); `pre_compact.py` backstop; `pause-safely` skill |
 | Handoffs list native workers, never "still hosts" | `write_guard.py` and `bash_guard.py` flag the wording in resume notes and `~/orchestrator`; `pause-safely` and `session-pickup` skills |
-| Nothing personal in the public dotfiles mirror | `scripts/public-sync` leak gate |
+| Nothing personal in the public dotfiles mirror | `scripts/public-sync` leak gate, run with the pushed commit's own rules by `.githooks/pre-push` on every push that updates `main` on the dotfiles repo, from any checkout or worktree; only `public-sync --from-origin` publishes, from `origin/main` (`tests/pre_push_test.sh`) |
 | Chrome, never Brave | `lavish-axi` and `chrome-devtools-axi` wrappers in `scripts/`; rule only elsewhere |
 | Agent Chrome, not the owner's own | `chrome-devtools-axi` wrapper refuses autoConnect and port 9222 unless `CHROME_DEVTOOLS_AXI_MAIN_CHROME=1` |
 | Agent Chrome tabs stay behind the owner's windows and are sized per tab | `chrome-devtools-axi` wrapper opens tabs in the background and refuses `resize` |
