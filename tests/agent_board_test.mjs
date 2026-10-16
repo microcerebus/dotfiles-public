@@ -1,9 +1,9 @@
 // Run: node --test tests/agent_board_test.mjs
 // Builds a fixture copy of the T3 tables the board reads, plus Claude logs, and checks what the board shows.
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { once } from 'node:events';
 import net from 'node:net';
-import { test } from 'node:test';
+import { mock, test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -397,4 +397,146 @@ test('map: an owner given as a bare uuid resolves to its thread; an unknown one 
   const html = renderMap(snapshot({ ...f, now: NOW }));
   assert.match(unitRowOf(html, 'u1'), /<div class="sub">Uuid owner · <span class="grey">idle 2 min<\/span><\/div>/);
   assert.match(unitRowOf(html, 'u2'), /<div class="sub"><span class="peach">no owner thread<\/span><\/div>/);
+});
+
+// ---- Stale needs-myuser rows: a real repo with origin/main and one branch per case ----
+
+function repoFixture() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-board-repo-'));
+  const env = { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1', GIT_AUTHOR_NAME: 'T', GIT_AUTHOR_EMAIL: 't@example.com', GIT_COMMITTER_NAME: 'T', GIT_COMMITTER_EMAIL: 't@example.com' };
+  const git = (...args) => execFileSync('git', ['-C', dir, ...args], { env, encoding: 'utf8' }).trim();
+  const commit = (file, subject) => {
+    fs.writeFileSync(path.join(dir, file), `${subject}\n`);
+    git('add', file);
+    git('commit', '-qm', subject);
+  };
+  git('init', '-qb', 'main');
+  commit('a', 'init');
+  // Rebased: the branch still holds its pre-rebase commit; main has the same patch under another id.
+  git('checkout', '-qb', 'feat/rebased');
+  commit('r', 'feat: rebased work');
+  git('checkout', '-q', 'main');
+  commit('m', 'chore: main moves on');
+  git('cherry-pick', 'feat/rebased');
+  // Squash-merged PR: two commits land as one, GitHub style, so no single patch matches.
+  git('checkout', '-qb', 'feat/squash');
+  commit('s1', 'wip one');
+  commit('s2', 'wip two');
+  git('checkout', '-q', 'main');
+  git('merge', '-q', '--squash', 'feat/squash');
+  git('commit', '-qm', 'feat: squash work (#12)');
+  // Merged by fast-forward.
+  git('checkout', '-qb', 'feat/merged');
+  commit('f', 'feat: merged work');
+  git('checkout', '-q', 'main');
+  git('merge', '-q', '--ff-only', 'feat/merged');
+  // Created from main with no commits yet: an ancestor of main that holds no work.
+  git('branch', 'feat/empty');
+  git('update-ref', 'refs/remotes/origin/main', 'main');
+  // Pushed to origin at its creation point and never fetched into a local branch: no reflog shows whether it held work.
+  git('update-ref', 'refs/remotes/origin/feat/remote-empty', 'main');
+  // Unpushed: merged into the local main only, so the owner still has to say push.
+  git('checkout', '-qb', 'feat/unpushed');
+  commit('u', 'feat: unpushed work');
+  git('checkout', '-q', 'main');
+  git('merge', '-q', '--ff-only', 'feat/unpushed');
+  return { dir, git, commit };
+}
+
+function staleFixture() {
+  const f = lanesFixture();
+  const repo = repoFixture();
+  fs.mkdirSync(path.join(f.lanesDir, 'repo'));
+  fs.writeFileSync(path.join(f.lanesDir, 'repo/lane.json'), JSON.stringify({ priority: 5, checkout: repo.dir, base: 'main' }));
+  fs.writeFileSync(path.join(f.lanesDir, 'repo/units.tsv'), TSV([
+    UNIT_COLUMNS,
+    ['rebased', 'needs-myuser', '', 'feat/rebased', 'push', '', '', '', 'say push'],
+    ['squash', 'needs-myuser', '', 'feat/squash', '12', '', '', '', 'review the PR'],
+    ['squash-gone', 'needs-myuser', '', 'feat/deleted-after-merge', '12', '', '', '', 'review the PR'],
+    ['merged', 'needs-myuser', '', 'feat/merged', '', '', '', '', 'say push'],
+    ['await-rebuild', 'needs-myuser', '', 'feat/merged', 'rebuild', '', '', '', 'run rebuild'],
+    ['still-building', 'in-flight', '', 'feat/merged', '', '', '', '', ''],
+    ['unpushed', 'needs-myuser', '', 'feat/unpushed', '13', '', '', '', 'say push'],
+    ['empty', 'needs-myuser', '', 'feat/empty', '', '', '', '', 'pick a design'],
+    ['no-branch', 'needs-myuser', '', '', 'push', '', '', '', 'say push'],
+    ['typo', 'needs-myuser', '', 'feat/nope', '', '', '', '', 'say push'],
+    ['merged-docs', 'needs-myuser', '', 'feat/merged', 'docs', '', '', '', 'read the page'],
+    ['remote-empty', 'needs-myuser', '', 'feat/remote-empty', '', '', '', '', 'say push'],
+  ]));
+  return { ...f, repo };
+}
+
+// unitRowOf, cut before the next row, so a check that a row has no flag cannot read its neighbour's.
+const ownRowOf = (html, id) => {
+  const row = unitRowOf(html, id);
+  const next = row.indexOf('<div class="u', 1);
+  return next > 0 ? row.slice(0, next) : row;
+};
+const staleOf = (snap) => Object.fromEntries(snap.lanes.lanes.find((l) => l.name === 'repo').units.map((u) => [u.id, u.stale?.text ?? null]));
+
+test('map: a needs-myuser row whose branch already landed on origin/main is flagged with why; its state is kept', () => {
+  const error = mock.method(console, 'error', () => {});
+  try {
+    const f = staleFixture();
+    const snap = snapshot({ ...f, now: NOW });
+    assert.deepEqual(staleOf(snap), {
+      rebased: 'branch already on main', squash: 'PR #12 merged', 'squash-gone': 'PR #12 merged', merged: 'branch already on main',
+      'await-rebuild': null, 'still-building': null, unpushed: null, empty: null, 'no-branch': null, typo: null,
+      'merged-docs': null, 'remote-empty': null,
+    });
+    const html = renderMap(snap);
+    const lanes = html.slice(html.indexOf('<div class="cols">'));
+    const rebased = unitRowOf(lanes, 'rebased');
+    assert.match(rebased, /<span class="state peach">you<\/span>rebased<\/span>/);
+    assert.match(rebased, /<div class="sub">say push · feat\/rebased<\/div><div class="stale" title="every commit on feat\/rebased is on origin\/main under another id, as after a rebase">looks stale: branch already on main<\/div>/);
+    assert.match(unitRowOf(lanes, 'merged'), /<div class="stale" title="feat\/merged is merged into origin\/main">looks stale: branch already on main<\/div>/);
+    assert.match(unitRowOf(lanes, 'squash'), /<div class="stale" title="origin\/main has the squash or merge commit of #12">looks stale: PR #12 merged<\/div>/);
+    for (const id of ['unpushed', 'empty', 'no-branch', 'typo', 'await-rebuild', 'merged-docs', 'remote-empty']) assert.doesNotMatch(ownRowOf(lanes, id), /class="stale"/, id);
+    // Needs you on both pages carries the flag too.
+    const needs = html.slice(html.indexOf('Needs you'), html.indexOf('<div class="cols">'));
+    assert.match(needs, /<span class="state peach">you<\/span>rebased<\/span><span class="pr">repo<\/span><\/div><div class="sub">say push<\/div><div class="stale" [^>]+>looks stale: branch already on main<\/div><\/div>/);
+    const threads = render(snapshot({ ...f, now: NOW, autoupdate: updater(HEALTHY) }));
+    assert.match(threads, /<div class="name">squash<\/div><div class="sub">[^]*?<\/div><div class="stale" [^>]+>looks stale: PR #12 merged<\/div><\/div>/);
+    // A branch git cannot find, or one only on origin whose tip is on main, is not flagged; the reason is logged once,
+    // not on every refresh.
+    const logged = error.mock.calls.map((c) => c.arguments[0]);
+    assert.deepEqual(logged, [
+      `agent-board: cannot check repo/typo for a stale row: ${f.repo.dir} has no branch feat/nope`,
+      'agent-board: cannot check repo/remote-empty for a stale row: feat/remote-empty is only on origin and its tip is on origin/main, which an empty branch also is',
+    ]);
+  } finally {
+    error.mock.restore();
+  }
+});
+
+test('map: the stale flag follows new commits on the branch and pushes to origin/main', () => {
+  const error = mock.method(console, 'error', () => {});
+  try {
+    const f = staleFixture();
+    assert.equal(staleOf(snapshot({ ...f, now: NOW })).rebased, 'branch already on main');
+    f.repo.git('checkout', '-q', 'feat/rebased');
+    f.repo.commit('r2', 'feat: more work after the rebase');
+    f.repo.git('update-ref', 'refs/remotes/origin/main', 'main');
+    const after = staleOf(snapshot({ ...f, now: NOW }));
+    assert.equal(after.rebased, null, 'new work on the branch is not on main');
+    assert.equal(after.unpushed, 'branch already on main', 'pushed to origin/main');
+  } finally {
+    error.mock.restore();
+  }
+});
+
+test('map: a lane without a usable checkout flags nothing and logs why', () => {
+  const error = mock.method(console, 'error', () => {});
+  try {
+    const f = staleFixture();
+    fs.writeFileSync(path.join(f.lanesDir, 'repo/lane.json'), JSON.stringify({ priority: 5 }));
+    const snap = snapshot({ ...f, now: NOW });
+    assert.ok(Object.values(staleOf(snap)).every((v) => v === null));
+    assert.ok(error.mock.calls.some((c) => c.arguments[0] === 'agent-board: cannot check repo/rebased for a stale row: lane.json has no checkout'));
+    fs.writeFileSync(path.join(f.lanesDir, 'repo/lane.json'), JSON.stringify({ priority: 5, checkout: path.join(f.repo.dir, 'missing') }));
+    assert.ok(Object.values(staleOf(snapshot({ ...f, now: NOW }))).every((v) => v === null));
+    assert.ok(error.mock.calls.some((c) => /^agent-board: cannot check repo\/rebased for a stale row: git cannot read /.test(c.arguments[0])));
+  } finally {
+    error.mock.restore();
+  }
 });

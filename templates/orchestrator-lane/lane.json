@@ -2,6 +2,7 @@
   "lane": "<lane>",
   "priority": 1,
   "repo": "<owner>/<repo>",
+  "checkout": "~/<repo>",
   "base": "main",
   "verification_skill": "control-<app>",
   "orchestrator_thread": "<t3 thread id>",

@@ -304,6 +304,7 @@ figure.flow{margin:0}
 <tr><td>Owner line</td><td data-h="Comes from">owner column joined to the open T3 threads the board already reads</td><td data-h="Shown as">Thread title, then its live state: <span class="green">tool 4s</span>, <span class="grey">idle 20 min</span>, <span class="peach">input card</span>, <span class="red">no activity 14 min</span>; "no owner thread" when the id is not an open thread (the unit is nobody's)</td></tr>
 <tr><td>after line</td><td data-h="Comes from">after column</td><td data-h="Shown as">A unit with one dependency nests under it. More than one, or a dependency in another lane (<code>dotfiles/runner-rebuild</code>), is written out. A dependency on a <code>needs-myuser</code> unit says "(then you)"</td></tr>
 <tr><td>since</td><td data-h="Comes from">since column</td><td data-h="Shown as">Shown on in-flight, review and blocked units. Past 8 active hours it reads <span class="yellow">stalled</span>, the review rule from 10 Oct</td></tr>
+<tr><td>looks stale</td><td data-h="Comes from">A <code>needs-myuser</code> row's branch and pr column, checked with read-only local git in <code>lane.json</code> <code>checkout</code> against <code>origin/&lt;base&gt;</code> (added 16 Oct)</td><td data-h="Shown as"><span class="yellow">looks stale: branch already on main</span> or <span class="yellow">looks stale: PR #88 merged</span> under the row, on the map and in Needs you. The row keeps its state; the coordinator fixes the file. A row whose pr is a word other than <code>push</code>, such as <code>rebuild</code>, is never flagged</td></tr>
 <tr><td>Milestone line</td><td data-h="Comes from">milestone column, titles from <code>lane.json</code></td><td data-h="Shown as">"M1 Apply · 0 of 4 done" and a thin bar: done, in-flight, review, you, blocked, paused, queued in that order. Milestones sort by their first unit's position in the file, so the coordinator orders them by writing them</td></tr>
 </table></div>
 
@@ -354,7 +355,7 @@ agent-chrome-desktop-control  done                          main</code></pre>
 </div>
 
 <h2>Fresh, missing, malformed</h2>
-<p>The map renders on request like the thread page: it reads the lane files and the T3 database each time, about six files under 100 KB, in a few milliseconds. No watcher, no cache, no background work. The page refreshes itself every 15 seconds. Each lane header shows "updated N ago" from the newest file's modification time, and goes <span class="yellow">stale</span> when its coordinator thread is running but no lane file has changed for two hours.</p>
+<p>The map renders on request like the thread page: it reads the lane files and the T3 database each time, about six files under 100 KB, in a few milliseconds. No watcher and no background work. The one cache, added 16 Oct, holds local git answers for the looks-stale check, keyed by commit, so a refresh adds one <code>git for-each-ref</code> per repo. The page refreshes itself every 15 seconds. Each lane header shows "updated N ago" from the newest file's modification time, and goes <span class="yellow">stale</span> when its coordinator thread is running but no lane file has changed for two hours.</p>
 
 <div class="tablewrap"><table>
 <thead><tr><th>When</th><th>The page shows</th></tr></thead>
@@ -392,7 +393,7 @@ agent-chrome-desktop-control  done                          main</code></pre>
 <h2>What it is not</h2>
 <ul class="dash">
 <li>Not a graph canvas. agenttrail's Map drew a repo's PLAN.md in WebGL and needed a daemon per repo. This is a list with nesting, on the server we already run.</li>
-<li>Not a second writer. The coordinator's units file is the source; the map never edits, caches or infers.</li>
+<li>Not a second writer. The coordinator's units file is the source; the map never edits it. Its one inference, added 16 Oct, is the looks-stale line on a <code>needs-myuser</code> row whose branch already landed.</li>
 <li>Not a GitHub client. PR state is the ledger's last verdict; the chip links out for the live view (D2).</li>
 <li>Not on the product repos. No PLAN.md, no hooks, no settings, no CLAUDE.md edits anywhere.</li>
 </ul>

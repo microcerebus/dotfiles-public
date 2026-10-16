@@ -4,7 +4,8 @@
 // scheduled_tasks webhook token or secret) and tails Claude Code logs for last activity, and writes nothing anywhere.
 // It also shows the dotfiles auto-updater's alarms, from that updater's own reader (scripts/dotfiles-autoupdate status).
 // A second page, /map, shows each orchestrator lane's milestones, units, owners and what waits on the owner, read from the
-// lane files under ~/orchestrator/lanes (design: docs/agent-observability/project-map.html).
+// lane files under ~/orchestrator/lanes (design: docs/agent-observability/project-map.html), plus read-only local git
+// to flag a row waiting on the owner whose branch already landed.
 // Listens on 127.0.0.1 and this Mac's Tailscale address only, never all interfaces, and answers GET for allowlisted
 // Host names only. Run by a Home Manager launchd agent (see nix/user.nix); logs go to ~/Library/Logs.
 import { spawnSync } from 'node:child_process';
@@ -268,7 +269,7 @@ function readLaneFile(dir, file, lane) {
 
 function readLane(dir, name, now) {
   const lane = {
-    name, priority: Infinity, repo: null, head: null, headRole: null, milestones: new Map(), notes: [],
+    name, priority: Infinity, repo: null, checkout: null, base: 'main', head: null, headRole: null, milestones: new Map(), notes: [],
     metaError: null, units: [], skipped: [], badSince: [], verdicts: new Map(), ledgerSkipped: [], updatedAt: null,
   };
   const meta = readLaneFile(dir, 'lane.json', lane);
@@ -285,6 +286,8 @@ function readLane(dir, name, now) {
   if (json) {
     if (Number.isFinite(json.priority)) lane.priority = json.priority;
     if (typeof json.repo === 'string' && /^[\w.-]+\/[\w.-]+$/.test(json.repo) && json.github !== false) lane.repo = json.repo;
+    if (typeof json.checkout === 'string') lane.checkout = json.checkout.replace(/^~(?=\/|$)/, os.homedir());
+    if (typeof json.base === 'string' && /^[\w][\w./-]*$/.test(json.base)) lane.base = json.base;
     lane.headRole = json.coordinator_thread ? 'coordinator' : json.orchestrator_thread ? 'orchestrator' : null;
     lane.head = json.coordinator_thread || json.orchestrator_thread || null;
     for (const m of Array.isArray(json.milestones) ? json.milestones : []) {
@@ -349,7 +352,104 @@ export function readLanes(dir = LANES, now = Date.now()) {
     u.nest = u.deps.find((d) => d.target && !d.cycle && d.target.lane === u.lane && d.target.milestone === u.milestone) ?? null;
     u.parent = u.nest?.target ?? null;
   }
+  const reads = new Map();
+  for (const lane of lanes) for (const u of lane.units) u.stale = staleReason(lane, u, reads);
   return { dir, lanes };
+}
+
+// ---- Stale needs-myuser rows ----
+// A needs-myuser row whose branch has already landed asks the owner for work that is done; on 16 Oct two such rows misled
+// the orchestrator. The map keeps the row and its state, adds a yellow "looks stale" line saying why, and leaves the
+// fix to the lane owner. It reads git in lane.json's checkout, against origin/<base> (what was pushed; <base> when
+// there is no origin), with read-only local commands and never GitHub. A row is stale when:
+//   - its PR number ends a commit subject on the base, as GitHub's squash and merge commits do (the branch may be gone);
+//   - its branch tip is an ancestor of the base (merged);
+//   - git cherry finds every commit of the branch on the base under another id (rebased, or a one-commit squash).
+// Never flagged: a row whose pr is a word other than push (rebuild, docs), which names something still the owner's to do
+// after the branch lands; a branch still at the commit it was created from, an ancestor only because it has no work
+// yet, which only a local branch's reflog can tell from a merge; and anything git cannot resolve, logged once. git merge-tree would also catch a squash merge with no PR number, but it writes objects
+// into the repo. Answers are cached per base and branch commit, so a refresh costs one for-each-ref per repo.
+// launchd gives the board no PATH beyond /usr/bin, so git is Apple's, which Homebrew already requires.
+
+const GIT_ENV = { ...process.env, GIT_OPTIONAL_LOCKS: '0' };
+const gitCache = new Map(); // checkout:base ref -> { baseSha, prs, tips: Map(ref@sha -> stale) }; reset when the base moves
+const loggedSkips = new Set(); // cleared past 500 lines, so a long-running board relogs rather than grows
+
+function git(dir, args) {
+  return spawnSync('git', ['-C', dir, ...args], { encoding: 'utf8', timeout: 5000, env: GIT_ENV, maxBuffer: 64 << 20 });
+}
+
+// Every local branch and origin branch, ref name -> commit, read once per request per checkout.
+function readRefs(checkout) {
+  const run = git(checkout, ['for-each-ref', '--format=%(objectname) %(refname)', 'refs/heads', 'refs/remotes/origin']);
+  if (run.status !== 0) return { error: `git cannot read ${tilde(checkout)}: ${(run.stderr || run.error?.message || '').trim().split('\n')[0]}` };
+  return { refs: new Map(run.stdout.split('\n').filter(Boolean).map((l) => l.split(' ').reverse())) };
+}
+
+function staleReason(lane, u, reads) {
+  const pr = /^\d+$/.test(u.pr) ? Number(u.pr) : null;
+  if (u.state !== 'needs-myuser' || (u.pr && pr === null && u.pr !== 'push') || (!u.branch && pr === null)) return null;
+  const skip = (why) => {
+    const line = `agent-board: cannot check ${lane.name}/${u.id} for a stale row: ${why}`;
+    if (loggedSkips.size > 500) loggedSkips.clear();
+    if (!loggedSkips.has(line)) console.error(line);
+    loggedSkips.add(line);
+    return null;
+  };
+  if (!lane.checkout) return skip('lane.json has no checkout');
+  if (!path.isAbsolute(lane.checkout)) return skip(`checkout ${lane.checkout} is not an absolute or ~/ path`);
+  if (!reads.has(lane.checkout)) reads.set(lane.checkout, readRefs(lane.checkout));
+  const { refs, error } = reads.get(lane.checkout);
+  if (error) return skip(error);
+  const baseRef = [`refs/remotes/origin/${lane.base}`, `refs/heads/${lane.base}`].find((r) => refs.has(r));
+  if (!baseRef) return skip(`${tilde(lane.checkout)} has no ${lane.base} branch`);
+  const repo = { checkout: lane.checkout, base: baseRef.replace(/^refs\/(?:remotes|heads)\//, ''), name: lane.base };
+  const at = `${lane.checkout}:${baseRef}`;
+  if (gitCache.get(at)?.baseSha !== refs.get(baseRef)) gitCache.set(at, { baseSha: refs.get(baseRef), prs: null, tips: new Map() });
+  const cache = gitCache.get(at);
+  repo.baseSha = cache.baseSha;
+
+  if (pr !== null) {
+    cache.prs ??= mergedPrs(repo);
+    if (cache.prs.has(pr)) return { text: `PR #${pr} merged`, title: `${repo.base} has the squash or merge commit of #${pr}` };
+  }
+  if (!u.branch || u.branch === repo.name || u.branch === repo.base) return null;
+  const ref = [`refs/heads/${u.branch}`, `refs/remotes/origin/${u.branch}`].find((r) => refs.has(r));
+  if (!ref) return skip(`${tilde(lane.checkout)} has no branch ${u.branch}`);
+  const key = `${ref}@${refs.get(ref)}`;
+  if (!cache.tips.has(key)) cache.tips.set(key, branchLanded(repo, u.branch, ref, refs.get(ref), skip));
+  return cache.tips.get(key);
+}
+
+// PR numbers merged into the base, from GitHub's subjects: "title (#12)" for a squash, "Merge pull request #12 from".
+function mergedPrs({ checkout, baseSha }) {
+  const run = git(checkout, ['log', '--format=%s', baseSha]);
+  const prs = new Set();
+  for (const s of run.status === 0 ? run.stdout.split('\n') : []) {
+    const match = /\(#(\d+)\)$/.exec(s) ?? /^Merge pull request #(\d+) /.exec(s);
+    if (match) prs.add(Number(match[1]));
+  }
+  return prs;
+}
+
+function branchLanded({ checkout, base, name, baseSha }, branch, ref, tip, skip) {
+  const landed = (how) => ({ text: `branch already on ${name}`, title: how });
+  const ancestor = git(checkout, ['merge-base', '--is-ancestor', tip, baseSha]);
+  if (ancestor.status === 0) {
+    // A merged branch or one with no commits yet. The oldest reflog entry of a local branch is its creation, and a tip
+    // still there has no commits of its own; an origin-only branch has no such record, so it is not flagged.
+    if (!ref.startsWith('refs/heads/')) return skip(`${branch} is only on origin and its tip is on ${base}, which an empty branch also is`);
+    const reflog = git(checkout, ['log', '-g', '--format=%H %gs', ref]).stdout?.trim();
+    if (!reflog) return skip(`${branch} has no reflog to tell a merge from an empty branch`);
+    if (reflog.split('\n').pop().startsWith(`${tip} branch: Created from`)) return null;
+    return landed(`${branch} is merged into ${base}`);
+  }
+  if (ancestor.status !== 1) return skip(`git merge-base failed on ${branch}`);
+  const cherry = git(checkout, ['cherry', baseSha, tip]);
+  if (cherry.status !== 0) return skip(`git cherry failed on ${branch}`);
+  const lines = cherry.stdout.split('\n').filter(Boolean);
+  if (!lines.length || lines.some((l) => !l.startsWith('- '))) return null;
+  return landed(`every commit on ${branch} is on ${base} under another id, as after a rebase`);
 }
 
 const escape = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
@@ -460,8 +560,11 @@ function unitWait(item, now) {
 function unitCard(item, now) {
   const u = item.unit;
   const meta = [u.lane, u.note, item.thread?.title, unitWait(item, now)].filter(Boolean).map(escape).join(' · ');
-  return `<div class="t needs"><div class="name">${escape(u.id)}</div><div class="sub"><span class="state peach">you</span> · ${meta}</div></div>`;
+  return `<div class="t needs"><div class="name">${escape(u.id)}</div><div class="sub"><span class="state peach">you</span> · ${meta}</div>${staleLine(u)}</div>`;
 }
+
+// The row and its state stay as written; the lane owner fixes the file (see staleReason).
+const staleLine = (u) => (u.stale ? `<div class="stale" title="${escape(u.stale.title)}">looks stale: ${escape(u.stale.text)}</div>` : '');
 
 export function render(snap) {
   const section = (title, list, cls = '', limit = Infinity) => (list.length
@@ -538,6 +641,7 @@ function unitRow(u, lane, snap) {
   if (u.state !== 'done') {
     const sub = [...ownerLine(u, snap), u.note && escape(u.note), u.branch && escape(u.branch), sinceLine(u, snap.now)].filter(Boolean);
     if (sub.length) html += `<div class="sub">${sub.join(' · ')}</div>`;
+    html += staleLine(u);
     const deps = u.deps.filter((d) => d !== u.nest);
     if (deps.length) html += `<div class="after">${u.nest ? 'also after' : 'after'} ${deps.map(depLine).join(', ')}</div>`;
   }
@@ -618,7 +722,7 @@ function needsRow(item, now) {
   const u = item.unit;
   const sub = [u.note, item.thread?.title, unitWait(item, now)].filter(Boolean).map(escape).join(' · ');
   return `<div class="u needs"><div class="row"><span class="id"><span class="state peach">you</span>${escape(u.id)}</span>`
-    + `<span class="pr">${escape(u.lane)}</span></div>${sub ? `<div class="sub">${sub}</div>` : ''}</div>`;
+    + `<span class="pr">${escape(u.lane)}</span></div>${sub ? `<div class="sub">${sub}</div>` : ''}${staleLine(u)}</div>`;
 }
 
 export function renderMap(snap) {
@@ -682,6 +786,7 @@ h2.attn{color:var(--peach)}
 .pr b{font-weight:500}.pr a{color:inherit;text-decoration:none}.pr a b{color:var(--blue)}
 .after{font-size:12px;color:var(--overlay2);margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .after b{font-weight:500;color:var(--subtext)}
+.stale{font-size:12px;color:var(--yellow);margin-top:3px}
 .kids{margin-left:12px;padding-left:10px;border-left:1px solid var(--surface1)}
 @media (min-width:900px){.cols{display:grid;grid-template-columns:minmax(0,3fr) minmax(0,2fr);gap:0 22px;align-items:start}}
 footer{color:var(--overlay1);font-size:11px;margin:20px 4px 0}footer b{font-weight:500;color:var(--yellow)}`;

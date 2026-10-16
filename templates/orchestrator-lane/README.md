@@ -13,7 +13,7 @@ Copy this directory to `~/orchestrator/lanes/<lane>/` and fill in the placeholde
   bin/orch                      CLI: status, lane new, brief lint (grows from status.mjs)
   references/                   poteto articles and other shared reading
   lanes/<lane>/
-    lane.json                   repo, base branch, verification skill, orchestrator thread id
+    lane.json                   repo, local checkout, base branch, verification skill, orchestrator thread id
     standing-orders.md          numbered rules in the owner's words (orchestrator writes)
     authorizations.md           append-only approvals and "done" confirmations (orchestrator writes)
     owners.md                   unit -> owning thread (coordinator writes)
@@ -42,7 +42,7 @@ A file without a `unit` or `state` header is rejected whole.
 | `state` | Exactly one of `queued`, `in-flight`, `review`, `needs-myuser`, `blocked`, `paused`, `done`. Any other value skips the row, and the map's footer says which line and why. |
 | `owner` | The owning T3 thread id as stored (`mcp:...`, `thread:...` or a bare uuid), or empty for unassigned. Other text shows as written, with no live state. |
 | `branch` | The git branch. |
-| `pr` | A PR number, or a short word for things that are not PRs (`rebuild`, `docs`). Numbers get the ledger's newest verdict and a link to GitHub. |
+| `pr` | A PR number, or a short word for things that are not PRs (`push`, `rebuild`, `docs`). Numbers get the ledger's newest verdict and a link to GitHub. For a `needs-myuser` unit that waits on a rebuild after its branch lands, write `rebuild`; write `push` when the owner's turn is the push. |
 | `milestone` (optional) | A milestone id. Titles come from `lane.json` `milestones`. Milestones appear in the order of their first unit in the file. |
 | `after` (optional) | Comma-separated unit ids this unit waits for. Use `lane/unit` for a unit in another lane. |
 | `since` (optional) | When the unit entered its state: `HH:MM` (today, SGT) or an ISO timestamp. In-flight, review and blocked units past 8 hours read "stalled". |
@@ -57,6 +57,15 @@ Until then its lane shows it as "then you".
 The coordinator writes `after`, `milestone` and `needs-myuser`.
 The map shows exactly what was written.
 It infers nothing from prose, reviews or GitHub.
+
+One check reads local git: a `needs-myuser` row whose work has already landed gets a yellow "looks stale" line saying why.
+The row and its state stay as written; the coordinator fixes the file.
+The board runs git in `lane.json`'s `checkout` against `origin/<base>` (`base` defaults to `main`), and never fetches.
+So a branch that lands on GitHub shows as stale only after that checkout's next fetch.
+A row looks stale when its PR number ends a commit subject on the base (GitHub's `(#12)` squash and merge commits), when its branch is an ancestor of the base, or when `git cherry` finds every commit of the branch on the base (a rebase).
+A row whose `pr` is a word other than `push` (`rebuild`, `docs`) is never flagged, because that word names something still the owner's to do after the branch lands.
+Neither is a branch still at the commit it was created from, nor a branch that exists only on origin and whose tip is on the base, since without a local reflog that looks the same as an empty branch.
+A lane without a `checkout`, or a branch git cannot find, is skipped, and the board's log says why.
 
 ## Keep from the 10 Oct improvised version
 
