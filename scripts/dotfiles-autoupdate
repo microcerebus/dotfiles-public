@@ -15,7 +15,8 @@
 #   status   the one reader of both status files, used by the zsh banner, the
 #            agent board and the SessionStart hook. Prints alarms, info and
 #            the last success of each runner, and alarms on a Lavish server
-#            whose page assets fail after a pnpm update (check_lavish).
+#            whose page assets fail after a pnpm update (check_lavish) and
+#            on a Sill.app signed by anyone but its developer (check_sill).
 #
 # launchd runs /nix/store copies of this file; root never runs the checkout.
 # `status` must also run under macOS's bash 3.2 (the agent board calls it).
@@ -442,11 +443,26 @@ check_lavish() {
   alarm "lavish: the server on :${base##*:} answers ${code:-nothing} for its page assets, so every Lavish page is blank; run lavish-axi --restart-stale-server"
 }
 
+# Sill comes from its developer's own tap (saffsanity/sill, nix/host.nix),
+# which the daily brew upgrade trusts to replace the app. A build signed by
+# anyone else means the tap or its download changed hands. codesign -dv reads
+# the signature without verifying it (about 20 ms). No Sill is fine.
+sill_team=9B2KKVM937 # Developer ID Application: NOAH WILLIAM SAFFER
+check_sill() {
+  local app=${AUTOUPDATE_SILL_APP:-/Applications/Sill.app} team
+  [ -d "$app" ] || return 0
+  team=$(codesign -dv "$app" 2>&1 | sed -n 's/^TeamIdentifier=//p')
+  [ "$team" != "$sill_team" ] || return 0
+  case $team in ''|'not set') team='no Developer ID' ;; *) team="team $team" ;; esac
+  alarm "sill: $app is signed by $team, not its developer's team $sill_team; quit it and check the saffsanity/sill tap before opening it again"
+}
+
 cmd_status() {
   now=$(date +%s)
   read_status sync "$sync_dir/sync.status" "$sync_log"
   read_status switch "$daemon_dir/status" "$daemon_log"
   check_lavish
+  check_sill
   if [ "${1:-}" = --alarms ]; then
     [ -n "$alarm_lines" ] || return 0
     printf '%s' "$alarm_lines" | sed 's/^/dotfiles auto-update: /'

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Tests for scripts/dotfiles-autoupdate against a sandboxed origin, checkout
 # and fake system generations, with stub darwin-rebuild, nix-store, pnpm,
-# brew, softwareupdate, sudo, curl and a clock. The terminal case (20) runs
+# brew, softwareupdate, sudo, curl, codesign and a clock. The terminal case (20) runs
 # the program `autoupdate-now` names, built from this flake.
 # Never touches the real system and writes only to a temp dir and the Nix
 # store. The network is used only by Nix, to fetch what that build needs.
@@ -81,6 +81,14 @@ case "$*" in
 esac
 stub-terminal-check curl
 [ "${STUB_OFFLINE:-0}" = 0 ]
+EOF
+# STUB_SILL_TEAM=<id>: codesign -dv reports an app signed by team <id>, or
+# ad hoc for "not set"; unset means not signed at all.
+cat >"$stubs/codesign" <<'EOF'
+#!/bin/sh
+[ "$1" = -dv ] || exit 2
+if [ -z "${STUB_SILL_TEAM:-}" ]; then echo "$2: code object is not signed at all" >&2; exit 1; fi
+printf 'Executable=%s/Contents/MacOS/Sill\nIdentifier=me.saffer.sill.mac\nTeamIdentifier=%s\n' "$2" "$STUB_SILL_TEAM" >&2
 EOF
 cat >"$stubs/pgrep" <<'EOF'
 #!/bin/sh
@@ -195,13 +203,12 @@ fresh() {
   root_home="$s/root"
   mkdir -p "$home/.local/state/home-manager/gcroots" "$home/Library/Logs" "$root_home" "$s/log" "$s/systems" "$s/daemon"
   touch "$s/log/calls"
-  touch "$s/log/calls"
   export STUB_LOG="$s/log" SYSTEMS="$s/systems"
   export AUTOUPDATE_USER=testuser AUTOUPDATE_HOST=testhost AUTOUPDATE_HOME="$home"
   export AUTOUPDATE_SYSTEM="$s/current-system" AUTOUPDATE_DAEMON_DIR="$s/daemon"
-  export AUTOUPDATE_STAMP="$s/daemon/stamp"
+  export AUTOUPDATE_STAMP="$s/daemon/stamp" AUTOUPDATE_SILL_APP="$s/Applications/Sill.app"
   export HM_GCROOT="$home/.local/state/home-manager/gcroots/current-home"
-  unset STUB_OFFLINE STUB_REBUILD_RUNNING STUB_PNPM_FAIL STUB_PNPM_CTRL_C STUB_BREW_OUTPUT STUB_BREW_SUDO STUB_TTY STUB_BREW_KILL STUB_SWITCH_EXIT STUB_HM_BROKEN
+  unset STUB_OFFLINE STUB_REBUILD_RUNNING STUB_PNPM_FAIL STUB_PNPM_CTRL_C STUB_BREW_OUTPUT STUB_BREW_SUDO STUB_TTY STUB_BREW_KILL STUB_SWITCH_EXIT STUB_HM_BROKEN STUB_SILL_TEAM
   at "2026-10-11 12:00"
   git init -q --bare -b main "$s/origin.git"
   git clone -q "$s/origin.git" "$s/upstream" 2>/dev/null
@@ -496,7 +503,8 @@ expect_eq "status --alarms is the banner and SessionStart text" "$(alarms)" \
 "dotfiles auto-update: sync: brew upgrade failed for karabiner-elements; run autoupdate-now in a terminal, where sudo can prompt; see $home/Library/Logs/dotfiles-sync.log
   details: dotfiles-autoupdate status"
 legacy=$(env -i HOME="$home" TZ="$TZ" PATH="$stubs:/usr/bin:/bin" FAKE_NOW="$FAKE_NOW" \
-  AUTOUPDATE_HOME="$home" AUTOUPDATE_DAEMON_DIR="$AUTOUPDATE_DAEMON_DIR" /bin/bash "$script" status)
+  AUTOUPDATE_HOME="$home" AUTOUPDATE_DAEMON_DIR="$AUTOUPDATE_DAEMON_DIR" AUTOUPDATE_SILL_APP="$AUTOUPDATE_SILL_APP" \
+  /bin/bash "$script" status)
 expect_eq "status reads the same under macOS's bash 3.2" "$legacy" "$(report)"
 
 # 18. A runner that is installed but has not run yet still shows, so the
@@ -634,7 +642,25 @@ STUB_LAVISH=404 STUB_LAVISH_APP=other expect_no_alarm "another app on the Lavish
 STUB_LAVISH=500 expect_alarm "a Lavish server failing its assets alarms with the fix" \
   "^dotfiles auto-update: lavish: the server on :4387 answers 500 for its page assets, so every Lavish page is blank; run lavish-axi --restart-stale-server$"
 legacy=$(env -i HOME="$home" TZ="$TZ" PATH="$stubs:/usr/bin:/bin" FAKE_NOW="$FAKE_NOW" STUB_LAVISH=500 \
-  AUTOUPDATE_HOME="$home" AUTOUPDATE_DAEMON_DIR="$AUTOUPDATE_DAEMON_DIR" /bin/bash "$script" status)
+  AUTOUPDATE_HOME="$home" AUTOUPDATE_DAEMON_DIR="$AUTOUPDATE_DAEMON_DIR" AUTOUPDATE_SILL_APP="$AUTOUPDATE_SILL_APP" \
+  /bin/bash "$script" status)
 expect_eq "the Lavish alarm reads the same under macOS's bash 3.2" "$legacy" "$(STUB_LAVISH=500 report)"
+
+# 23. Sill comes from its developer's own tap, which the daily brew upgrade
+# trusts to replace the app. status alarms on a Sill.app signed by anyone but
+# the developer's team, never on the developer's build or no Sill at all.
+fresh
+at "2026-10-12 05:00"; tick
+expect_no_alarm "no Sill installed is no alarm"
+mkdir -p "$AUTOUPDATE_SILL_APP"
+STUB_SILL_TEAM=9B2KKVM937 expect_no_alarm "Sill signed by its developer is no alarm"
+STUB_SILL_TEAM=ABCDE12345 expect_alarm "Sill signed by another team alarms with what to do" \
+  "^dotfiles auto-update: sill: $AUTOUPDATE_SILL_APP is signed by team ABCDE12345, not its developer's team 9B2KKVM937; quit it and check the saffsanity/sill tap before opening it again$"
+STUB_SILL_TEAM="not set" expect_alarm "an ad hoc signed Sill alarms" "sill: .* is signed by no Developer ID, not"
+expect_alarm "an unsigned Sill alarms" "sill: .* is signed by no Developer ID, not"
+legacy=$(env -i HOME="$home" TZ="$TZ" PATH="$stubs:/usr/bin:/bin" FAKE_NOW="$FAKE_NOW" STUB_SILL_TEAM=ABCDE12345 \
+  AUTOUPDATE_HOME="$home" AUTOUPDATE_DAEMON_DIR="$AUTOUPDATE_DAEMON_DIR" AUTOUPDATE_SILL_APP="$AUTOUPDATE_SILL_APP" \
+  /bin/bash "$script" status)
+expect_eq "the Sill alarm reads the same under macOS's bash 3.2" "$legacy" "$(STUB_SILL_TEAM=ABCDE12345 report)"
 
 exit "$fail"
