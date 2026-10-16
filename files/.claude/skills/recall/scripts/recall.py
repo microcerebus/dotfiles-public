@@ -19,8 +19,9 @@ CLAUDE = os.path.join(HOME, '.claude', 'projects')
 CODEX = os.path.join(HOME, '.codex', 'sessions')
 HISTORY = os.path.join(HOME, '.claude', 'history.jsonl')
 # Handoff thresholds (~/AGENTS.md, Agent operations): pause-safely at the next
-# phase boundary past HANDOFF, at once past PAUSE_NOW; 250k is the hard stop.
-HANDOFF, PAUSE_NOW = 200_000, 230_000
+# phase boundary past HANDOFF, at once past PAUSE_NOW, and nothing else past
+# HARD_STOP.
+HANDOFF, PAUSE_NOW, HARD_STOP = 200_000, 230_000, 250_000
 # Messages that arrive as "user" but were written by the harness or another agent.
 NOISE = ('<local-command', '<command-stdout', '<environment_context>', '<user_instructions>',
          '<permissions', '# AGENTS.md', '<task-notification>', 'Background command completed')
@@ -191,6 +192,9 @@ def context_tokens(path):
 
 
 def context_advice(n):
+    if n >= HARD_STOP:
+        return ('past the 250k hard stop: start no new work and use the pause-safely skill now '
+                '(if it is already under way, finish it)')
     if n >= PAUSE_NOW:
         return 'near 250k: use the pause-safely skill now'
     if n >= HANDOFF:

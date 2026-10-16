@@ -1,0 +1,63 @@
+#!/usr/bin/env node
+// SessionStart hook for the axi tools, in place of their own hooks.
+//
+// Each tool's own hook printed its whole home view into every new thread.
+// On 16 Oct 2026 Lavish listed all 70 open sessions (20.7 KB, cut to a 2 KB
+// preview), tasks-axi its in-flight tasks, and every tool a `bin:` path into
+// pnpm's store. This runs the four tools in parallel, as Claude Code ran the
+// four hooks, and keeps what tells an agent to use them: each description and
+// one-line status fields. A list becomes its count, with the command that
+// prints it in full; help lists and `bin:` are dropped.
+// merge-settings.sh removes the tools' own SessionStart hooks on each switch;
+// `<tool> setup hooks` adds one back until the next switch.
+// Tests: tests/axi_session_start_test.cjs.
+const { execFile } = require("node:child_process");
+
+const TOOLS = ["gh-axi", "chrome-devtools-axi", "lavish-axi", "tasks-axi"];
+const DROP = new Set(["bin", "help"]);
+
+function unquote(value) {
+  if (!value.startsWith('"')) return value;
+  try { return JSON.parse(value); } catch { return value; }
+}
+
+// Reads a TOON home view: top-level `key: value` lines and `key[N]...:` list
+// headers, whose rows are indented below them.
+function condense(tool, output) {
+  let description;
+  const fields = [];
+  for (const line of output.split("\n")) {
+    if (!line.trim() || /^\s/.test(line)) continue;
+    const list = line.match(/^([\w.-]+)\[(\d+)\]/);
+    if (list) {
+      if (!DROP.has(list[1])) fields.push(`${list[1]}: ${list[2]}`);
+      continue;
+    }
+    const field = line.match(/^([\w.-]+):\s*(.*)$/);
+    if (!field || DROP.has(field[1])) continue;
+    if (field[1] === "description") description = unquote(field[2]);
+    else fields.push(`${field[1]}: ${unquote(field[2])}`);
+  }
+  const status = fields.length ? ` Status: ${fields.join("; ")}.` : "";
+  return `- ${tool}: ${description ?? "(no description)"}${status}`;
+}
+
+function runTool(tool, timeout, env) {
+  return new Promise((resolve) => {
+    execFile(tool, [], { env, timeout, maxBuffer: 4 * 1024 * 1024 }, (error, stdout) => {
+      if (error?.code === "ENOENT") resolve(`- ${tool}: not installed.`);
+      else if (error?.killed) resolve(`- ${tool}: no answer within ${timeout / 1000}s; run \`${tool}\` to see it.`);
+      else if (error && !stdout) resolve(`- ${tool}: failed (${error.message.split("\n")[0]}); run \`${tool}\` to see it.`);
+      else resolve(condense(tool, stdout));
+    });
+  });
+}
+
+async function main(env = process.env, out = process.stdout) {
+  const timeout = Number(env.AXI_SESSION_START_TIMEOUT_MS) || 8000;
+  const lines = await Promise.all(TOOLS.map((tool) => runTool(tool, timeout, env)));
+  out.write(`axi tools (run one with no arguments for its full home view, lists included):\n${lines.join("\n")}\n`);
+}
+
+if (require.main === module) main();
+module.exports = { condense, main, TOOLS };

@@ -1,6 +1,6 @@
 ---
 name: pause-safely
-description: "Stop at a safe boundary, make the work durable, and leave a resume note a fresh thread can pick up. Use when told to pause or stop, before going offline or a restart, when context passes about 200k tokens at a phase boundary (always before 250k), or when a provider usage limit is about to cut the session off. Never on 'keep going'."
+description: "Stop at a safe boundary, make the work durable, and leave a resume note a fresh thread can pick up. Use when told to pause or stop, before going offline or a restart, when context passes about 200k tokens at a phase boundary (always before 250k), or when a provider usage limit is about to cut the session off. Never on 'keep going' below 250k."
 ---
 
 # Pause safely
@@ -14,8 +14,10 @@ Leave on purpose at a phase boundary before that happens; after a compaction, fi
 - the owner or the orchestrator says pause, stop or wrap up.
 - Context is past about 200k tokens and you are at a phase boundary, or near 250k at any point.
   The per-turn hook prints the count; otherwise run `python3 -I ~/.claude/skills/recall/scripts/recall.py context`.
+- Context is past 250k: always, at once. The hook repeats this after every tool call until the thread pauses.
 - A usage-limit warning, or a provider or model switch, is coming.
-- Not on "keep going", "going to bed, keep going" or "don't stop".
+- Not on "keep going", "going to bed, keep going" or "don't stop", below 250k.
+  Past 250k, pause anyway: the fresh thread is how the work keeps going.
 
 ## Steps
 

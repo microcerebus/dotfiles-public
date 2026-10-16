@@ -131,12 +131,12 @@ tool-adoption backlog; check it before adding workflow tooling).
   `nix/user.nix`) (2026-10-07).
 - The axi tools (gh-axi, chrome-devtools-axi, lavish-axi, tasks-axi) are pnpm
   globals in `$PNPM_HOME/bin` (~/Library/pnpm/bin), updated daily by the
-  `dotfiles-sync` agent (`pnpm update -g --latest`). Their SessionStart hooks
-  in `~/.claude/settings.json` call the bare command names, so updates do not
-  break them. Older `setup hooks` versions wrote absolute paths into pnpm's
-  versioned store (`~/Library/pnpm/global/v11/<hash>/...`), which went stale
-  after each update - if a hook path looks like that again, re-run
-  `<tool> setup hooks` (2026-07-09, rechecked 2026-10-07).
+  `dotfiles-sync` agent (`pnpm update -g --latest`). Claude Code runs all
+  four at session start through one managed hook, `scripts/axi-session-start`,
+  which calls the bare command names, so updates do not break it, and cuts
+  each list to a count: Lavish's own hook printed 70 sessions into every
+  thread (2026-10-16). `merge-settings.sh` removes the tools' own SessionStart
+  hooks on each switch; `<tool> setup hooks` adds one back until then.
   Bare `chrome-devtools-axi` and `lavish-axi` resolve to the wrappers in
   `scripts/` (earlier on PATH), which run the pnpm globals (2026-10-10).
 - chrome-devtools-axi and agent-device are pinned pnpm globals: the daily

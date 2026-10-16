@@ -5,9 +5,20 @@
   "autoCompactWindow": 300000,
   "claudeMdExcludes": ["/Users/*/AGENTS.md"],
   "deniedMcpServers": [{ "serverName": "claude.ai Claude Docs" }, { "serverName": "claude.ai Telegram" }],
+  "skillOverrides": {
+    "anthropic-skills:built-in-browser": "user-invocable-only",
+    "anthropic-skills:chrome-browser": "user-invocable-only",
+    "anthropic-skills:computer-use": "user-invocable-only",
+    "anthropic-skills:docs": "user-invocable-only",
+    "anthropic-skills:docx": "name-only",
+    "anthropic-skills:pdf": "name-only",
+    "anthropic-skills:pptx": "name-only",
+    "anthropic-skills:xlsx": "name-only"
+  },
   "hooks": {
     "SessionStart": [
-      { "hooks": [{ "type": "command", "command": "~/dotfiles/scripts/dotfiles-autoupdate status --alarms", "timeout": 5 }] }
+      { "hooks": [{ "type": "command", "command": "~/dotfiles/scripts/dotfiles-autoupdate status --alarms", "timeout": 5 }] },
+      { "hooks": [{ "type": "command", "command": "~/dotfiles/scripts/axi-session-start", "timeout": 10 }] }
     ],
     "UserPromptSubmit": [
       { "hooks": [{ "type": "command", "command": "python3 -I ~/.claude/hooks/turn_context.py", "timeout": 5 }] }
@@ -19,7 +30,8 @@
       { "matcher": "auto", "hooks": [{ "type": "command", "command": "python3 -I ~/.claude/hooks/pre_compact.py", "timeout": 5 }] }
     ],
     "PostToolUse": [
-      { "matcher": "Write|Edit|MultiEdit", "hooks": [{ "type": "command", "command": "python3 -I ~/.claude/hooks/write_guard.py", "timeout": 5 }] }
+      { "matcher": "Write|Edit|MultiEdit", "hooks": [{ "type": "command", "command": "python3 -I ~/.claude/hooks/write_guard.py", "timeout": 5 }] },
+      { "matcher": "*", "hooks": [{ "type": "command", "command": "python3 -I ~/.claude/hooks/turn_context.py", "timeout": 5 }] }
     ]
   }
 }

@@ -91,17 +91,47 @@ check "turn context with transcript" 0 turn_context.py "{\"transcript_path\":\"$
 if grep -q 'SGT' "$tmp/out" && grep -q '210k tokens. Past 200k' "$tmp/out"; then echo "ok   turn context text"; else echo "FAIL turn context text: $(cat "$tmp/out")"; fail=1; fi
 check "turn context without transcript" 0 turn_context.py '{}'
 grep -q 'Current time' "$tmp/out" || { echo "FAIL no time without transcript"; fail=1; }
+# Past 250k the stop is firm: every prompt repeats it, and main-thread tool calls repeat
+# it once per 5k tokens of growth. 266k is the peak of the 16 Oct job-tracker thread
+# that made 116 tool calls past 250k. The hook keeps its last stop in the temp dir.
+export TMPDIR="$tmp"
+at() { printf '{"type":"assistant","message":{"usage":{"input_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":%s}}}\n' "$1" >"$tmp/s.jsonl"; }
+tool() { check "$1" 0 turn_context.py "{\"hook_event_name\":\"PostToolUse\",${2:-}\"transcript_path\":\"$tmp/s.jsonl\"}"; }
+stop='Past the 250k hard stop: start no new work and use the pause-safely skill now'
+at 266000; tool "tool call past 250k"
+if grep -q "266k tokens. $stop" "$tmp/out" && grep -q '"hookEventName": "PostToolUse"' "$tmp/out" && ! grep -q 'SGT' "$tmp/out"; then
+  echo "ok   tool call past 250k gets the stop"; else echo "FAIL tool call past 250k: $(cat "$tmp/out")"; fail=1; fi
+tool "next tool call at the same size"
+[ ! -s "$tmp/out" ] || { echo "FAIL stop repeated with no growth: $(cat "$tmp/out")"; fail=1; }
+at 270999; tool "tool call 1 token short of 5k growth"
+[ ! -s "$tmp/out" ] || { echo "FAIL stop repeated under 5k growth: $(cat "$tmp/out")"; fail=1; }
+at 271000; tool "tool call after 5k growth"
+grep -q "271k tokens. $stop" "$tmp/out" || { echo "FAIL no stop after 5k growth: $(cat "$tmp/out")"; fail=1; }
+at 280000; check "turn context past 250k" 0 turn_context.py "{\"hook_event_name\":\"UserPromptSubmit\",\"transcript_path\":\"$tmp/s.jsonl\"}"
+grep -q "280k tokens. $stop" "$tmp/out" || { echo "FAIL prompt past 250k: $(cat "$tmp/out")"; fail=1; }
+tool "tool call right after a prompt's stop"
+[ ! -s "$tmp/out" ] || { echo "FAIL tool call repeated the prompt's stop: $(cat "$tmp/out")"; fail=1; }
+at 266000; tool "tool call after /compact and a climb back"
+grep -q "266k tokens. $stop" "$tmp/out" || { echo "FAIL no stop after a drop: $(cat "$tmp/out")"; fail=1; }
+check "tool call under 250k" 0 turn_context.py "{\"hook_event_name\":\"PostToolUse\",\"transcript_path\":\"$tmp/t.jsonl\"}"
+[ ! -s "$tmp/out" ] || { echo "FAIL tool call under 250k printed: $(cat "$tmp/out")"; fail=1; }
+# Subagent calls carry agent_id (seen in a real PostToolUse payload, 16 Oct) and the
+# main thread's transcript_path, so without the skip they would get the thread's stop.
+at 300000; tool "subagent tool call past 250k" '"agent_id":"a1",'
+[ ! -s "$tmp/out" ] || { echo "FAIL subagent got the stop: $(cat "$tmp/out")"; fail=1; }
+check "tool call without transcript" 0 turn_context.py '{"hook_event_name":"PostToolUse"}'
+[ ! -s "$tmp/out" ] || { echo "FAIL tool call without transcript printed: $(cat "$tmp/out")"; fail=1; }
 check "pre-compact backstop" 0 pre_compact.py '{"trigger":"auto"}'
 grep -q 'pause-safely' "$tmp/out" || { echo "FAIL pre-compact text: $(cat "$tmp/out")"; fail=1; }
 
 # Managed settings merge: adds owned keys, keeps everything else, idempotent.
 cat >"$tmp/settings.json" <<'JSON'
-{"theme":"dark","autoCompactEnabled":false,"hooks":{"SessionStart":[{"matcher":"","hooks":[{"type":"command","command":"gh-axi"}]},{"hooks":[{"type":"command","command":"~/dotfiles/scripts/retired-script"}]}],"UserPromptSubmit":[{"hooks":[{"type":"command","command":"other-tool"}]}],"PostToolUse":[{"hooks":[{"type":"command","command":"python3 -I ~/.claude/hooks/retired.py"}]}]}}
+{"theme":"dark","autoCompactEnabled":false,"hooks":{"SessionStart":[{"matcher":"","hooks":[{"type":"command","command":"gh-axi"}]},{"matcher":"*","hooks":[{"type":"command","command":"bash herdr-agent-state.sh session"}]},{"hooks":[{"type":"command","command":"tasks-axi"},{"type":"command","command":"echo gh-axi >> audit.log"}]},{"matcher":"","hooks":[{"type":"command","command":"node /p/pnpm/global/v11/31a7/node_modules/lavish-axi/dist/cli.mjs"}]},{"hooks":[{"type":"command","command":"~/dotfiles/scripts/retired-script"}]}],"UserPromptSubmit":[{"hooks":[{"type":"command","command":"other-tool"}]}],"PostToolUse":[{"hooks":[{"type":"command","command":"python3 -I ~/.claude/hooks/retired.py"}]}]}}
 JSON
 bash "$repo/files/.claude/merge-settings.sh" jq "$tmp/settings.json" "$repo/files/.claude/settings.managed.json"
 got="$(jq -c '[.theme, .autoCompactEnabled, .cleanupPeriodDays, [.hooks.SessionStart[].hooks[0].command], [.hooks.UserPromptSubmit[].hooks[0].command], (.hooks.PreToolUse[0].matcher), ([.hooks.PostToolUse[].hooks[0].command]|any(test("retired")))]' "$tmp/settings.json")"
-want='["dark",true,365,["gh-axi","~/dotfiles/scripts/dotfiles-autoupdate status --alarms"],["other-tool","python3 -I ~/.claude/hooks/turn_context.py"],"Bash",false]'
-if [ "$got" = "$want" ]; then echo "ok   merge keeps others' hooks, replaces ours, drops retired ones"; else echo "FAIL merge: $got, want $want"; fail=1; fi
+want='["dark",true,365,["bash herdr-agent-state.sh session","echo gh-axi >> audit.log","~/dotfiles/scripts/dotfiles-autoupdate status --alarms","~/dotfiles/scripts/axi-session-start"],["other-tool","python3 -I ~/.claude/hooks/turn_context.py"],"Bash",false]'
+if [ "$got" = "$want" ]; then echo "ok   merge keeps others' hooks, replaces ours and the axi tools' session hooks, drops retired ones"; else echo "FAIL merge: $got, want $want"; fail=1; fi
 cp "$tmp/settings.json" "$tmp/once.json"; rm -f "$tmp/settings.json.before-merge"
 bash "$repo/files/.claude/merge-settings.sh" jq "$tmp/settings.json" "$repo/files/.claude/settings.managed.json"
 if cmp -s "$tmp/once.json" "$tmp/settings.json" && [ ! -e "$tmp/settings.json.before-merge" ]; then echo "ok   merge is idempotent"; else echo "FAIL merge not idempotent"; fail=1; fi

@@ -9,7 +9,7 @@ The `correct` skill keeps it current: when the owner corrects something a rule a
 | No em dashes | `write_guard.py` (prose files), `bash_guard.py` (commit messages), `unslop` |
 | Real time, context size | `turn_context.py` prints both every turn |
 | No containers or VMs | `bash_guard.py` blocks them unless the owner wrote an unexpired `~/.claude/containers-approved-until` |
-| Context limits | `turn_context.py` nudge, `pause-safely` skill |
+| Context limits | `turn_context.py`: a nudge on each prompt past 200k; past the 250k hard stop, the stop on each prompt and after main-thread tool calls, repeated once per 5k tokens of growth (never a block); `pre_compact.py` backstop; `pause-safely` skill |
 | Handoffs list native workers, never "still hosts" | `write_guard.py` and `bash_guard.py` flag the wording in resume notes and `~/orchestrator`; `pause-safely` and `session-pickup` skills |
 | Nothing personal in the public dotfiles mirror | `scripts/public-sync` leak gate |
 | Chrome, never Brave | `lavish-axi` and `chrome-devtools-axi` wrappers in `scripts/`; rule only elsewhere |

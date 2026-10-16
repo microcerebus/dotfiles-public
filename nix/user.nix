@@ -461,9 +461,10 @@ in
   home.file.".claude/agents/reader.md".source = link "files/.claude/agents/reader.md";
   # Guardrail hooks (2026-10-10), each encoding a correction that rules alone
   # did not stop: turn_context.py prints the SGT time and the thread's context
-  # size every turn; bash_guard.py blocks container/VM starts and em dashes in
-  # commit messages; write_guard.py flags em dashes in prose files. Tests:
-  # tests/claude_hooks_test.sh.
+  # size every turn, and past the 250k hard stop repeats the stop after every
+  # tool call too (2026-10-16); bash_guard.py blocks container/VM starts and
+  # em dashes in commit messages; write_guard.py flags em dashes in prose
+  # files. Tests: tests/claude_hooks_test.sh.
   home.file.".claude/hooks/turn_context.py".source = link "files/.claude/hooks/turn_context.py";
   home.file.".claude/hooks/bash_guard.py".source = link "files/.claude/hooks/bash_guard.py";
   home.file.".claude/hooks/write_guard.py".source = link "files/.claude/hooks/write_guard.py";
@@ -480,9 +481,16 @@ in
   # and the briefs that cite it. deniedMcpServers drops the claude.ai Claude
   # Docs and Telegram connectors (no agent call in the 14 days before; alerts
   # use scripts/telegram-alert). Gmail and Calendar stay: interview hosts and
-  # orchestrators run in scratch directories that no project setting reaches.
-  # A repo whose threads never need them can commit
-  # `{"disableClaudeAiConnectors": true}` in its .claude/settings.json.
+  # orchestrators run in scratch directories that no project setting reaches,
+  # and a user-level disableClaudeAiConnectors cannot be undone per project
+  # or per thread. A repo whose threads never need them commits
+  # `{"disableClaudeAiConnectors": true}` in its .claude/settings.json; this
+  # repo does (2026-10-16), which drops 39 tool names from every thread here.
+  # skillOverrides trims the skills claude.ai syncs in (2026-10-16): the
+  # in-app browser, Claude in Chrome and computer use go against the browser
+  # and app routing in ~/AGENTS.md, and the Claude Docs skill needs the
+  # connector denied above, so the model no longer sees them (/name still
+  # works); the Word, PDF, PowerPoint and Excel skills keep only their names.
   home.activation.claudeManagedSettings = lib.hm.dag.entryAfter [ "writeBoundary" ] ''
     run ${pkgs.bash}/bin/bash ${dotfiles}/files/.claude/merge-settings.sh \
       ${pkgs.jq}/bin/jq "$HOME/.claude/settings.json" \
