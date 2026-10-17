@@ -81,9 +81,9 @@ test('fixture launch and documented Git mutations leave an external repo untouch
     assert.equal(launched.code, 0, launched.out);
     assert.equal(latest().head, null, 'launch revision came from the external repo');
     const map = await (await fetch(`${latest().urls.local}/map`)).text();
-    assert.equal(map.match(/class="stale"/g)?.length, 4, 'board Git calls used the external repo');
+    assert.equal(map.match(/class="stale"/g)?.length, 2, 'board Git calls used the external repo');
     const recipe = fs.readFileSync(path.join(REPO, '.claude/skills/verify-agent-board/features/stale-rows.md'), 'utf8');
-    for (const [step, count] of [['Branch lands', 6], ['Undo', 4]]) {
+    for (const [step, count] of [['Branch lands', 3], ['Undo', 2]]) {
       const line = recipe.split('\n').find((text) => text.startsWith(`- **${step}.**`));
       const command = line?.match(/Run `([^`]+)`/)?.[1];
       assert.ok(command, `missing actual recipe command for ${step}`);
@@ -178,7 +178,7 @@ test('a fixture run launches, passes doctor, survives a board edit, and stops ke
   assert.equal(doctor.code, 0, doctor.out);
   assert.match(doctor.out, /ok {3}pages: \/ and \/map render the fixture data/);
   const map = await (await fetch(`${run.urls.local}/map`)).text();
-  assert.equal(map.match(/class="stale"/g).length, 4);
+  assert.equal(map.match(/class="stale"/g).length, 2, "the two stale rows, in their lane only");
 
   // One run per checkout.
   const again = board(A, 'launch');
@@ -273,5 +273,117 @@ test('a run stops itself when its TTL runs out', async () => {
   await until(() => latest().stoppedAt, 20_000);
   assert.equal(latest().stopReason, 'its TTL ran out');
   assert.equal(fs.existsSync(run.scratch), false);
-  assert.equal(alive(run.keeperPid), false);
+  await until(() => !alive(run.keeperPid), 5_000); // the keeper records the stop, then exits
+});
+
+// Live data under a temp HOME, laid out like job-tracker: fixture-board/units.tsv links to state/units.tsv.
+async function liveHome(name) {
+  const home = path.join(tmp, name);
+  const { seed } = await import(path.join(REPO, SKILL, 'fixture.mjs'));
+  const { env } = seed(path.join(tmp, `${name}-seed`));
+  fs.mkdirSync(path.join(home, '.t3/userdata'), { recursive: true });
+  fs.copyFileSync(env.AGENT_BOARD_T3_DB, path.join(home, '.t3/userdata/statev2.sqlite'));
+  fs.cpSync(env.AGENT_BOARD_CLAUDE_PROJECTS, path.join(home, '.claude/projects'), { recursive: true });
+  const lanes = path.join(home, 'orchestrator/lanes');
+  fs.cpSync(env.AGENT_BOARD_LANES, lanes, { recursive: true });
+  const live = path.join(lanes, 'fixture-board/state/units.tsv');
+  fs.mkdirSync(path.dirname(live));
+  fs.renameSync(path.join(lanes, 'fixture-board/units.tsv'), live);
+  fs.symlinkSync('state/units.tsv', path.join(lanes, 'fixture-board/units.tsv'));
+  return { home, lanes, live };
+}
+
+test('a lanes copy holds real files, so editing it never writes through a symlink to the live lanes', async () => {
+  const { home, live } = await liveHome('home-link');
+  const before = fs.readFileSync(live, 'utf8');
+  const launched = boardWithEnv({ HOME: home }, A, 'launch', '--lanes-copy', '--ttl', '5');
+  try {
+    assert.equal(launched.code, 0, launched.out);
+    const copy = path.join(latest().scratch, 'lanes/fixture-board/units.tsv');
+    assert.equal(fs.lstatSync(copy).isSymbolicLink(), false, 'the copy links back into the live lanes');
+    assert.equal(fs.readFileSync(copy, 'utf8'), before);
+    fs.writeFileSync(copy, before.replace(/\tin-flight\t/g, '\tdone\t'));
+    assert.equal(fs.readFileSync(live, 'utf8'), before, 'editing the copy changed the live file');
+  } finally {
+    board(A, 'stop');
+  }
+});
+
+test('a lanes copy leaves out a directory link that loops back and anything not a file or directory', async () => {
+  const { home, lanes } = await liveHome('home-loop');
+  fs.symlinkSync('..', path.join(lanes, 'fixture-board/up'));
+  assert.equal(spawnSync('mkfifo', [path.join(lanes, 'fixture-board/pipe')]).status, 0);
+  const launched = boardWithEnv({ HOME: home }, A, 'launch', '--lanes-copy', '--ttl', '5');
+  try {
+    assert.equal(launched.code, 0, launched.out);
+    const copied = path.join(latest().scratch, 'lanes/fixture-board');
+    assert.equal(fs.existsSync(path.join(copied, 'units.tsv')), true);
+    assert.equal(fs.existsSync(path.join(copied, 'up')), false, 'the loop was copied');
+    assert.equal(fs.existsSync(path.join(copied, 'pipe')), false, 'the FIFO was copied');
+    assert.match(launched.out, /left out of the lanes copy: fixture-board\/pipe \(not a file or directory\), fixture-board\/up \(links back to a directory being copied\)/);
+  } finally {
+    board(A, 'stop');
+  }
+});
+
+test('look refuses the live board, a width that is not a number, and fails on a page that did not answer 2xx', async (t) => {
+  const look = (...args) => spawnSync(process.execPath, [path.join(REPO, SKILL, 'flows/look.mjs'), ...args],
+    { encoding: 'utf8', timeout: 60_000 });
+  const live = look('http://127.0.0.1:4790/map', path.join(tmp, 'look'), 'live', '390');
+  assert.notEqual(live.status, 0);
+  assert.match(live.stderr, /refusing the live board on port 4790/);
+  const phoneFlag = look('http://127.0.0.1:1/map', path.join(tmp, 'look'), 'flag', '--phone');
+  assert.notEqual(phoneFlag.status, 0);
+  assert.match(phoneFlag.stderr, /usage: look.mjs <url> <evidence-dir> <name> \[<width>\]/);
+
+  const listed = spawnSync('pnpm', ['ls', '-g', '--depth', '0', '--json'], { encoding: 'utf8' }).stdout ?? '';
+  if (!listed.includes('"playwright-core"')) return t.skip('playwright-core is not installed');
+  const server = net.createServer((socket) => socket.end('HTTP/1.1 500 Internal Server Error\r\ncontent-type: text/html\r\n'
+    + 'connection: close\r\n\r\n<title>agent board error</title>Could not read T3 state'));
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  try {
+    const run = spawn(process.execPath, [path.join(REPO, SKILL, 'flows/look.mjs'), `http://127.0.0.1:${server.address().port}/map`,
+      path.join(tmp, 'look'), 'broken'], { stdio: ['ignore', 'pipe', 'pipe'] });
+    let out = '';
+    run.stdout.on('data', (d) => { out += d; });
+    const [code] = await once(run, 'exit');
+    assert.equal(code, 1, out);
+    assert.match(out, /^FAIL 500/);
+  } finally {
+    server.close();
+  }
+});
+
+test('the skill drives with Playwright written flows first and names chrome-devtools-axi only as the fallback', () => {
+  const skill = fs.readFileSync(path.join(REPO, '.claude/skills/verify-agent-board/SKILL.md'), 'utf8');
+  const drive = skill.slice(skill.indexOf('\n## Drive\n'), skill.indexOf('\n## Evidence\n'));
+  const drivers = [...drive.matchAll(/^\d+\. \*\*(.+?)\*\*/gm)].map((m) => m[1]);
+  assert.match(drivers[0] ?? '', /^Playwright/, `first driver is ${drivers[0]}`);
+  assert.deepEqual(drivers.filter((d) => /chrome-devtools-axi/.test(d)), ['chrome-devtools-axi, fallback only']);
+  for (const flow of [...drive.matchAll(/`flows\/([\w-]+\.mjs)/g)].map((m) => m[1])) {
+    assert.ok(fs.existsSync(path.join(REPO, SKILL, 'flows', flow)), `Drive names a missing flow ${flow}`);
+  }
+  const readme = fs.readFileSync(path.join(REPO, '.claude/skills/verify-agent-board/features/README.md'), 'utf8');
+  assert.match(readme, /Run the feature's Playwright written flow/);
+});
+
+test('the written flows use the playwright-core version the daily sync pins', () => {
+  const pins = /^pins="([^"]*)"/m.exec(fs.readFileSync(path.join(REPO, 'scripts/dotfiles-autoupdate'), 'utf8'))[1].split(' ');
+  const pin = /const PIN = '([^']+)'/.exec(fs.readFileSync(path.join(REPO, SKILL, 'flows/playwright.mjs'), 'utf8'))[1];
+  assert.ok(pins.includes(pin), `${pin} is not in the autoupdate pins (${pins.join(' ')})`);
+  for (const flow of fs.readdirSync(path.join(REPO, SKILL, 'flows'))) {
+    const check = spawnSync(process.execPath, ['--check', path.join(REPO, SKILL, 'flows', flow)], { encoding: 'utf8' });
+    assert.equal(check.status, 0, check.stderr);
+  }
+});
+
+test('a lanes copy refuses to launch when the live lanes directory is missing', () => {
+  const home = path.join(tmp, 'home-nolanes');
+  fs.mkdirSync(home);
+  const before = fs.existsSync(STATE) ? runs().length : 0;
+  const launched = boardWithEnv({ HOME: home }, A, 'launch', '--lanes-copy', '--ttl', '5');
+  assert.equal(launched.code, 1, launched.out);
+  assert.match(launched.out, /--lanes-copy: .*orchestrator\/lanes is missing or not a directory; nothing to copy/);
+  assert.equal(fs.existsSync(STATE) ? runs().length : 0, before, 'a run was recorded');
 });

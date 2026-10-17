@@ -304,11 +304,13 @@ sync_public() { # sync_public <1 to log the result>
 
 # pnpm globals float to their latest release, except the pins, which move only
 # by reviewed commit: chrome-devtools-axi is tested against the
-# chrome-devtools-mcp pin in nix/user.nix, and agent-device ships several
-# releases a week from one publisher. pnpm 12's `--latest` moves exact pins
-# too, and a '!pkg' filter turns the whole update into a no-op, so update the
-# rest by name, then re-assert the pins (which also installs a missing one).
-pins="chrome-devtools-axi@0.1.39 agent-device@0.21.23"
+# chrome-devtools-mcp pin in nix/user.nix, agent-device ships several
+# releases a week from one publisher, and playwright-core runs the
+# verify-agent-board written flows, whose playwright.mjs names the same
+# version. pnpm 12's `--latest` moves exact pins too, and a '!pkg' filter
+# turns the whole update into a no-op, so update the rest by name, then
+# re-assert the pins (which also installs a missing one).
+pins="chrome-devtools-axi@0.1.39 agent-device@0.21.23 playwright-core@1.64.1"
 sync_pnpm() {
   local listed floating failed_steps='' pin
   log "--- pnpm globals"

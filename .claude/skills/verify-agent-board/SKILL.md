@@ -36,9 +36,9 @@ Commands below are relative to the skill directory; from the checkout root, pref
 
 | Data | Command | What the board reads |
 | --- | --- | --- |
-| fixture | `scripts/board.mjs launch --fixture` | Seeded T3 database, Claude logs, three lanes with a git checkout, and updater state with one alarm, all in the run's scratch dir. Every journey in the feature map starts here. |
+| fixture | `scripts/board.mjs launch --fixture` | Seeded T3 database, Claude logs, four lanes with a git checkout, a stub `gh` answering from editable JSON, and updater state with one alarm, all in the run's scratch dir. Every journey in the feature map starts here. |
 | live | `scripts/board.mjs launch` | The real T3 database, Claude logs, `~/orchestrator/lanes` and updater state, read-only. Use it to check a change against T3's real schema and today's lanes. |
-| lanes copy | `scripts/board.mjs launch --lanes-copy` | Live T3 data, with `~/orchestrator/lanes` copied into the scratch dir so you can edit a row without touching the real file. |
+| lanes copy | `scripts/board.mjs launch --lanes-copy` | Live T3 data, with `~/orchestrator/lanes` copied into the scratch dir so you can edit a row without touching the real file; symlinked lane files are copied as real files. |
 
 - Ready means launch printed `launched <run-id>` with the URLs and exited 0.
   It has already waited for the board's `listening on 127.0.0.1:<port>` line and for both pages to render (not the T3 error page), and in fixture mode for the seeded data to show.
@@ -63,11 +63,25 @@ Run it after launch, and again whenever anything looks off.
 
 The pages are server-rendered HTML with no buttons or forms: a journey opens a page, reads it, changes the data the board reads, and reads it again.
 
-- Browser: the agent Chrome (Google Chrome Beta on 127.0.0.1:9333) through `chrome-devtools-axi`.
-  Never Brave, never the owner's own Chrome.
-- Who drives: Codex, through the `codex-computer-use` skill (its binary and `-s danger-full-access`).
-  You keep the judgment: pick the feature file, hand Codex its Driving bullets with literal values, then check what it saved.
-  Drive with chrome-devtools-axi yourself only while Codex is out of quota, or when you are Codex.
+Drivers, in this order:
+
+1. **Playwright written flows** for repeatable journeys: scripts in `scripts/flows/`, run with `node`.
+   Each one writes its user flow down in its header, prints PASS or FAIL per step and saves the evidence.
+   They drive a headless Google Chrome with a throwaway profile (`playwright-core`, a pinned pnpm global), so they never touch the shared agent Chrome window.
+   - `flows/map-refresh.mjs`: on a fixture run, `/map` updates by itself after a `units.tsv` change ([project map](features/project-map.md)).
+   - `flows/map-pr-live.mjs`: on a fixture run, a PR's checks on `/map` update by themselves when the stub gh's answer changes, at 1440 and 390 ([project map](features/project-map.md)).
+   - `flows/look.mjs <url> <dir> <name> [<width>]`: loads one page of your run at 1440x900, or at the width given (390 is a phone, 844 tall at 3x with touch), saves a full-page screenshot and its text with the horizontal overflow measured, and fails unless the page answered 2xx.
+     Like every flow, it refuses the live board on port 4790.
+   A journey you would run twice belongs in a flow.
+2. **Codex computer use** for interactive checks no flow covers yet, through the `codex-computer-use` skill (its binary and `-s danger-full-access`), in the agent Chrome.
+   You keep the judgment: pick the feature file, hand Codex its Driving bullets with literal values, then check what it saved.
+3. **chrome-devtools-axi, fallback only**: when no flow fits and Codex is out of quota, or when you are Codex.
+   The evidence must name the fallback and why, as a `driver:` line in the run's `.txt`, such as `driver: chrome-devtools-axi (Codex out of quota, no flow for stale-rows)`.
+
+- Browser: Google Chrome only, never Brave and never the owner's own Chrome.
+  Flows launch their own headless Chrome; Codex and the fallback use the agent Chrome (Google Chrome Beta on 127.0.0.1:9333).
+- Codex follows the brief's sentences in the prompt below and never sizes the window, so the phone layout is checked through a Playwright flow (`flows/look.mjs <url> <dir> <name> 390`), not through Codex.
+  The bullets below are for the chrome-devtools-axi fallback only.
 - Values: `eval "$(scripts/board.mjs env)"` exports `BOARD_URL`, `BOARD_PHONE_URL`, `BOARD_EVIDENCE`, `BOARD_SCRATCH`, `BOARD_RUN` and `BOARD_MODE` for this checkout's latest run.
   Every tool call is a new shell, so run it at the start of each call; a Codex prompt needs the literal values, not the variable names.
 - Tabs open in the background (the wrapper does that).
@@ -80,14 +94,22 @@ The pages are server-rendered HTML with no buttons or forms: a journey opens a p
   After changing data, wait for the reload with `chrome-devtools-axi wait 16000`, or open the URL again.
 - Second view: `curl -s "$BOARD_URL/map" -o "$BOARD_EVIDENCE/<name>.html"` saves the same HTML the browser got.
 
-A Codex prompt, filled in from a feature file:
+A Codex prompt, filled in from a feature file.
+Run `agent-chrome-ready` before Codex, as its own command, and stop if it exits 1.
+It is the `codex-computer-use` skill's start-up check: it kickstarts the agent Chrome and fails if it does not come up.
+The prompt opens with that skill's three browser sentences, as written:
 
 ```sh
 eval "$(.claude/skills/verify-agent-board/scripts/board.mjs env)"
-"$CODEX" exec -s danger-full-access "Use chrome-devtools-axi, which drives the agent Chrome; never use Brave and never run resize. \
-Verify <feature> on the agent board at $BOARD_URL. Steps: <the feature file's Driving bullets, with $BOARD_URL, \
-$BOARD_SCRATCH and $BOARD_EVIDENCE written out>. Save every screenshot and eval output into $BOARD_EVIDENCE. \
-Close the tabs you opened. Finish with PASS or FAIL and one line per step saying what you saw."
+"$CODEX" exec -s danger-full-access "Drive the agent Chrome (Google Chrome Beta, its own profile on 127.0.0.1:9333) through computer use: \
+click, type and screenshot in its window. Do not use chrome-devtools-axi, Playwright or any other browser tool, and never Brave or \
+the owner's own Chrome. First bring Google Chrome Beta to the front with \
+\`osascript -e 'tell application \"System Events\" to set frontmost of process \"Google Chrome Beta\" to true'\`, which cannot start it: \
+its launchd agent is the only way Chrome Beta is ever started, so if it is not running, stop and report instead of starting it. \
+Every agent shares this one window: open your own new tab and close it when done, never resize or move the window, and never touch \
+other tabs. Verify <feature> on the agent board at $BOARD_URL. Steps: <the feature file's Driving bullets as user actions and \
+expected results, with $BOARD_URL, $BOARD_SCRATCH and $BOARD_EVIDENCE written out>. Save every screenshot into $BOARD_EVIDENCE. \
+Finish with PASS or FAIL and one line per step saying what you saw."
 ```
 
 ## Evidence
@@ -103,6 +125,7 @@ Close the tabs you opened. Finish with PASS or FAIL and one line per step saying
   - Say "fixture-verified" for fixture runs.
     The fixture proves rendering and the lane and git logic; only a live run proves the board against T3's real schema, so a change to the T3 query or the columns it reads needs a live run too.
   - Look at every screenshot before reporting: clipped or overlapping text, wrapping, horizontal scroll, and the theme (Catppuccin Mocha, JetBrains Mono).
+    `look.mjs` and `map-pr-live.mjs` record the horizontal overflow in pixels; anything but 0 is text cut off.
 - Live-mode evidence shows real thread titles and branches: keep it in the evidence dir, never commit it (every push of this repo republishes a public mirror), and share it only with the owner or the coordinator.
 
 ## Cleanup
@@ -123,6 +146,7 @@ Close the tabs you opened. Finish with PASS or FAIL and one line per step saying
 - `scripts/board.mjs`: Node 22, no packages.
   `launch [--fixture | --lanes-copy] [--ttl <minutes>]`, `doctor [<run-id> | --port <n>]`, `env [<run-id>]`, `stop [<run-id>]`, `runs`.
   `VERIFY_AGENT_BOARD_STATE` moves the state directory (the tests use it).
+- `scripts/flows/`: the Playwright written flows (see Drive) and `playwright.mjs`, which finds the pinned `playwright-core` and launches headless Google Chrome.
 - `scripts/fixture.mjs`: the seeded data.
   Its comments say what each seeded thread, row and branch is for; extend it when a feature needs a state it lacks, and say so in that feature's Gotchas.
 - `scripts/git-env.mjs`: removes inherited `GIT_*` variables before fixture Git commands, revision checks, board children and the feature recipes' Git mutations, so the caller cannot redirect them to another repository or index.

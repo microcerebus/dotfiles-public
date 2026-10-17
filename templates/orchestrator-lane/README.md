@@ -39,13 +39,13 @@ A file without a `unit` or `state` header is rejected whole.
 | Column | Holds |
 | --- | --- |
 | `unit` | `[a-z0-9][a-z0-9-]*`, unique in the file. A leading `#` is accepted and dropped. |
-| `state` | Exactly one of `queued`, `in-flight`, `review`, `needs-myuser`, `blocked`, `paused`, `done`. Any other value skips the row, and the map's footer says which line and why. |
+| `state` | Exactly one of `queued`, `in-flight`, `needs-myuser`, `paused`, `done` (the lane rule: dotfiles standing order 7, job-tracker order 55). Any other value shows as an unreadable row beside the lane and in the map's footer, with the line and why. A unit under review is `in-flight`; one that cannot move is `paused` with the note saying why. |
 | `owner` | The owning T3 thread id as stored (`mcp:...`, `thread:...` or a bare uuid), or empty for unassigned. Other text shows as written, with no live state. |
 | `branch` | The git branch. |
 | `pr` | A PR number, or a short word for things that are not PRs (`push`, `rebuild`, `docs`). Numbers get the ledger's newest verdict and a link to GitHub. For a `needs-myuser` unit that waits on a rebuild after its branch lands, write `rebuild`; write `push` when the owner's turn is the push. |
 | `milestone` (optional) | A milestone id. Titles come from `lane.json` `milestones`. Milestones appear in the order of their first unit in the file. |
 | `after` (optional) | Comma-separated unit ids this unit waits for. Use `lane/unit` for a unit in another lane. |
-| `since` (optional) | When the unit entered its state: `HH:MM` (today, SGT) or an ISO timestamp. In-flight, review and blocked units past 8 hours read "stalled". |
+| `since` (optional) | When the unit entered its state: `HH:MM` (today, SGT) or an ISO timestamp. In-flight units past 8 hours read "stalled". |
 | `note` (optional) | One short line on what is happening. For `needs-myuser`, what the owner has to do. |
 
 Every row has exactly as many fields as the header.

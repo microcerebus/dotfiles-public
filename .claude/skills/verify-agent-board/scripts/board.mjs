@@ -136,6 +136,36 @@ function exportsFor(run) {
   ].map(([k, v]) => `export ${k}='${String(v).replaceAll("'", "'\\''")}'`).join('\n');
 }
 
+// A copy with every symlink replaced by what it points to, timestamps kept. A lane file may be a link (job-tracker's
+// units.tsv -> state/units.tsv), and a copied link sends a journey's edits to the live file. fs.cpSync's dereference
+// does not reach nested links on Node 22. Left out: a broken link (the board would find it missing), a link back to a
+// directory being copied (a loop such as up -> ..), and anything not a plain file or directory (a FIFO would hang).
+// Returns what it left out, as [path, reason] relative to the top.
+function copyResolved(src, dest, ancestors = new Set(), left = [], top = src) {
+  const leave = (why) => (left.push([path.relative(top, src), why]), left);
+  let st;
+  let real;
+  try {
+    st = fs.statSync(src);
+    real = fs.realpathSync(src);
+  } catch (error) {
+    if (error.code === 'ENOENT' || error.code === 'ELOOP') return leave('broken link');
+    throw error;
+  }
+  if (st.isDirectory()) {
+    if (ancestors.has(real)) return leave('links back to a directory being copied');
+    fs.mkdirSync(dest);
+    const inside = new Set(ancestors).add(real);
+    for (const name of fs.readdirSync(src)) copyResolved(path.join(src, name), path.join(dest, name), inside, left, top);
+  } else if (st.isFile()) {
+    fs.copyFileSync(src, dest);
+  } else {
+    return leave('not a file or directory');
+  }
+  fs.utimesSync(dest, st.atime, st.mtime);
+  return left;
+}
+
 // ---- Commands ----
 
 async function launch(args) {
@@ -144,6 +174,9 @@ async function launch(args) {
   const ttlAt = args.indexOf('--ttl');
   const ttl = ttlAt >= 0 ? Number(args[ttlAt + 1]) : 60;
   if (fixture && lanesCopy) die('--fixture already seeds its own lanes; pick one');
+  if (lanesCopy && !fs.statSync(LIVE_DATA.AGENT_BOARD_LANES, { throwIfNoEntry: false })?.isDirectory()) {
+    die(`--lanes-copy: ${LIVE_DATA.AGENT_BOARD_LANES} is missing or not a directory; nothing to copy`);
+  }
   if (!(ttl > 0)) die('--ttl takes a number of minutes');
   if (!fs.existsSync(BOARD)) die(`${BOARD} is missing; is this skill inside a dotfiles checkout?`);
   const up = ownRuns().find(isUp);
@@ -161,10 +194,11 @@ async function launch(args) {
 
   let env = { ...LIVE_DATA };
   let files = {};
+  let lanesLeft = [];
   if (fixture) ({ env, files } = seed(scratch));
   if (lanesCopy) {
     env.AGENT_BOARD_LANES = path.join(scratch, 'lanes');
-    fs.cpSync(LIVE_DATA.AGENT_BOARD_LANES, env.AGENT_BOARD_LANES, { recursive: true, preserveTimestamps: true });
+    lanesLeft = copyResolved(LIVE_DATA.AGENT_BOARD_LANES, env.AGENT_BOARD_LANES);
     files = { lanes: env.AGENT_BOARD_LANES };
   }
   env.AGENT_BOARD_PORT = String(port);
@@ -201,6 +235,7 @@ async function launch(args) {
   if (name) updateRun(dir, { urls: { ...run.urls, phone: `http://${name}:${port}` } });
   const done = readRun(dir);
   console.log(`launched ${runId} (${done.mode} data${done.mode === 'live' ? ', read-only' : ''}), stops itself at ${new Date(done.expiresAt).toLocaleTimeString('en-GB', { timeZone: 'Asia/Singapore' })} SGT`);
+  if (lanesLeft.length) console.log(`left out of the lanes copy: ${lanesLeft.map(([p, why]) => `${p} (${why})`).join(', ')}`);
   console.log(`  board     ${done.urls.local}/  and  ${done.urls.local}/map`);
   if (done.urls.phone) console.log(`  phone     ${done.urls.phone}/map`);
   console.log(`  evidence  ${evidence}`);

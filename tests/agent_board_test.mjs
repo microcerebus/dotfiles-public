@@ -10,12 +10,16 @@ import os from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
-import { hostAllowed, parseSince, readUpdates, render, renderMap, snapshot, tailnetAddress } from '../files/bin/agent-board.mjs';
+import { UNIT_STATES, cachedPrs, fetchPrs, hostAllowed, parsePrs, parseReviewScope, parseSince, parseUnits, prQuery, prView, readUpdates, refreshPrs, render, renderMap, snapshot, summaryOf, tailnetAddress } from '../files/bin/agent-board.mjs';
 
 const BOARD = new URL('../files/bin/agent-board.mjs', import.meta.url);
+process.env.AGENT_BOARD_OWNER = 'the owner'; // the blockers below name the owner by given name, whatever this machine's username is
 
 const NOW = Date.parse('2026-10-11T03:30:00Z');
 const iso = (minutesAgo) => new Date(NOW - minutesAgo * 60_000).toISOString();
+
+// No test reaches GitHub: the board gets PR state from this stub unless a test injects its own.
+const noPrs = () => ({ prs: new Map(), error: null, at: null });
 
 function fixture() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-board-'));
@@ -81,7 +85,7 @@ function fixture() {
     assistant([{ type: 'text', text: 'checking' }], { input_tokens: 10, cache_creation_input_tokens: 2_000, cache_read_input_tokens: 150_000 }),
     assistant([{ type: 'tool_use', name: 'Edit' }], { input_tokens: 5, cache_creation_input_tokens: 1_000, cache_read_input_tokens: 160_000 }),
   ], 14);
-  return { dbPath, logsDir, lanesDir: path.join(dir, 'no-lanes'), autoupdate: updater(HEALTHY) };
+  return { dbPath, logsDir, lanesDir: path.join(dir, 'no-lanes'), autoupdate: updater(HEALTHY), prs: noPrs };
 }
 
 // updater(output, exit): a stand-in for `dotfiles-autoupdate status` that prints `output`.
@@ -232,7 +236,7 @@ function lanesFixture() {
     ['#ui', 'in-flight', 'mcp:run', 'feat/ui', '20', 'M1', '', '11:10', ''], // line 2
     ['pickers', 'in-flight', 'worker (opus high)', '', '', 'M1', 'ui', '', ''],
     ['ship', 'needs-myuser', '', '', 'rebuild', 'M1', 'ui', '', 'run rebuild at the Mac'],
-    ['review-me', 'review', 'mcp:gone', '', '71', 'M0', 'ship', '2026-10-11T02:00:00+08:00', ''],
+    ['review-me', 'in-flight', 'mcp:gone', '', '71', 'M0', 'ship', '2026-10-11T02:00:00+08:00', ''],
     ['ci', 'needs-myuser', '', '', 'push', 'M0', '', '10:45', 'push the runner fix'],
     ['sign', 'needs-myuser', 'mcp:ask', '', '', 'M0', 'old', '', 'review the design page'],
     ['old', 'done', '', '', '51', 'M0', '', '', ''],
@@ -240,8 +244,8 @@ function lanesFixture() {
     ['ui', 'queued', '', '', '', '', '', '', ''], // line 10
     ['short', 'queued'], // line 11
     ['ghost', 'queued', '', '', '', 'M2', 'nope,beta/x', 'soon', ''], // line 12
-    ['loop-a', 'blocked', '', '', '', 'M2', 'loop-b', '', ''],
-    ['loop-b', 'blocked', '', '', '', 'M2', 'loop-a', '', ''],
+    ['loop-a', 'queued', '', '', '', 'M2', 'loop-b', '', ''],
+    ['loop-b', 'queued', '', '', '', 'M2', 'loop-a', '', ''],
   ]));
   write('alpha/ledger.tsv', TSV([
     ['ts', 'unit', 'pr', 'head_sha', 'verdict', 'verifier', 'evidence'],
@@ -276,9 +280,20 @@ test('map: lanes in priority order, a lane without a readable lane.json last', (
   assert.match(html, /<h1><span>agent board ·<\/span> <a href="\/">threads<\/a> · <u>map<\/u><\/h1>/);
 });
 
+test('map: the states the board accepts are the lane rule\'s, as the lane template documents them', () => {
+  const readme = fs.readFileSync(new URL('../templates/orchestrator-lane/README.md', import.meta.url), 'utf8');
+  const row = readme.split('\n').find((l) => l.startsWith('| `state` |'));
+  assert.ok(row, 'the template documents the state column');
+  const documented = [...row.slice(0, row.indexOf('(')).matchAll(/`([a-z-]+)`/g)].map((m) => m[1]).filter((w) => w !== 'state');
+  assert.deepEqual(documented, UNIT_STATES);
+  assert.deepEqual(UNIT_STATES, ['queued', 'in-flight', 'needs-myuser', 'paused', 'done'], 'standing order 7');
+  assert.deepEqual(parseUnits(TSV([['unit', 'state'], ['a', 'review'], ['b', 'blocked'], ['c', 'in-flight']])).skipped.map((r) => r.why),
+    ['unknown state "review"', 'unknown state "blocked"']);
+});
+
 test('map: missing, legacy and malformed units files say so and render no rows', () => {
   const html = mapHtml();
-  assert.match(html, /<b>gamma<\/b><small>priority 2 · <span class="peach">no coordinator thread<\/span> · updated 10 min ago<\/small><\/div><div class="note">no units file<\/div>/);
+  assert.match(html, /<b>gamma<\/b><small>priority 2 · <span class="peach">no coordinator thread<\/span> · <span class="kept">updated 10 min ago<\/span><\/small><\/div><div class="note">no units file<\/div>/);
   assert.match(html, /<div class="note">legacy layout: state\/units\.tsv converts in phase 2<\/div>/);
   assert.match(html, /<div class="note">units\.tsv: no state column<\/div>/);
   assert.doesNotMatch(html, /<\/span>#?20<\/span>/);
@@ -290,24 +305,30 @@ test('map: skipped rows, bad dependencies and bad ledger rows are counted in the
   assert.match(footer, /^<footer>Read-only view of .* lanes and T3 state\. alpha: <b>3 rows skipped, 3 dependencies unresolved, 1 since unreadable, 1 ledger row skipped<\/b> /);
   assert.match(footer, /\(unknown state &quot;landed&quot;, line 9; duplicate unit &quot;ui&quot;, line 10; 2 fields, header has 9, line 11; 5 more\)/);
   for (const id of ['landed-row', 'short']) assert.doesNotMatch(html, new RegExp(`</span>${id}</span>`));
+  // The same rows are warnings beside the lane, where their unit would be, so a lane never loses rows silently.
+  const alpha = html.slice(html.indexOf('<b>alpha</b>'), html.indexOf('<div class="ms">'));
+  assert.match(alpha, /<div class="u warn"><div class="row"><span class="id"><span class="state yellow">unreadable<\/span>units.tsv line 9<\/span><span class="pr">landed-row<\/span><\/div><div class="sub yellow">unknown state &quot;landed&quot;; states are queued, in-flight, needs-myuser, paused, done<\/div><\/div>/);
+  assert.match(alpha, /unreadable<\/span>units.tsv line 11<\/span><\/div><div class="sub yellow">2 fields, header has 9<\/div>/);
+  assert.equal((alpha.match(/class="u warn"/g) ?? []).length, 3);
 });
 
-test('map: milestones in file order with done counts and a bar in state order', () => {
+test('map: milestones in file order with done counts, a bar filled by done only and a key in its title', () => {
   const html = mapHtml();
   const m1 = html.indexOf('<b>M1 Apply</b><span>0 of 3 done</span>');
   const m0 = html.indexOf('<b>M0</b><span>1 of 4 done</span>');
   const m2 = html.indexOf('<b>M2</b><span>0 of 3 done</span>');
   assert.ok(m1 > 0 && m0 > m1 && m2 > m0, `milestones at ${m1}, ${m0}, ${m2}`);
-  assert.match(html.slice(m0), /^[^]*?<div class="bar"><i style="width:25\.0%;background:var\(--green\)"><\/i><i style="width:25\.0%;background:var\(--sapphire\)"><\/i><i style="width:50\.0%;background:var\(--peach\)"><\/i><\/div>/);
+  assert.match(html.slice(m0), /^[^]*?<div class="bar" title="1 in-flight, 2 needs-myuser, 1 done"><i style="width:25\.0%"><\/i><\/div>/);
+  assert.match(html.slice(m1), /^[^]*?<div class="bar" title="2 in-flight, 1 needs-myuser"><\/div>/, 'nothing done, nothing filled');
 });
 
 test('map: unit rows show state, PR verdict, owner and its live state, and nest under the unit they wait for', () => {
   const html = mapHtml();
   const ui = unitRowOf(html, 'ui');
-  assert.match(ui, /<span class="state green">in-flight<\/span>ui<\/span><span class="pr"><a href="https:\/\/github\.com\/o\/alpha\/pull\/20" title="approve r2" rel="noreferrer"><b>#20<\/b> approve r2<\/a>/);
+  assert.match(ui, /<span class="state green">in-flight<\/span>ui<\/span><span class="pr"><a href="https:\/\/github\.com\/o\/alpha\/pull\/20" rel="noreferrer"><b>#20<\/b> approve r2<\/a>/);
   assert.match(ui, /<div class="sub">Coordinator 13 · <span class="green">[^<]+<\/span> · feat\/ui · since 11:10<\/div><\/div><div class="kids">/);
   assert.match(unitRowOf(html, 'pickers'), /<div class="sub">worker \(opus high\)<\/div>/);
-  assert.match(unitRowOf(html, 'ship'), /<span class="state peach">then you<\/span>ship<\/span><span class="pr">rebuild<\/span><\/div><div class="sub">run rebuild at the Mac<\/div><\/div>/);
+  assert.match(unitRowOf(html, 'ship'), /<span class="state peach">then you<\/span>ship<\/span><span class="pr">rebuild<\/span><\/div><div class="unit-note">run rebuild at the Mac<\/div><\/div>/);
   const review = unitRowOf(html, 'review-me');
   assert.match(review, /<b>#71<\/b> no verdict/);
   assert.match(review, /<span class="peach">no owner thread<\/span> · <span class="yellow">stalled since 02:00<\/span>/);
@@ -320,24 +341,30 @@ test('map: a missing or cyclic dependency is drawn in yellow and the units still
   const html = mapHtml();
   assert.match(unitRowOf(html, 'ghost'), /<div class="after">after <span class="yellow">\? nope<\/span>, <b>beta\/x<\/b><\/div>/);
   assert.match(unitRowOf(html, 'loop-a'), /<div class="after">after <span class="yellow">loop-b \(cycle\)<\/span><\/div>/);
-  assert.match(unitRowOf(html, 'loop-b'), /<span class="state red">blocked<\/span>loop-b/);
+  assert.match(unitRowOf(html, 'loop-b'), /<span class="state grey">queued<\/span>loop-b/);
 });
 
-test('map: Needs you merges input cards with units that are the owner\'s turn, oldest first, each once', () => {
+test('map: Needs you merges input cards with units that are the owner\'s turn, oldest first, each once, as one line each', () => {
   const html = mapHtml();
   const needs = html.slice(html.indexOf('Needs you · 3'), html.indexOf('<div class="cols">'));
-  const order = ['>ci</span>', '>sign</span>', '>macOS update &lt;script&gt;'].map((s) => needs.indexOf(s));
+  const order = ['>ci</b>', '>sign</b>', '>macOS update &lt;script&gt;'].map((s) => needs.indexOf(s));
   assert.ok(order.every((at, i) => at > 0 && (i === 0 || at > order[i - 1])), `needs order ${order}`);
-  assert.match(needs, /<span class="pr">alpha<\/span><\/div><div class="sub">push the runner fix · since 10:45<\/div>/);
-  assert.match(needs, /<div class="sub">review the design page · Design worker · input card · asked 11:10<\/div>/);
+  // The list is the to-do: the ask, the wait and where to act; the unit's detail stays in its lane, so a phone page
+  // does not carry every row twice.
+  assert.match(needs, /<div class="u needs todo"><span class="state peach">you<\/span><b class="id">ci<\/b><span class="ask">push the runner fix · since 10:45<\/span><span class="tag">alpha<\/span><\/div>/);
+  assert.match(needs, /<b class="id">sign<\/b><span class="ask">review the design page · Design worker · input card · asked 11:10<\/span><span class="tag">alpha<\/span>/);
+  assert.match(needs, /<b class="id">macOS update &lt;script&gt;alert\(1\)&lt;\/script&gt;<\/b><span class="ask">input card · asked 11:24 · macos<\/span><span class="tag">dotfiles<\/span>/);
+  assert.doesNotMatch(needs, /pr-block|unit-note|<div class="sub">/);
   assert.doesNotMatch(needs, />Design worker</);
   assert.doesNotMatch(needs, />ship</);
+  const lane = html.slice(html.indexOf('<div class="cols">'));
+  assert.match(unitRowOf(lane, 'ci'), /<div class="u needs"><div class="row"><span class="id"><span class="state peach">you<\/span>ci<\/span><span class="pr">push<\/span><\/div><div class="sub">since 10:45<\/div><div class="unit-note">push the runner fix<\/div>/);
 });
 
 test('map: the lane header shows its coordinator live and goes stale after two quiet hours', () => {
   const html = mapHtml();
-  assert.match(html, /<b>alpha<\/b><small>priority 1 · Coordinator 13 <span class="green">running<\/span> · <span class="yellow">stale, updated 3 h ago<\/span><\/small>/);
-  assert.match(html, /<b>epsilon<\/b><small>priority 3 · Practice thread <span class="grey">idle 30 min<\/span> · updated 10 min ago<\/small>/);
+  assert.match(html, /<b>alpha<\/b><small>priority 1 · Coordinator 13 <span class="kept"><span class="green">running<\/span><\/span> · <span class="yellow kept">stale, updated 3 h ago<\/span><\/small>/);
+  assert.match(html, /<b>epsilon<\/b><small>priority 3 · Practice thread <span class="kept"><span class="grey">idle 30 min<\/span><\/span> · <span class="kept">updated 10 min ago<\/span><\/small>/);
 });
 
 test('the thread page links the map and lists lane units that wait on the owner', () => {
@@ -487,16 +514,19 @@ test('map: a needs-myuser row whose branch already landed on origin/main is flag
     const html = renderMap(snap);
     const lanes = html.slice(html.indexOf('<div class="cols">'));
     const rebased = unitRowOf(lanes, 'rebased');
-    assert.match(rebased, /<span class="state peach">you<\/span>rebased<\/span>/);
-    assert.match(rebased, /<div class="sub">say push · feat\/rebased<\/div><div class="stale" title="every commit on feat\/rebased is on origin\/main under another id, as after a rebase">looks stale: branch already on main<\/div>/);
-    assert.match(unitRowOf(lanes, 'merged'), /<div class="stale" title="feat\/merged is merged into origin\/main">looks stale: branch already on main<\/div>/);
-    assert.match(unitRowOf(lanes, 'squash'), /<div class="stale" title="origin\/main has the squash or merge commit of #12">looks stale: PR #12 merged<\/div>/);
+    // A stale row is the lane owner's cleanup, not the owner's turn: it reads stale, not you, and leaves Needs you.
+    assert.match(rebased, /^<div class="u"><div class="row"><span class="id"><span class="state yellow">stale<\/span>rebased<\/span>/);
+    assert.match(rebased, /<div class="sub">feat\/rebased<\/div><div class="unit-note">say push<\/div><div class="stale" title="every commit on feat\/rebased is on origin\/main under another id, as after a rebase">looks stale: branch already on main · lane owner&#39;s cleanup<\/div>/);
+    assert.match(unitRowOf(lanes, 'merged'), /<div class="stale" title="feat\/merged is merged into origin\/main">looks stale: branch already on main · lane owner&#39;s cleanup<\/div>/);
+    assert.match(unitRowOf(lanes, 'squash'), /<div class="stale" title="origin\/main has the squash or merge commit of #12">looks stale: PR #12 merged · lane owner&#39;s cleanup<\/div>/);
     for (const id of ['unpushed', 'empty', 'no-branch', 'typo', 'await-rebuild', 'merged-docs', 'remote-empty']) assert.doesNotMatch(ownRowOf(lanes, id), /class="stale"/, id);
-    // Needs you on both pages carries the flag too.
+    assert.match(unitRowOf(lanes, 'unpushed'), /<span class="state peach">you<\/span>unpushed<\/span>/, 'a row whose work is not on main is still his turn');
     const needs = html.slice(html.indexOf('Needs you'), html.indexOf('<div class="cols">'));
-    assert.match(needs, /<span class="state peach">you<\/span>rebased<\/span><span class="pr">repo<\/span><\/div><div class="sub">say push<\/div><div class="stale" [^>]+>looks stale: branch already on main<\/div><\/div>/);
+    for (const id of ['rebased', 'squash', 'squash-gone', 'merged']) assert.doesNotMatch(needs, new RegExp(`>${id}<`), `${id} asks for nothing`);
+    assert.match(needs, />unpushed</);
     const threads = render(snapshot({ ...f, now: NOW, autoupdate: updater(HEALTHY) }));
-    assert.match(threads, /<div class="name">squash<\/div><div class="sub">[^]*?<\/div><div class="stale" [^>]+>looks stale: PR #12 merged<\/div><\/div>/);
+    assert.doesNotMatch(threads, /<div class="name">squash<\/div>/);
+    assert.match(threads, /<div class="name">unpushed<\/div>/);
     // A branch git cannot find, or one only on origin whose tip is on main, is not flagged; the reason is logged once,
     // not on every refresh.
     const logged = error.mock.calls.map((c) => c.arguments[0]);
@@ -538,5 +568,347 @@ test('map: a lane without a usable checkout flags nothing and logs why', () => {
     assert.ok(error.mock.calls.some((c) => /^agent-board: cannot check repo\/rebased for a stale row: git cannot read /.test(c.arguments[0])));
   } finally {
     error.mock.restore();
+  }
+});
+
+// ---- /map: PR state from GitHub, the ledger under state/, warnings beside the lane, stale lanes ----
+
+// What gh's GraphQL answer holds for one PR, as prQuery asks for it.
+function prNode(number, overrides = {}, { checks = [], preview = null } = {}) {
+  return {
+    number, title: `PR ${number}`, url: `https://github.com/o/jobs/pull/${number}`, isDraft: false, state: 'OPEN', mergedAt: null,
+    mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN', reviewDecision: '', headRefOid: 'abc1234abc1234abc1234abc1234abc1234abc12345',
+    headRefName: `feat/${number}`, baseRefName: 'main', updatedAt: iso(15), body: '## Context\n\nThe private workspace needs a usable list of roles.\n\n## Solution\n\nLeads.',
+    commits: { nodes: [{ commit: {
+      statusCheckRollup: checks.length ? { state: 'PENDING', contexts: { nodes: checks } } : null,
+      deployments: { nodes: preview ? [{ environment: 'Preview', latestStatus: { state: 'SUCCESS', environmentUrl: preview } }] : [] },
+    } }] },
+    ...overrides,
+  };
+}
+const run = (name, conclusion, status = 'COMPLETED') => ({ __typename: 'CheckRun', name, status, conclusion, detailsUrl: `https://ci/${name}` });
+const context = (name, state) => ({ __typename: 'StatusContext', context: name, state, targetUrl: `https://ctx/${name}` });
+
+test('prView: draft, open, ready, blocked with why, merged; checks newest per name; the preview on the head', () => {
+  const blocked = prView(prNode(1, { mergeStateStatus: 'BLOCKED' }, {
+    checks: [run('build', 'SUCCESS'), run('lint', 'CANCELLED'), run('lint', 'FAILURE'), run('e2e', null, 'IN_PROGRESS'), context('Vercel', 'SUCCESS')],
+    preview: 'https://jobs-git-feat-1.example.app',
+  }));
+  assert.equal(blocked.state, 'blocked');
+  assert.deepEqual(blocked.blockers, ['1 check failing: lint']);
+  assert.deepEqual(blocked.checks.map((c) => `${c.name}:${c.result}`), ['build:pass', 'lint:fail', 'e2e:pending', 'Vercel:pass']);
+  assert.equal(blocked.checksPending, 1);
+  assert.deepEqual(blocked.preview, { url: 'https://jobs-git-feat-1.example.app', state: 'success', environment: 'Preview' });
+  assert.equal(blocked.head, 'abc1234');
+  assert.equal(blocked.summary, 'Leads.', 'the Solution section, not the Context');
+  assert.equal(prView(prNode(2, { isDraft: true, mergeStateStatus: 'BEHIND' })).state, 'draft');
+  const draft = prView(prNode(10, { isDraft: true, mergeStateStatus: 'BLOCKED', reviewDecision: 'REVIEW_REQUIRED' }, { checks: [run('lint', 'FAILURE')] }));
+  assert.equal(draft.state, 'draft');
+  assert.deepEqual(draft.blockers, ['1 check failing: lint'], 'a draft is not up for review: its failing checks and conflicts are the author\'s to fix');
+  assert.equal(prView(prNode(3)).state, 'ready');
+  const running = prView(prNode(4, { mergeStateStatus: 'BLOCKED' }, { checks: [run('e2e', null, 'QUEUED')] }));
+  assert.equal(running.state, 'open', 'a required check still running is not a blocker');
+  assert.deepEqual(prView(prNode(5, { mergeable: 'CONFLICTING', reviewDecision: 'CHANGES_REQUESTED', mergeStateStatus: 'DIRTY' })).blockers,
+    ['conflicts with main', 'changes requested']);
+  assert.deepEqual(prView(prNode(6, { mergeStateStatus: 'BLOCKED', reviewDecision: 'REVIEW_REQUIRED' })).blockers, ['review required']);
+  assert.deepEqual(prView(prNode(7, { mergeStateStatus: 'BLOCKED' })).blockers, ['a required check or review is missing']);
+  const merged = prView(prNode(8, { state: 'MERGED', mergedAt: iso(60), mergeStateStatus: 'UNKNOWN' }));
+  assert.equal(merged.state, 'merged');
+  assert.equal(merged.mergedAt, NOW - 3600_000);
+  assert.equal(prView(prNode(9, { body: '', commits: { nodes: [] } })).summary, null);
+  assert.equal(summaryOf('## Heading\n- bullet\nA short one.\nThis line is the first long enough to be a sentence. And then more.'),
+    'This line is the first long enough to be a sentence.', 'without a Solution section, the first prose sentence');
+  assert.equal(summaryOf('Closes #12\nStacked on #11, merge that first.\nPart of the map redesign.\n\nShows each check as it finishes, so the map reads like the PR page.'),
+    'Shows each check as it finishes, so the map reads like the PR page.', 'issue and stacking lines are boilerplate');
+  assert.equal(summaryOf('## Context and problem\n\nThe rows clip.\n\n## Solution\n\nWrap every line, keep the PR title as the headline and read the summary from here. Then more.\n\n## Reproduce and test\n\nRun it.'),
+    'Wrap every line, keep the PR title as the headline and read the summary from here.');
+  assert.equal(summaryOf(`## Solution\n\n${'word '.repeat(50).trim()}.`), `${'word '.repeat(50).trim()}.`, 'a long sentence is shown whole, never cut with an ellipsis');
+  assert.equal(summaryOf('## Solution\n\n'), null);
+  // gh's bodyText is the markdown rendered to text ("## Solution" arrives as "Solution"), so the query asks for the body.
+  assert.match(prQuery([1]), /\bbody\b/, 'the markdown body');
+  assert.doesNotMatch(prQuery([1]), /bodyText/, 'not the rendered text, whose headings are gone');
+  assert.equal(summaryOf('## Solution\n\nLeads.\n\n## Reproduce and test the whole flow end to end\n\nRun it.'), 'Leads.',
+    'a short Solution is not passed over for the heading that follows it');
+});
+
+test('parsePrs reads gh\'s JSON by alias and reports what gh could not answer', () => {
+  const good = parsePrs(JSON.stringify({ data: { repository: { p7: prNode(7), p8: null } } }));
+  assert.equal(good.error, null);
+  assert.deepEqual([...good.prs.keys()], [7]);
+  assert.equal(parsePrs('not json').error, 'gh returned no JSON');
+  assert.equal(parsePrs(JSON.stringify({ errors: [{ message: 'Bad credentials' }] })).error, 'Bad credentials');
+  const scope = parseReviewScope(JSON.stringify({ prs: { 7: { mergeBlockers: ['CI', ' '], independentApprovedHead: 'abc', priorIndependentRoundsUsed: 2, extraReviewAllowance: 1 }, x: {} } }));
+  assert.deepEqual([...scope.reviews], [[7, { blockers: ['CI'], approvedHead: 'abc', rounds: 2, extra: 1 }]]);
+  assert.match(parseReviewScope('{').error, /JSON/);
+});
+
+test('fetchPrs runs gh once per repo and keeps going when gh fails', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-board-gh-'));
+  const answer = path.join(dir, 'answer.json');
+  fs.writeFileSync(answer, JSON.stringify({ data: { repository: { p7: prNode(7) } } }));
+  const gh = path.join(dir, 'gh');
+  fs.writeFileSync(gh, `#!/bin/sh\nprintf '%s\\n' "$@" > "${dir}/args"\ncat "${answer}"\n`, { mode: 0o755 });
+  const got = await fetchPrs('o/jobs', [7, 9], { gh });
+  assert.equal(got.error, null);
+  assert.equal(got.prs.get(7).title, 'PR 7');
+  const args = fs.readFileSync(path.join(dir, 'args'), 'utf8').split('\n');
+  assert.deepEqual(args.slice(0, 6), ['api', 'graphql', '-f', 'owner=o', '-f', 'name=jobs'], 'string fields go through -f, which never coerces them');
+  assert.match(args[7], /p7: pullRequest\(number: 7\) \{ \.\.\.F \} p9: pullRequest\(number: 9\)/);
+  fs.writeFileSync(gh, '#!/bin/sh\necho "gh: Bad credentials" >&2\nexit 1\n');
+  const failed = await fetchPrs('o/jobs', [7], { gh });
+  assert.equal(failed.error, 'gh exited 1: gh: Bad credentials');
+  assert.equal(failed.prs.size, 0);
+  assert.match((await fetchPrs('o/jobs', [7], { gh: path.join(dir, 'missing') })).error, /^cannot run gh: /);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+// A stub gh whose answer is a JSON file the test rewrites between calls, as the fixture's is.
+function stubGh(prs) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-board-gh-'));
+  const answer = path.join(dir, 'answer.json');
+  const gh = path.join(dir, 'gh');
+  const script = `#!/bin/sh\nprintf '%s\\n' "$@" > "${dir}/args"\ncat "${answer}"\n`;
+  // set answers (and heals a stub that fail broke); fail makes gh exit 1 with why on stderr.
+  const set = (nodes, extra = {}) => {
+    fs.writeFileSync(answer, JSON.stringify({ data: { repository: Object.fromEntries(nodes.map((n) => [`p${n.number}`, n])) }, ...extra }));
+    fs.writeFileSync(gh, script, { mode: 0o755 });
+  };
+  set(prs);
+  return { gh, dir, set, args: () => fs.readFileSync(path.join(dir, 'args'), 'utf8').split('\n'), fail: (why) => fs.writeFileSync(gh, `#!/bin/sh\necho "${why}" >&2\nexit 1\n`) };
+}
+
+test('the PR cache is per repo and PR: a new unit keeps the known PRs, an outage keeps the last good answer, a dropped unit is evicted', async () => {
+  const stub = stubGh([prNode(7), prNode(8)]);
+  const repo = 'cache/test';
+  await refreshPrs(repo, [7, 8], { gh: stub.gh });
+  assert.deepEqual([...cachedPrs(repo, [7, 8], NOW, { gh: stub.gh }).prs.keys()], [7, 8]);
+  // A third unit appears: the two known PRs stay on the page while the union is fetched.
+  stub.set([prNode(7), prNode(8), prNode(9)]);
+  const widened = cachedPrs(repo, [7, 8, 9], NOW, { gh: stub.gh });
+  assert.deepEqual([...widened.prs.keys()], [7, 8], 'known PRs are not dropped while the new one loads');
+  assert.equal(widened.error, null, 'and the lane header does not turn yellow');
+  assert.deepEqual([...(await refreshPrs(repo, [7, 8, 9], { gh: stub.gh })).prs.keys()], [7, 8, 9]);
+  assert.match(stub.args()[7], /p7: pullRequest\(number: 7\)[^]*p9: pullRequest\(number: 9\)/, 'the union was asked for');
+  // gh breaks: every PR keeps its last good state and the error is reported once.
+  stub.fail('gh: Bad credentials');
+  const errors = mock.method(console, 'error', () => {});
+  await refreshPrs(repo, [7, 8, 9], { gh: stub.gh });
+  await refreshPrs(repo, [7, 8, 9], { gh: stub.gh });
+  const down = cachedPrs(repo, [7, 8, 9], NOW, { gh: stub.gh });
+  assert.deepEqual([...down.prs.keys()], [7, 8, 9]);
+  assert.equal(down.error, 'gh exited 1: gh: Bad credentials');
+  assert.equal(errors.mock.callCount(), 1, 'the same gh failure is logged once, not every refresh');
+  errors.mock.restore();
+  // A unit finishes: its PR leaves the cache on the next successful fetch, and a PR gh no longer returns leaves too.
+  stub.set([prNode(8)]);
+  const after = await refreshPrs(repo, [8, 9], { gh: stub.gh });
+  assert.deepEqual([...after.prs.keys()], [8], 'evicted 7 (no unit asks) and 9 (gh has no such PR)');
+  // A partial GraphQL answer (errors beside data) does not evict the PR it could not answer.
+  stub.set([prNode(8)], { errors: [{ message: 'timeout on p9' }] });
+  await refreshPrs(repo, [8, 9], { gh: stub.gh });
+  stub.set([prNode(8), prNode(9)]);
+  await refreshPrs(repo, [8, 9], { gh: stub.gh });
+  stub.set([prNode(8)], { errors: [{ message: 'timeout on p9' }] });
+  assert.deepEqual([...(await refreshPrs(repo, [8, 9], { gh: stub.gh })).prs.keys()], [8, 9]);
+  fs.rmSync(stub.dir, { recursive: true, force: true });
+});
+
+test('prView keeps only https links from GitHub\'s answer', () => {
+  const view = prView(prNode(1, { url: 'javascript:alert(1)' }, {
+    checks: [{ __typename: 'CheckRun', name: 'lint', status: 'COMPLETED', conclusion: 'SUCCESS', detailsUrl: 'http://ci/lint' }, run('build', 'SUCCESS')],
+    preview: 'ftp://preview.example',
+  }));
+  assert.equal(view.url, null);
+  assert.deepEqual(view.checks.map((c) => c.url), [null, 'https://ci/build']);
+  assert.equal(view.preview, null);
+});
+
+// A lane laid out as job-tracker keeps its files: the ledger and review budgets under state/, a row in a state the
+// board does not know, and nothing touched for two days.
+function jobsFixture({ prs, days = 2 } = {}) {
+  const f = fixture();
+  const dir = path.join(path.dirname(f.dbPath), 'lanes');
+  const old = new Date(NOW - days * 86_400_000);
+  const write = (file, text) => {
+    fs.mkdirSync(path.dirname(path.join(dir, file)), { recursive: true });
+    fs.writeFileSync(path.join(dir, file), text);
+    fs.utimesSync(path.join(dir, file), old, old);
+  };
+  write('jobs/lane.json', JSON.stringify({ priority: 1, repo: 'o/jobs', github: true, milestones: [{ id: 'J1', title: 'Leads' }] }));
+  write('jobs/units.tsv', TSV([
+    UNIT_COLUMNS,
+    ['leads', 'in-flight', 'worker', 'feat/leads', '7', 'J1', '', iso(30), 'hosted walkthrough next'],
+    ['exports', 'in-progress', 'worker', 'feat/exports', '', 'J1', '', iso(30), ''], // line 3
+    ['apply', 'paused', '', 'feat/apply', '8', 'J1', 'leads', iso(30), 'waits for the batch'],
+    ['old', 'done', '', '', '5', 'J1', '', '', ''],
+  ]));
+  write('jobs/state/ledger.tsv', TSV([
+    ['pr', 'head', 'verdict', 'by', 'at', 'notes'],
+    ['7', 'abc1234', 'approve r1', 'fable', '09:10', ''],
+    ['8', 'ddd0000', 'changes r1', 'opus', '09:40', ''],
+    ['5', 'eee0000', 'merged', 'coordinator', '08:00', ''],
+    ['x', '', 'approve', 'opus', '', ''], // line 5
+  ]));
+  write('jobs/state/review-scope-ledger.json', JSON.stringify({ prs: {
+    7: { priorIndependentRoundsUsed: 2, extraReviewAllowance: 1, independentApprovedHead: 'abc1234abc1234abc1234abc1234abc1234abc12345', mergeBlockers: ['hosted walkthrough on abc1234'] },
+    8: { priorIndependentRoundsUsed: 1, extraReviewAllowance: 0, mergeBlockers: ['the owner picks the job batch (order 56)', 'rebase after #7'] },
+  } }));
+  const asked = [];
+  const source = prs ?? ((repo, numbers) => {
+    asked.push([repo, numbers]);
+    return { at: NOW - 20_000, error: null, prs: new Map([
+      [7, prView(prNode(7, { mergeStateStatus: 'BLOCKED' }, { checks: [run('verify', 'SUCCESS'), run('preview', null, 'IN_PROGRESS')], preview: 'https://jobs-git-feat-leads.example.app' }))],
+      [8, prView(prNode(8, { isDraft: true, mergeStateStatus: 'BEHIND', headRefOid: 'ccc3333ccc3333ccc3333ccc3333ccc3333ccc33333' }, { checks: [run('verify', 'SUCCESS')] }))],
+    ]) };
+  });
+  return { ...f, lanesDir: dir, autoupdate: null, prs: source, asked };
+}
+
+// The whole rendered row of one unit, up to the next row or the end of its lane.
+const fullRowOf = (html, id) => {
+  const start = html.lastIndexOf('<div class="u', html.indexOf(`</span>${id}</span>`));
+  const rest = html.slice(start + 1);
+  const end = Math.min(...['<div class="u"', '<div class="u ', '</section>'].map((m) => rest.indexOf(m)).filter((i) => i >= 0));
+  return html.slice(start, start + 1 + end);
+};
+
+test('map: a unit\'s PR shows its GitHub state, head, preview, checks and summary, with the ledger read from state/', () => {
+  const f = jobsFixture();
+  const html = renderMap(snapshot({ ...f, now: NOW }));
+  assert.deepEqual(f.asked, [['o/jobs', [7, 8]]], 'asks GitHub for the open units\' PRs only, once per repo');
+  const leads = fullRowOf(html, 'leads');
+  assert.match(leads, /<span class="pr"><a href="https:\/\/github\.com\/o\/jobs\/pull\/7" rel="noreferrer"><b>#7<\/b> <span class="subtext">open<\/span><\/a><\/span>/);
+  // The PR title is the headline and the summary comes from its Solution section.
+  assert.match(leads, /<\/div><div class="title">PR 7<\/div><div class="summary">Leads\.<\/div><div class="sub">/);
+  assert.match(leads, /<div class="unit-note">hosted walkthrough next<\/div>/);
+  // One status line per PR; the check list and the review budget fold under it, and the summary names what is folded.
+  assert.match(leads, /<div class="pr-block"><div class="meta"><span class="yellow">1 check running<\/span> · head <code>abc1234<\/code> · <a class="link" href="https:\/\/jobs-git-feat-leads\.example\.app" rel="noreferrer">preview ↗<\/a> · verdict approve r1 on this head<\/div><details class="more"><summary><span class="count">1\/2 checks<\/span> · review ledger<\/summary>/);
+  assert.match(leads, /<div class="checks"><a class="check" href="https:\/\/ci\/verify" rel="noreferrer" title="pass"><i class="dot pass"><\/i>verify<\/a><a class="check" href="https:\/\/ci\/preview" rel="noreferrer" title="pending"><i class="dot pending"><\/i>preview<\/a><\/div>/);
+  assert.match(leads, /<div class="meta">review ledger: hosted walkthrough on abc1234 · <span class="green">approved at this head<\/span> · 2 review rounds, 1 extra allowed<\/div><\/details><\/div>/);
+  const apply = fullRowOf(html.slice(html.indexOf('<section>')), 'apply'); // the lane's row, not the Needs you one
+  assert.match(apply, /<b>#8<\/b> <span class="overlay">draft<\/span>/);
+  assert.match(apply, /<div class="meta">behind main · head <code>ccc3333<\/code> · <span class="overlay">no preview<\/span> · verdict changes r1 on an older head ddd0000<\/div>/);
+  // A blocker that is the owner's action stays inline; the rest of the ledger folds.
+  assert.match(apply, /<div class="meta peach">review ledger: the owner picks the job batch \(order 56\)<\/div><details class="more"><summary><span class="count">1\/1 checks<\/span> · review ledger<\/summary><div class="checks">[^]*?<\/div><div class="meta">review ledger: rebase after #7 · 1 review round<\/div><\/details>/);
+  // A done unit's PR is not asked for; its chip keeps the ledger's verdict.
+  assert.match(unitRowOf(html, 'old'), /<b>#5<\/b> merged<\/a>/);
+});
+
+test('map: a draft PR\'s failing check reaches its status line', () => {
+  const f = jobsFixture({ prs: () => ({ at: NOW - 20_000, error: null, prs: new Map([
+    [8, prView(prNode(8, { isDraft: true, mergeStateStatus: 'BLOCKED', reviewDecision: 'REVIEW_REQUIRED' }, { checks: [run('verify', 'SUCCESS'), run('lint', 'FAILURE')] }))],
+  ]) }) });
+  const html = renderMap(snapshot({ ...f, now: NOW }));
+  const apply = fullRowOf(html.slice(html.indexOf('<section>')), 'apply');
+  assert.match(apply, /<b>#8<\/b> <span class="overlay">draft<\/span>/);
+  assert.match(apply, /<div class="meta"><span class="red">blocked on: 1 check failing: lint<\/span> · head <code>abc1234<\/code>/);
+});
+
+test('map: lanes on one repo share one gh call, so neither evicts the other\'s PRs', () => {
+  const f = jobsFixture();
+  const dir = path.join(f.lanesDir, 'jobs-docs');
+  fs.mkdirSync(dir);
+  fs.writeFileSync(path.join(dir, 'lane.json'), JSON.stringify({ priority: 2, repo: 'o/jobs', github: true, milestones: [{ id: 'D1', title: 'Docs' }] }));
+  fs.writeFileSync(path.join(dir, 'units.tsv'), TSV([UNIT_COLUMNS, ['guide', 'in-flight', 'worker', 'docs/guide', '9', 'D1', '', iso(30), '']]));
+  const html = renderMap(snapshot({ ...f, now: NOW }));
+  assert.deepEqual(f.asked, [['o/jobs', [7, 8, 9]]], 'one call per repo with every lane\'s open PRs');
+  assert.match(fullRowOf(html, 'leads'), /<b>#7<\/b> <span class="subtext">open<\/span>/);
+  assert.match(fullRowOf(html, 'guide'), /<b>#9<\/b>/);
+});
+
+test('fetchPrs decodes gh\'s output as UTF-8 across chunk boundaries', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-board-gh-'));
+  const bytes = Buffer.from(JSON.stringify({ data: { repository: { p7: prNode(7, { title: 'café on the map' }) } } }), 'utf8');
+  const cut = bytes.indexOf(Buffer.from('é', 'utf8')) + 1; // between the two bytes of é
+  fs.writeFileSync(path.join(dir, 'part1'), bytes.subarray(0, cut));
+  fs.writeFileSync(path.join(dir, 'part2'), bytes.subarray(cut));
+  const gh = path.join(dir, 'gh');
+  fs.writeFileSync(gh, `#!/bin/sh\ncat "${dir}/part1"\nsleep 0.3\ncat "${dir}/part2"\n`, { mode: 0o755 });
+  const got = await fetchPrs('o/jobs', [7], { gh });
+  assert.equal(got.prs.get(7)?.title, 'café on the map', 'a multibyte character split across two stdout chunks');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('map: a PR blocker that names the owner is in Needs you; GitHub trouble shows on the lane, not as a crash', () => {
+  const f = jobsFixture();
+  const html = renderMap(snapshot({ ...f, now: NOW }));
+  assert.match(html, /<title>\(2\) project map<\/title>/);
+  // The row links where he acts: the PR, and the preview when there is one.
+  assert.match(html, /<h2 class="attn">Needs you · 2<\/h2>[^]*?<b class="id">apply<\/b><span class="ask">the owner picks the job batch \(order 56\) · since 11:00 · <a href="https:\/\/github\.com\/o\/jobs\/pull\/8" rel="noreferrer"><b>#8<\/b> <span class="overlay">draft<\/span><\/a><\/span><span class="tag">jobs<\/span><\/div>/);
+  assert.match(render(snapshot({ ...f, now: NOW, autoupdate: updater(HEALTHY) })), /<div class="name">apply<\/div><div class="sub"><span class="state peach">you<\/span> · jobs · the owner picks the job batch \(order 56\) · since 11:00 · <a href="https:\/\/github\.com\/o\/jobs\/pull\/8" rel="noreferrer"><b>#8<\/b> <span class="overlay">draft<\/span><\/a><\/div>/);
+  const blocked = jobsFixture({ prs: () => ({ at: NOW - 1000, error: null, prs: new Map([[7, prView(prNode(7, { mergeStateStatus: 'BLOCKED' }, { checks: [run('lint', 'FAILURE')] }))]]) }) });
+  const row = fullRowOf(renderMap(snapshot({ ...blocked, now: NOW })), 'leads');
+  assert.match(row, /^<div class="u blocked">/);
+  assert.match(row, /<b>#7<\/b> <span class="red">blocked<\/span>/);
+  assert.match(row, /<div class="meta"><span class="red">blocked on: 1 check failing: lint<\/span> · head <code>abc1234<\/code> · <span class="overlay">no preview<\/span> · verdict approve r1 on this head<\/div>/);
+  assert.match(row, /<summary><span class="count">0\/1 checks<\/span> · review ledger<\/summary>/);
+  const down = jobsFixture({ prs: () => ({ at: NOW - 1000, error: 'gh exited 1: gh: Bad credentials', prs: new Map() }) });
+  const downHtml = renderMap(snapshot({ ...down, now: NOW }));
+  assert.match(downHtml, /<b>jobs<\/b><small>priority 1 · no coordinator · <span class="yellow kept">stale since 9 Oct<\/span> · <span class="yellow">GitHub: gh exited 1: gh: Bad credentials<\/span><\/small>/);
+  assert.match(unitRowOf(downHtml, 'leads'), /<b>#7<\/b> approve r1<\/a>/, 'the ledger verdict stands in while GitHub is unreachable');
+  const loading = jobsFixture({ prs: () => ({ at: null, error: 'loading PR state from GitHub', prs: new Map() }) });
+  assert.match(renderMap(snapshot({ ...loading, now: NOW })), /<span class="yellow">GitHub: loading PR state from GitHub<\/span>/);
+});
+
+test('map: Needs you skips done units, lists one item per PR, and only blockers whose action is the owner\'s, each linked', () => {
+  const f = fixture();
+  const dir = path.join(path.dirname(f.dbPath), 'lanes');
+  fs.mkdirSync(path.join(dir, 'acts/state'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'acts/lane.json'), JSON.stringify({ priority: 1, repo: 'o/acts', github: true }));
+  fs.writeFileSync(path.join(dir, 'acts/units.tsv'), TSV([
+    UNIT_COLUMNS,
+    ['shipped', 'done', '', '', '5', '', '', '', ''],
+    ['front', 'in-flight', 'w1', 'feat/front', '7', '', '', iso(30), ''],
+    ['back', 'in-flight', 'w2', 'feat/back', '7', '', '', iso(20), 'same PR as front'],
+    ['later', 'paused', '', 'feat/later', '8', '', '', iso(10), ''],
+    ['budget', 'in-flight', 'w3', 'feat/budget', '9', '', '', iso(5), ''],
+    ['waiting', 'needs-myuser', '', 'feat/waiting', '9', '', '', iso(2), 'approve the budget'],
+  ]));
+  fs.writeFileSync(path.join(dir, 'acts/state/review-scope-ledger.json'), JSON.stringify({ prs: {
+    5: { mergeBlockers: ['the owner signs off'] }, // done: his sign-off happened
+    7: { mergeBlockers: ['the owner picks the job batch (order 56)'] }, // his, once
+    8: { mergeBlockers: ["rebase after the owner's PR lands", 'CI must pass'] }, // names him, not his action
+    9: { mergeBlockers: ['needs the owner to approve the budget'] }, // his, but the needs-myuser unit on the same PR already asks
+  } }));
+  const prs = () => ({ at: NOW - 1000, error: null, prs: new Map([
+    [7, prView(prNode(7, {}, { preview: 'https://acts-git-feat-front.example.app' }))], [8, prView(prNode(8))], [9, prView(prNode(9))],
+  ]) });
+  const html = renderMap(snapshot({ ...f, lanesDir: dir, autoupdate: null, prs, now: NOW }));
+  assert.match(html, /<title>\(3\) project map<\/title>/, 'two units and the fixture thread with an input card');
+  const needs = html.slice(html.indexOf('Needs you · 3'), html.indexOf('<div class="cols">'));
+  assert.match(needs, /<b class="id">waiting<\/b><span class="ask">approve the budget · since 11:28 · <a href="https:\/\/github\.com\/o\/jobs\/pull\/9" rel="noreferrer"><b>#9<\/b> <span class="green">ready<\/span><\/a><\/span>/);
+  assert.match(needs, /<b class="id">front<\/b><span class="ask">the owner picks the job batch \(order 56\) · since 11:00 · <a href="https:\/\/github\.com\/o\/jobs\/pull\/7" rel="noreferrer"><b>#7<\/b> <span class="green">ready<\/span><\/a> · <a class="link" href="https:\/\/acts-git-feat-front\.example\.app" rel="noreferrer">preview ↗<\/a><\/span>/);
+  for (const id of ['shipped', 'back', 'later', 'budget']) assert.doesNotMatch(needs, new RegExp(`>${id}<`), id);
+  // A done unit without a ledger verdict shows its PR number alone, not "no verdict".
+  assert.match(unitRowOf(html, 'shipped'), /<span class="pr"><a href="https:\/\/github\.com\/o\/acts\/pull\/5" rel="noreferrer"><b>#5<\/b><\/a><\/span><\/div><\/div>/);
+});
+
+test('map: a row the board cannot read is a warning beside its lane, a stale lane says since when, and ledger problems are named', () => {
+  const f = jobsFixture();
+  const html = renderMap(snapshot({ ...f, now: NOW }));
+  const lane = html.slice(html.indexOf('<b>jobs</b>'), html.indexOf('<div class="ms">'));
+  assert.match(lane, /<span class="yellow kept">stale since 9 Oct<\/span> · <span class="kept">PRs 20s ago<\/span><\/small><\/div>/);
+  assert.match(lane, /<div class="note">state\/ledger\.tsv: 1 row skipped \(line 5: pr &quot;x&quot; is not a number\)<\/div>/);
+  assert.match(lane, /<div class="u warn"><div class="row"><span class="id"><span class="state yellow">unreadable<\/span>units\.tsv line 3<\/span><span class="pr">exports<\/span><\/div><div class="sub yellow">unknown state &quot;in-progress&quot;; states are queued, in-flight, needs-myuser, paused, done<\/div><\/div>/);
+  assert.match(html, /<footer>[^]*jobs: <b>1 row skipped, 1 ledger row skipped<\/b>/);
+  const fresh = jobsFixture({ days: 0.5 });
+  assert.match(renderMap(snapshot({ ...fresh, now: NOW })), /<b>jobs<\/b><small>priority 1 · no coordinator · <span class="kept">updated 12 h ago<\/span> · <span class="kept">PRs 20s ago<\/span><\/small>/);
+  // No ledger at all is said once, since the lane has open PRs.
+  fs.rmSync(path.join(f.lanesDir, 'jobs/state/ledger.tsv'));
+  assert.match(renderMap(snapshot({ ...f, now: NOW })), /<div class="note">no ledger: no ledger\.tsv or state\/ledger\.tsv, so PRs have no verdict<\/div>/);
+});
+
+test('map: nothing is clipped: no line is kept to one row with an ellipsis, on the phone or the desktop', () => {
+  const html = renderMap(snapshot({ ...jobsFixture(), now: NOW }));
+  const style = html.slice(html.indexOf('<style>'), html.indexOf('</style>'));
+  assert.doesNotMatch(style, /text-overflow|line-clamp/);
+  // The clock stays on a phone, and a short time phrase ("updated 5 min ago") never breaks with "ago" on its own line.
+  assert.doesNotMatch(style, /\.clock\{display:none\}/);
+  assert.match(style, /\.kept\{white-space:nowrap\}/);
+  assert.match(html, /<small><span class="clock">\d\d:\d\d:\d\d SGT<\/span> · refreshes every 15s<\/small>/);
+  for (const cls of ['.sub', '.id', '.pr', '.after', '.title', '.summary', '.unit-note', '.meta', '.note', '.ask', '.check']) {
+    const rule = style.slice(style.indexOf(`\n${cls}{`) + 1 || style.indexOf(`}${cls}{`) + 1);
+    assert.match(rule.slice(0, rule.indexOf('}')), /overflow-wrap:anywhere/, cls);
+    assert.doesNotMatch(rule.slice(0, rule.indexOf('}')), /white-space:nowrap/, cls);
   }
 });

@@ -8,7 +8,7 @@
 // to flag a row waiting on the owner whose branch already landed.
 // Listens on 127.0.0.1 and this Mac's Tailscale address only, never all interfaces, and answers GET for allowlisted
 // Host names only. Run by a Home Manager launchd agent (see nix/user.nix); logs go to ~/Library/Logs.
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
@@ -24,6 +24,13 @@ const SELF = fileURLToPath(import.meta.url);
 const AUTOUPDATE = path.join(path.dirname(SELF), '../../scripts/dotfiles-autoupdate');
 const QUIET_MS = 10 * 60_000; // a running thread with no log write for this long is flagged
 const REFRESH_S = 15;
+// PR state comes from GitHub through gh, once per repo, refreshed in the background after this long, so a check that
+// finishes shows on the next page refresh and a page never waits on the network.
+const PR_TTL_MS = Number(process.env.AGENT_BOARD_PR_TTL_MS ?? 45_000);
+// launchd gives the board no PATH beyond /usr/bin, so gh is looked for where Home Manager and Homebrew put it.
+const GH = process.env.AGENT_BOARD_GH ?? [
+  path.join('/etc/profiles/per-user', os.userInfo().username, 'bin/gh'), '/run/current-system/sw/bin/gh', '/opt/homebrew/bin/gh', '/usr/local/bin/gh',
+].find((p) => fs.existsSync(p)) ?? 'gh';
 const TAIL_BYTES = 512 * 1024;
 const IDLE_SHOWN = 12;
 const ACTIVE_RUNS = ['running', 'starting', 'preparing', 'queued'];
@@ -125,8 +132,8 @@ export function readUpdates(script = AUTOUPDATE) {
   return updates;
 }
 
-// autoupdate: null skips the updater, which only the thread page shows.
-export function snapshot({ dbPath = T3_DB, logsDir = CLAUDE_PROJECTS, lanesDir = LANES, now = Date.now(), autoupdate = AUTOUPDATE } = {}) {
+// autoupdate: null skips the updater, which only the thread page shows. prs: where PR state comes from (the gh cache).
+export function snapshot({ dbPath = T3_DB, logsDir = CLAUDE_PROJECTS, lanesDir = LANES, now = Date.now(), autoupdate = AUTOUPDATE, prs = cachedPrs } = {}) {
   const rows = readThreads(dbPath);
   const logs = indexLogs(logsDir);
   const titles = new Map(rows.map((r) => [r.id, r.title]));
@@ -165,7 +172,7 @@ export function snapshot({ dbPath = T3_DB, logsDir = CLAUDE_PROJECTS, lanesDir =
     idle: shown.filter((t) => t.state === 'idle'),
     // Unit owners and lane coordinators may be any open thread, including the idle children hidden above.
     threads: new Map(threads.map((t) => [t.id, t])),
-    lanes: readLanes(lanesDir, now),
+    lanes: readLanes(lanesDir, now, prs),
   };
 }
 
@@ -174,7 +181,9 @@ export function snapshot({ dbPath = T3_DB, logsDir = CLAUDE_PROJECTS, lanesDir =
 // lane coordinator and the verifiers (templates/orchestrator-lane/README.md has the columns). Read on every request
 // and never written. A bad file or row is reported on the page, never guessed at.
 
-export const UNIT_STATES = ['done', 'in-flight', 'review', 'needs-myuser', 'blocked', 'paused', 'queued'];
+// The lane rule (dotfiles standing order 7, job-tracker order 55) allows exactly these; templates/orchestrator-lane/README.md
+// documents the same list, and tests/agent_board_test.mjs fails when the two drift apart.
+export const UNIT_STATES = ['queued', 'in-flight', 'needs-myuser', 'paused', 'done'];
 const UNIT_ID = /^[a-z0-9][a-z0-9-]*$/;
 // T3 ids as stored: mcp:<uuid>, thread:<...> or a bare uuid. Owner text that looks like neither is prose.
 const THREAD_ID = /^(?:[a-z]+:\S+|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i;
@@ -209,7 +218,7 @@ export function parseUnits(text) {
       : !UNIT_STATES.includes(state) ? `unknown state "${state}"`
         : seen.has(id) ? `duplicate unit "${id}"` : null;
     if (why) {
-      skipped.push({ line, why });
+      skipped.push({ line, why, id });
       continue;
     }
     seen.add(id);
@@ -223,11 +232,13 @@ export function parseUnits(text) {
   return { error: null, units, skipped };
 }
 
-// The ledger is append-only, so a PR's last row is its newest verdict.
+// The ledger is append-only, so a PR's last row is its newest verdict. The head it was given on (head or head_sha)
+// tells whether the verdict still applies to the PR's current head.
 export function parseLedger(text) {
   const { header, rows } = readTsv(text);
   const missing = ['pr', 'verdict'].filter((name) => !header.includes(name));
   if (missing.length) return { error: `no ${missing.join(' or ')} column`, verdicts: new Map(), skipped: [] };
+  const headColumn = ['head', 'head_sha'].find((name) => header.includes(name));
   const verdicts = new Map();
   const skipped = [];
   for (const { line, fields } of rows) {
@@ -237,9 +248,32 @@ export function parseLedger(text) {
       : !/^\d+$/.test(pr) ? `pr "${pr}" is not a number`
         : !verdict ? 'no verdict' : null;
     if (why) skipped.push({ line, why });
-    else verdicts.set(Number(pr), verdict);
+    else verdicts.set(Number(pr), { verdict, head: headColumn ? fields[header.indexOf(headColumn)] : '' });
   }
   return { error: null, verdicts, skipped };
+}
+
+// review-scope-ledger.json (job-tracker's review budgets): per PR, what still blocks its merge, the head an
+// independent review approved, and the rounds used. Anything else in the file is the coordinator's business.
+export function parseReviewScope(text) {
+  let json;
+  try {
+    json = JSON.parse(text);
+  } catch (error) {
+    return { error: error.message.split('\n')[0], reviews: new Map() };
+  }
+  const reviews = new Map();
+  for (const [key, entry] of Object.entries(json?.prs && typeof json.prs === 'object' ? json.prs : {})) {
+    if (!/^\d+$/.test(key) || !entry || typeof entry !== 'object') continue;
+    reviews.set(Number(key), {
+      blockers: (Array.isArray(entry.mergeBlockers) ? entry.mergeBlockers : []).filter((b) => typeof b === 'string' && b.trim()).map((b) => b.trim()),
+      approvedHead: typeof entry.independentApprovedHead === 'string' ? entry.independentApprovedHead : null,
+      rounds: Number.isFinite(entry.priorIndependentRoundsUsed) ? entry.priorIndependentRoundsUsed
+        : Number.isFinite(entry.ordinaryRoundsUsed) ? entry.ordinaryRoundsUsed : null,
+      extra: Number.isFinite(entry.extraReviewAllowance) ? entry.extraReviewAllowance : null,
+    });
+  }
+  return { error: null, reviews };
 }
 
 // since is HH:MM today in SGT (yesterday if that is still ahead of now) or an ISO timestamp. undefined = unreadable.
@@ -270,7 +304,8 @@ function readLaneFile(dir, file, lane) {
 function readLane(dir, name, now) {
   const lane = {
     name, priority: Infinity, repo: null, checkout: null, base: 'main', head: null, headRole: null, milestones: new Map(), notes: [],
-    metaError: null, units: [], skipped: [], badSince: [], verdicts: new Map(), ledgerSkipped: [], updatedAt: null,
+    metaError: null, units: [], skipped: [], badSince: [], verdicts: new Map(), ledgerSkipped: [], reviews: new Map(), updatedAt: null,
+    prs: new Map(), prError: null, prsAt: null,
   };
   const meta = readLaneFile(dir, 'lane.json', lane);
   let json = null;
@@ -314,21 +349,35 @@ function readLane(dir, name, now) {
     if (u.sinceAt === undefined) lane.badSince.push({ line: u.line, why: `since "${u.since}" is not HH:MM or ISO` });
   }
 
-  const ledger = readLaneFile(dir, 'ledger.tsv', lane);
-  if (ledger.error && ledger.error !== 'missing') lane.notes.push(`ledger.tsv: ${ledger.error}`);
-  if (ledger.text !== undefined) {
+  // The ledger lives at ledger.tsv, or under state/ where job-tracker keeps it (the phase-2 move never happened).
+  const ledgerFile = ['ledger.tsv', 'state/ledger.tsv'].find((f) => fs.existsSync(path.join(dir, f))) ?? 'ledger.tsv';
+  const ledger = readLaneFile(dir, ledgerFile, lane);
+  if (ledger.error === 'missing') {
+    if (lane.units.some((u) => /^\d+$/.test(u.pr) && u.state !== 'done')) lane.notes.push('no ledger: no ledger.tsv or state/ledger.tsv, so PRs have no verdict');
+  } else if (ledger.error) {
+    lane.notes.push(`${ledgerFile}: ${ledger.error}`);
+  } else {
     const parsed = parseLedger(ledger.text);
-    if (parsed.error) lane.notes.push(`ledger.tsv: ${parsed.error}`);
+    if (parsed.error) lane.notes.push(`${ledgerFile}: ${parsed.error}`);
     lane.verdicts = parsed.verdicts;
     lane.ledgerSkipped = parsed.skipped;
+    lane.ledgerFile = ledgerFile;
+  }
+  const scopeFile = ['review-scope-ledger.json', 'state/review-scope-ledger.json'].find((f) => fs.existsSync(path.join(dir, f)));
+  if (scopeFile) {
+    const scope = readLaneFile(dir, scopeFile, lane);
+    const parsed = scope.error ? { error: scope.error, reviews: new Map() } : parseReviewScope(scope.text);
+    if (parsed.error) lane.notes.push(`${scopeFile}: ${parsed.error}`);
+    lane.reviews = parsed.reviews;
   }
   return lane;
 }
 
 // Lanes in priority order, a lane without a readable lane.json last. Each unit's after list is resolved across lanes
 // (lane/unit), and an edge whose target can reach the unit back is a cycle. A needs-myuser unit is the owner's turn ("you")
-// once every unit it waits for is done; until then its lane shows "then you". lanes is null without a lanes directory.
-export function readLanes(dir = LANES, now = Date.now()) {
+// once every unit it waits for is done and its branch has not already landed; until then its lane shows "then you" or
+// "stale". lanes is null without a lanes directory.
+export function readLanes(dir = LANES, now = Date.now(), prs = cachedPrs) {
   let names;
   try {
     names = fs.readdirSync(dir).filter((n) => !n.startsWith('.') && fs.statSync(path.join(dir, n), { throwIfNoEntry: false })?.isDirectory());
@@ -337,6 +386,19 @@ export function readLanes(dir = LANES, now = Date.now()) {
   }
   const lanes = names.map((n) => readLane(path.join(dir, n), n, now))
     .sort((a, b) => (a.metaError ? 1 : 0) - (b.metaError ? 1 : 0) || a.priority - b.priority || a.name.localeCompare(b.name));
+  // GitHub state for every open unit's PR, from the gh cache; a done unit's PR has landed and the ledger says so.
+  // Lanes on one repo ask together: the cache is per repo, and two lanes asking apart would evict each other's PRs.
+  const asking = new Map(lanes.map((lane) => [lane, lane.repo ? lane.units.filter((u) => u.state !== 'done' && /^\d+$/.test(u.pr)).map((u) => Number(u.pr)) : []]));
+  const byRepo = new Map();
+  for (const [lane, numbers] of asking) if (numbers.length) byRepo.set(lane.repo, [...new Set([...(byRepo.get(lane.repo) ?? []), ...numbers])]);
+  const entries = new Map([...byRepo].map(([repo, numbers]) => [repo, prs(repo, numbers, now)]));
+  for (const [lane, numbers] of asking) {
+    if (!numbers.length) continue;
+    const entry = entries.get(lane.repo);
+    lane.prs = entry.prs;
+    lane.prError = entry.error;
+    lane.prsAt = entry.at;
+  }
   const units = lanes.flatMap((lane) => lane.units);
   const byKey = new Map(units.map((u) => [`${u.lane}/${u.id}`, u]));
   for (const u of units) {
@@ -344,17 +406,203 @@ export function readLanes(dir = LANES, now = Date.now()) {
   }
   const reaches = (from, to, seen) => from === to
     || (!seen.has(from) && seen.add(from) && from.deps.some((d) => d.target && reaches(d.target, to, seen)));
+  const reads = new Map();
+  for (const lane of lanes) {
+    for (const u of lane.units) {
+      u.stale = staleReason(lane, u, reads);
+      u.github = /^\d+$/.test(u.pr) ? lane.prs.get(Number(u.pr)) ?? null : null;
+      u.review = /^\d+$/.test(u.pr) ? lane.reviews.get(Number(u.pr)) ?? null : null;
+    }
+  }
   for (const u of units) {
     for (const d of u.deps) if (d.target) d.cycle = reaches(d.target, u, new Set());
     const ready = u.deps.every((d) => d.target && !d.cycle && d.target.state === 'done');
-    u.shown = u.state !== 'needs-myuser' ? u.state : ready ? 'you' : 'then you';
+    // A needs-myuser row whose branch already landed asks for nothing: it shows as stale, the lane owner's cleanup.
+    u.shown = u.state !== 'needs-myuser' ? u.state : u.stale ? 'stale' : ready ? 'you' : 'then you';
     // D3: a unit nests under the first unit it waits for in the same lane and milestone; other edges are written out.
     u.nest = u.deps.find((d) => d.target && !d.cycle && d.target.lane === u.lane && d.target.milestone === u.milestone) ?? null;
     u.parent = u.nest?.target ?? null;
   }
-  const reads = new Map();
-  for (const lane of lanes) for (const u of lane.units) u.stale = staleReason(lane, u, reads);
   return { dir, lanes };
+}
+
+// ---- PR state from GitHub ----
+// One gh GraphQL call per repo and set of PR numbers gives each PR's state, its head, the checks and deployments on
+// that head, and its description. The call runs in the background, never on a request: a page shows what the cache
+// holds and schedules a refresh when that is older than PR_TTL_MS, so a finished check shows on the page's next
+// self-refresh. gh's own credentials are used (the board runs as a launchd agent in the owner's session, where the
+// keychain answers); nothing is written to GitHub.
+
+const PR_FIELDS = `number title url isDraft state mergedAt mergeable mergeStateStatus reviewDecision headRefOid headRefName baseRefName
+  updatedAt body commits(last: 1) { nodes { commit {
+    statusCheckRollup { state contexts(first: 60) { nodes { __typename
+      ... on CheckRun { name status conclusion detailsUrl }
+      ... on StatusContext { context state targetUrl } } } }
+    deployments(last: 5) { nodes { environment latestStatus { state environmentUrl } } } } } }`;
+
+export function prQuery(numbers) {
+  const fields = numbers.map((n) => `p${n}: pullRequest(number: ${n}) { ...F }`).join(' ');
+  return `query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { ${fields} } }\nfragment F on PullRequest { ${PR_FIELDS} }`;
+}
+
+const CHECK_FAILED = new Set(['FAILURE', 'CANCELLED', 'TIMED_OUT', 'ACTION_REQUIRED', 'STARTUP_FAILURE', 'STALE', 'ERROR']);
+
+// Only https links from GitHub's answer are rendered; anything else (a javascript: or http: URL in a check's details)
+// is dropped rather than put in an href.
+const httpsOnly = (url) => (typeof url === 'string' && /^https:\/\/[^\s"'<>]+$/i.test(url) ? url : null);
+
+// One check per name, the newest wins (a rerun lists the cancelled run and the new one under the same name).
+function checksOf(rollup) {
+  const byName = new Map();
+  for (const c of rollup?.contexts?.nodes ?? []) {
+    const name = c.name ?? c.context ?? '';
+    if (!name) continue;
+    const verdict = c.__typename === 'CheckRun' ? (c.status === 'COMPLETED' ? c.conclusion : 'PENDING') : c.state;
+    const result = verdict === 'SUCCESS' || verdict === 'NEUTRAL' ? 'pass' : verdict === 'SKIPPED' ? 'skip'
+      : CHECK_FAILED.has(verdict) ? 'fail' : 'pending';
+    byName.delete(name);
+    byName.set(name, { name, result, url: httpsOnly(c.detailsUrl ?? c.targetUrl) });
+  }
+  return [...byName.values()];
+}
+
+// One sentence on what the PR does: the first sentence of its Solution section (the PR template's), or without one
+// the first prose line that is not boilerplate (an issue or stacking line). Shown whole, never cut: the row wraps.
+// Reads the markdown body: gh's bodyText is the body rendered to text, where "## Solution" arrives as "Solution".
+const BOILERPLATE = /^(?:closes?|fixes|fixed|resolves?|part of|stacked on|stacks on|depends on|based on|follows|merge .* first)\b/i;
+export function summaryOf(body) {
+  const lines = (body ?? '').split('\n').map((l) => l.replace(/\r$/, ''));
+  const heading = lines.findIndex((l) => /^#{1,6}\s*solution\b/i.test(l));
+  const next = heading >= 0 ? lines.findIndex((l, i) => i > heading && /^#{1,6}\s/.test(l)) : -1;
+  const section = heading >= 0 ? lines.slice(heading + 1, next >= 0 ? next : undefined) : lines;
+  const prose = section.map((l) => l.replace(/^[\s#*>-]+/, '').trim()).filter((l) => l && /[a-z]/i.test(l) && !BOILERPLATE.test(l) && !/[:：]$/.test(l));
+  const line = prose.find((l) => l.length >= 30) ?? prose[0] ?? null;
+  if (!line) return null;
+  return /^(.{20,}?[.!?])(\s|$)/.exec(line)?.[1] ?? line;
+}
+
+// What a PR is right now, and what stands between it and a merge: draft, open, ready, blocked (with why), merged or
+// closed. Blocked means GitHub would not merge it as it is; "behind" and running checks are states, not blockers.
+// A draft is not up for review, so its blockers are only the author's work: conflicts and failing checks.
+export function prView(node) {
+  const commit = node.commits?.nodes?.[0]?.commit ?? null;
+  const checks = checksOf(commit?.statusCheckRollup);
+  const failing = checks.filter((c) => c.result === 'fail');
+  const pending = checks.filter((c) => c.result === 'pending');
+  const blockers = [];
+  if (node.mergeable === 'CONFLICTING') blockers.push(`conflicts with ${node.baseRefName ?? 'the base'}`);
+  if (failing.length) blockers.push(`${failing.length} check${failing.length === 1 ? '' : 's'} failing: ${failing.map((c) => c.name).join(', ')}`);
+  if (!node.isDraft) {
+    if (node.reviewDecision === 'CHANGES_REQUESTED') blockers.push('changes requested');
+    else if (node.reviewDecision === 'REVIEW_REQUIRED' && node.mergeStateStatus === 'BLOCKED') blockers.push('review required');
+    if (!blockers.length && node.mergeStateStatus === 'BLOCKED' && !pending.length) blockers.push('a required check or review is missing');
+  }
+  const state = node.state === 'MERGED' ? 'merged' : node.state === 'CLOSED' ? 'closed' : node.isDraft ? 'draft'
+    : blockers.length ? 'blocked' : node.mergeStateStatus === 'CLEAN' || node.mergeStateStatus === 'HAS_HOOKS' ? 'ready' : 'open';
+  const deploy = (commit?.deployments?.nodes ?? []).findLast((d) => httpsOnly(d.latestStatus?.environmentUrl));
+  return {
+    number: node.number,
+    title: node.title ?? '',
+    url: httpsOnly(node.url),
+    state,
+    blockers,
+    head: (node.headRefOid ?? '').slice(0, 7),
+    branch: node.headRefName ?? null,
+    base: node.baseRefName ?? null,
+    behind: node.mergeStateStatus === 'BEHIND',
+    checks,
+    checksPending: pending.length,
+    preview: deploy ? { url: deploy.latestStatus.environmentUrl, state: (deploy.latestStatus.state ?? '').toLowerCase(), environment: deploy.environment } : null,
+    summary: summaryOf(node.body),
+    mergedAt: node.mergedAt ? Date.parse(node.mergedAt) : null,
+    updatedAt: node.updatedAt ? Date.parse(node.updatedAt) : null,
+  };
+}
+
+// gh's JSON for prQuery -> number -> prView. A PR gh could not return (deleted, or an error on that alias) is absent;
+// partial says whether GraphQL reported errors beside the data, so an absent PR may be a failed alias, not a gone PR.
+export function parsePrs(text) {
+  let json;
+  try {
+    json = JSON.parse(text);
+  } catch {
+    return { error: 'gh returned no JSON', prs: new Map(), partial: false };
+  }
+  const prs = new Map();
+  for (const node of Object.values(json?.data?.repository ?? {})) if (node?.number) prs.set(node.number, prView(node));
+  const error = !json?.data?.repository && json?.errors?.[0]?.message ? json.errors[0].message
+    : !json?.data?.repository ? 'gh returned no repository' : null;
+  return { error, prs, partial: Array.isArray(json?.errors) && json.errors.length > 0 };
+}
+
+// Runs gh for one repo and PR set and resolves with what parsePrs made of it. Exported for the tests, which point gh
+// at a stub.
+export function fetchPrs(repo, numbers, { gh = GH, timeout = 20_000 } = {}) {
+  const [owner, name] = repo.split('/');
+  return new Promise((resolve) => {
+    // -f sends every field as a string; -F would turn a numeric-looking owner or repo name into a number.
+    const run = spawn(gh, ['api', 'graphql', '-f', `owner=${owner}`, '-f', `name=${name}`, '-f', `query=${prQuery(numbers)}`],
+      { env: GIT_ENV, stdio: ['ignore', 'pipe', 'pipe'], timeout });
+    let out = '';
+    let err = '';
+    run.stdout.setEncoding('utf8'); // a multibyte character split across two chunks decodes whole
+    run.stderr.setEncoding('utf8');
+    run.stdout.on('data', (chunk) => { out += chunk; });
+    run.stderr.on('data', (chunk) => { err += chunk; });
+    run.on('error', (error) => resolve({ error: `cannot run gh: ${error.message}`, prs: new Map(), partial: false }));
+    run.on('close', (code, signal) => {
+      // gh exits 1 on a partial GraphQL answer but still prints the data, so the output decides.
+      const parsed = parsePrs(out);
+      if (parsed.prs.size || !code) resolve(parsed);
+      else resolve({ error: `gh ${signal ? `timed out (${signal})` : `exited ${code}`}: ${(err.trim().split('\n').pop() || parsed.error || '').slice(0, 200)}`, prs: new Map(), partial: false });
+    });
+  });
+}
+
+// One entry per repo: prs is number -> prView, asked the numbers of its last fetch, at when that fetch answered. Each
+// PR keeps its last good value through an outage or a partial answer; a PR gh answers without is gone and leaves; a
+// PR no unit asks for any more is evicted. So a unit added or finished never blanks the others' state for a cycle.
+const prCache = new Map();
+const prLogged = new Map(); // repo -> { message, at }: a broken gh is logged once per message per ten minutes
+const PR_LOG_MS = 10 * 60_000;
+
+function logPrError(repo, message, now = Date.now()) {
+  const last = prLogged.get(repo);
+  if (last && last.message === message && now - last.at < PR_LOG_MS) return;
+  prLogged.set(repo, { message, at: now });
+  console.error(`agent-board: GitHub PRs for ${repo}: ${message}`);
+}
+
+export async function refreshPrs(repo, numbers, options = {}) {
+  const entry = prCache.get(repo) ?? { prs: new Map(), asked: new Set(), error: null, at: null, refreshing: null };
+  prCache.set(repo, entry);
+  if (!entry.refreshing) {
+    const wanted = new Set(numbers);
+    entry.refreshing = fetchPrs(repo, [...wanted], options).then((result) => {
+      for (const n of wanted) {
+        if (result.prs.has(n)) entry.prs.set(n, result.prs.get(n));
+        else if (!result.error && !result.partial) entry.prs.delete(n);
+      }
+      for (const n of entry.prs.keys()) if (!wanted.has(n)) entry.prs.delete(n);
+      entry.asked = wanted;
+      entry.error = result.error;
+      entry.at = Date.now();
+      entry.refreshing = null;
+      if (result.error) logPrError(repo, result.error);
+    });
+  }
+  await entry.refreshing;
+  return entry;
+}
+
+// What the cache holds for these PRs now, scheduling a refresh when it is stale or has never asked for one of them.
+// options reach gh (the tests point it at a stub).
+export function cachedPrs(repo, numbers, now = Date.now(), options = {}) {
+  const entry = prCache.get(repo);
+  const unasked = numbers.some((n) => !entry?.asked.has(n));
+  if (!entry || (!entry.refreshing && (unasked || now - entry.at >= PR_TTL_MS))) refreshPrs(repo, numbers, options);
+  const current = prCache.get(repo);
+  return { prs: current.prs, error: current.at === null ? 'loading PR state from GitHub' : current.error, at: current.at };
 }
 
 // ---- Stale needs-myuser rows ----
@@ -521,11 +769,12 @@ function when(at, now) {
 
 const tone = (cls, text) => `<span class="${cls}">${escape(text)}</span>`;
 
-// Both pages share the header, so threads and map are one tap apart. The clock gives way on a phone.
+// Both pages share the header, so threads and map are one tap apart. The clock stays on a phone too: it is how
+// the owner sees that the page is current.
 function pageHeader(page, now) {
   const link = (name, href) => (name === page ? `<u>${name}</u>` : `<a href="${href}">${name}</a>`);
   return `<header><h1><span>agent board ·</span> ${link('threads', '/')} · ${link('map', '/map')}</h1>`
-    + `<small><span class="clock">${SGT({ hour: '2-digit', minute: '2-digit', second: '2-digit' }).format(now)} SGT · </span>`
+    + `<small><span class="clock">${SGT({ hour: '2-digit', minute: '2-digit', second: '2-digit' }).format(now)} SGT</span> · `
     + `refreshes every ${REFRESH_S}s</small></header>`;
 }
 
@@ -538,17 +787,46 @@ ${body}</main></body></html>`;
 
 // Needs you, on both pages: pending T3 input cards and approvals, plus every lane unit that is the owner's turn. A unit
 // whose owner thread is itself waiting on him takes that thread's place, so nothing is listed twice. Oldest first.
+// Only his actions are listed: a done unit asks for nothing, a stale row is the lane owner's cleanup, and a review
+// ledger blocker counts only when he is its subject (ownerActs), once per PR however many units share the PR.
 function needsYou(snap) {
-  const units = (snap.lanes?.lanes ?? []).flatMap((lane) => lane.units.filter((u) => u.shown === 'you'));
+  const lanes = snap.lanes?.lanes ?? [];
+  const open = lanes.flatMap((lane) => lane.units.filter((u) => u.state !== 'done'));
+  const units = open.filter((u) => u.shown === 'you');
   const owned = new Set(units.map((u) => u.owner));
+  const prs = new Set(units.filter((u) => /^\d+$/.test(u.pr)).map((u) => `${u.lane}#${u.pr}`));
+  const blocked = [];
+  for (const u of open) {
+    const acts = u.review?.blockers.filter(ownerActs) ?? [];
+    if (u.shown === 'you' || !acts.length || prs.has(`${u.lane}#${u.pr}`)) continue;
+    prs.add(`${u.lane}#${u.pr}`);
+    blocked.push({ unit: u, blocker: acts.join('; '), at: u.github?.updatedAt ?? u.sinceAt ?? null });
+  }
   const items = [
     ...units.map((u) => {
       const ask = snap.needs.find((t) => t.id === u.owner);
       return { unit: u, thread: ask, at: ask?.askedAt ?? u.sinceAt ?? null };
     }),
     ...snap.needs.filter((t) => !owned.has(t.id)).map((t) => ({ thread: t, at: t.askedAt })),
+    ...blocked,
   ];
   return items.sort((a, b) => (a.at ?? Infinity) - (b.at ?? Infinity));
+}
+
+// The owner is whoever runs the board (AGENT_BOARD_OWNER names them for a fixture). A blocker is their action when it
+// names them as its subject ("the owner picks the batch") or says it needs or waits for them; one that only mentions them
+// ("rebase after the owner's PR lands") is someone else's work. Matched as a whole word in any case.
+const ownerActs = (text) => {
+  const owner = (process.env.AGENT_BOARD_OWNER ?? os.userInfo().username).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`^\\W*${owner}\\b|\\b(?:needs?|waits? (?:for|on)|asks?|blocked on) ${owner}\\b`, 'i').test(text);
+};
+
+// Where the owner acts on a unit's PR: the PR itself, and its preview when the head has one.
+function actLinks(u, lane) {
+  if (!/^\d+$/.test(u.pr)) return [];
+  const links = [prChip(u, lane)];
+  if (u.github?.preview) links.push(`<a class="link" href="${escape(u.github.preview.url)}" rel="noreferrer">preview ↗</a>`);
+  return links;
 }
 
 // What a waiting unit's line says about the wait: its owner's input card if it has one, else how long it has waited.
@@ -557,14 +835,15 @@ function unitWait(item, now) {
   return item.unit.sinceAt ? `since ${when(item.unit.sinceAt, now)}` : null;
 }
 
-function unitCard(item, now) {
+function unitCard(item, snap) {
   const u = item.unit;
-  const meta = [u.lane, u.note, item.thread?.title, unitWait(item, now)].filter(Boolean).map(escape).join(' · ');
-  return `<div class="t needs"><div class="name">${escape(u.id)}</div><div class="sub"><span class="state peach">you</span> · ${meta}</div>${staleLine(u)}</div>`;
+  const meta = [u.lane, item.blocker ?? u.note, item.thread?.title, unitWait(item, snap.now)].filter(Boolean).map(escape);
+  const lane = snap.lanes.lanes.find((l) => l.name === u.lane);
+  return `<div class="t needs"><div class="name">${escape(u.id)}</div><div class="sub"><span class="state peach">you</span> · ${[...meta, ...actLinks(u, lane)].join(' · ')}</div></div>`;
 }
 
 // The row and its state stay as written; the lane owner fixes the file (see staleReason).
-const staleLine = (u) => (u.stale ? `<div class="stale" title="${escape(u.stale.title)}">looks stale: ${escape(u.stale.text)}</div>` : '');
+const staleLine = (u) => (u.stale ? `<div class="stale" title="${escape(u.stale.title)}">looks stale: ${escape(u.stale.text)} · lane owner&#39;s cleanup</div>` : '');
 
 export function render(snap) {
   const section = (title, list, cls = '', limit = Infinity) => (list.length
@@ -573,7 +852,7 @@ export function render(snap) {
     : '');
   const needs = needsYou(snap);
   const threads = (needs.length ? `<h2 class="attn">Needs you · ${needs.length}</h2>`
-      + needs.map((item) => (item.unit ? unitCard(item, snap.now) : card(item.thread, snap.now))).join('') : '')
+      + needs.map((item) => (item.unit ? unitCard(item, snap) : card(item.thread, snap.now))).join('') : '')
     + section('Running', snap.running) + section('Idle', snap.idle, '', IDLE_SHOWN);
   const alarmed = snap.updates.alarms.length > 0;
   const updates = updatesSection(snap.updates);
@@ -586,11 +865,9 @@ ${alarmed ? updates : ''}${threads || '<p class="more">No open T3 threads.</p>'}
 
 const STALL_MS = 8 * 3600_000; // review rule, 10 Oct: open 8 hours of work is stalled
 const STALE_MS = 2 * 3600_000; // a running coordinator with no lane file change for this long
-const SHOWN = {
-  queued: 'grey', 'in-flight': 'green', review: 'sapphire', you: 'peach', 'then you': 'peach', blocked: 'red', paused: 'yellow', done: 'grey',
-};
-// The milestone bar, in this order; queued is the empty track.
-const BAR = { done: 'green', 'in-flight': 'teal', review: 'sapphire', 'needs-myuser': 'peach', blocked: 'red', paused: 'yellow' };
+const LANE_STALE_MS = 24 * 3600_000; // no lane file change for a day: the lane says "stale since <date>" whoever runs it
+const SHOWN = { queued: 'grey', 'in-flight': 'green', you: 'peach', 'then you': 'peach', stale: 'yellow', paused: 'yellow', done: 'grey' };
+const PR_TONE = { merged: 'grey', closed: 'grey', draft: 'overlay', open: 'subtext', ready: 'green', blocked: 'red' };
 
 const tilde = (p) => (p.startsWith(`${os.homedir()}/`) ? `~${p.slice(os.homedir().length)}` : p);
 
@@ -614,18 +891,83 @@ function ownerLine(u, snap) {
 }
 
 function sinceLine(u, now) {
-  if (!u.sinceAt || !['in-flight', 'review', 'blocked', 'needs-myuser'].includes(u.state)) return null;
+  if (u.sinceAt === undefined) return tone('yellow', `since "${u.since}" unreadable`);
+  if (!u.sinceAt || !['in-flight', 'needs-myuser'].includes(u.state)) return null;
   if (u.state !== 'needs-myuser' && now - u.sinceAt > STALL_MS) return tone('yellow', `stalled since ${when(u.sinceAt, now)}`);
   return `since ${when(u.sinceAt, now)}`;
 }
 
+// The chip at the row's right: the PR number, linked, with its GitHub state when the board has it, else the ledger's
+// verdict; a word such as push or rebuild names what the owner still does after the branch lands.
 function prChip(u, lane) {
   if (!/^\d+$/.test(u.pr)) return escape(u.pr || (u.state === 'done' ? '' : 'no PR'));
-  const verdict = lane.verdicts.get(Number(u.pr)) ?? 'no verdict';
-  const text = `<b>#${u.pr}</b> ${escape(verdict)}`;
-  return lane.repo
-    ? `<a href="https://github.com/${escape(lane.repo)}/pull/${u.pr}" title="${escape(verdict)}" rel="noreferrer">${text}</a>`
-    : `<span title="${escape(verdict)}">${text}</span>`;
+  const verdict = lane.verdicts.get(Number(u.pr))?.verdict;
+  const g = u.github;
+  // A done unit's PR has landed: its number, with the ledger's word when there is one, says enough.
+  const word = g ? tone(PR_TONE[g.state], g.state) : verdict ? escape(verdict) : u.state === 'done' ? '' : escape(lane.prError ? 'state unknown' : 'no verdict');
+  const text = `<b>#${u.pr}</b>${word ? ` ${word}` : ''}`;
+  const href = g?.url ?? (lane.repo ? `https://github.com/${lane.repo}/pull/${u.pr}` : null);
+  return href ? `<a href="${escape(href)}" rel="noreferrer">${text}</a>` : `<span>${text}</span>`;
+}
+
+// What the ledger's newest verdict means against the PR's current head.
+function verdictLine(u, lane) {
+  const entry = lane.verdicts.get(Number(u.pr));
+  if (!entry) return null;
+  const head = u.github?.head;
+  const onHead = head && entry.head && (head.startsWith(entry.head) || entry.head.startsWith(head));
+  const where = !head || !entry.head ? '' : onHead ? ' on this head' : ` on an older head ${escape(entry.head.slice(0, 7))}`;
+  return `verdict ${escape(entry.verdict)}${where}`;
+}
+
+// The PR block under a unit: one status line (what blocks it or what runs, the head, the preview, the ledger's
+// verdict), a review-ledger blocker that is the owner's own action, then the check list and the rest of the review budget
+// folded under a summary that counts them. Plain <details>: no script runs on this page (the CSP forbids it).
+function prBlock(u, lane, now) {
+  const g = u.github;
+  const r = u.review;
+  if (!g && !r) return '';
+  const lines = [];
+  if (g) {
+    const facts = [];
+    if (g.blockers.length && (g.state === 'blocked' || g.state === 'draft')) facts.push(tone('red', `blocked on: ${g.blockers.join('; ')}`));
+    else if (g.state === 'merged') facts.push(`merged${g.mergedAt ? ` ${when(g.mergedAt, now)}` : ''}`);
+    else if (g.checksPending) facts.push(tone('yellow', `${g.checksPending} check${g.checksPending === 1 ? '' : 's'} running`));
+    if (g.behind && g.state !== 'merged') facts.push(`behind ${escape(g.base)}`);
+    facts.push(`head <code>${escape(g.head)}</code>`);
+    if (g.preview) {
+      const live = g.preview.state === 'success';
+      facts.push(`<a class="link" href="${escape(g.preview.url)}" rel="noreferrer">preview ↗</a>${live ? '' : tone('yellow', ` ${g.preview.state || 'not ready'}`)}`);
+    } else if (g.state !== 'merged') facts.push(tone('overlay', 'no preview'));
+    const verdict = verdictLine(u, lane);
+    if (verdict) facts.push(verdict);
+    lines.push(`<div class="meta">${facts.join(' · ')}</div>`);
+  }
+  const mine = r?.blockers.filter(ownerActs) ?? [];
+  if (mine.length) lines.push(`<div class="meta peach">review ledger: ${escape(mine.join('; '))}</div>`);
+  const folded = [];
+  if (g?.checks.length) {
+    const chips = g.checks.map((c) => {
+      const chip = `<i class="dot ${c.result}"></i>${escape(c.name)}`;
+      return c.url ? `<a class="check" href="${escape(c.url)}" rel="noreferrer" title="${c.result}">${chip}</a>` : `<span class="check" title="${c.result}">${chip}</span>`;
+    });
+    folded.push(`<div class="checks">${chips.join('')}</div>`);
+  }
+  const review = [];
+  const rest = r?.blockers.filter((b) => !ownerActs(b)) ?? [];
+  if (rest.length) review.push(`review ledger: ${escape(rest.join('; '))}`);
+  if (r?.approvedHead) {
+    const current = g?.head && r.approvedHead.startsWith(g.head);
+    review.push(current ? tone('green', 'approved at this head') : `approved at ${escape(r.approvedHead.slice(0, 7))}${g ? ', not the current head' : ''}`);
+  }
+  if (r && r.rounds !== null) review.push(`${r.rounds} review round${r.rounds === 1 ? '' : 's'}${r.extra ? `, ${r.extra} extra allowed` : ''}`);
+  if (review.length) folded.push(`<div class="meta">${review.join(' · ')}</div>`);
+  if (folded.length) {
+    const passed = g?.checks.filter((c) => c.result === 'pass').length ?? 0;
+    const label = [g?.checks.length ? `<span class="count">${passed}/${g.checks.length} checks</span>` : '', review.length ? 'review ledger' : ''].filter(Boolean).join(' · ');
+    lines.push(`<details class="more"><summary>${label}</summary>${folded.join('')}</details>`);
+  }
+  return `<div class="pr-block">${lines.join('')}</div>`;
 }
 
 function depLine(d) {
@@ -634,18 +976,33 @@ function depLine(d) {
   return `<b>${escape(d.name)}</b>${d.target.state === 'needs-myuser' ? ' (then you)' : ''}`;
 }
 
+// A unit row: state and id with the PR chip; the PR's title as the headline and one sentence from its description;
+// who holds it, its branch and since; the note in full; the PR block; the stale flag; what it waits for. Nothing is
+// clipped: every line wraps, on the phone and the desktop alike.
 function unitRow(u, lane, snap) {
-  const cls = u.shown === 'you' ? ' needs' : u.state === 'done' ? ' done' : '';
+  const cls = u.shown === 'you' ? ' needs' : u.state === 'done' ? ' done' : u.github?.state === 'blocked' ? ' blocked' : '';
   let html = `<div class="u${cls}"><div class="row"><span class="id"><span class="state ${SHOWN[u.shown]}">${u.shown}</span>`
     + `${escape(u.id)}</span><span class="pr">${prChip(u, lane)}</span></div>`;
   if (u.state !== 'done') {
-    const sub = [...ownerLine(u, snap), u.note && escape(u.note), u.branch && escape(u.branch), sinceLine(u, snap.now)].filter(Boolean);
+    const g = u.github;
+    if (g?.title) html += `<div class="title">${escape(g.title)}</div>`;
+    if (g?.summary && g.summary !== g.title) html += `<div class="summary">${escape(g.summary)}</div>`;
+    const sub = [...ownerLine(u, snap), u.branch && escape(u.branch), sinceLine(u, snap.now)].filter(Boolean);
     if (sub.length) html += `<div class="sub">${sub.join(' · ')}</div>`;
+    if (u.note) html += `<div class="unit-note">${escape(u.note)}</div>`;
+    html += prBlock(u, lane, snap.now);
     html += staleLine(u);
     const deps = u.deps.filter((d) => d !== u.nest);
     if (deps.length) html += `<div class="after">${u.nest ? 'also after' : 'after'} ${deps.map(depLine).join(', ')}</div>`;
   }
   return `${html}</div>`;
+}
+
+// A row the board could not read, beside the lane where its unit would be, so a lane never silently loses rows.
+function warningRow(skipped) {
+  return `<div class="u warn"><div class="row"><span class="id"><span class="state yellow">unreadable</span>units.tsv line ${skipped.line}</span>`
+    + `${skipped.id ? `<span class="pr">${escape(skipped.id)}</span>` : ''}</div><div class="sub yellow">${escape(skipped.why)}`
+    + `${skipped.why.startsWith('unknown state') ? `; states are ${UNIT_STATES.join(', ')}` : ''}</div></div>`;
 }
 
 // Units in file order, each nested under the unit it waits for (D3). Nesting edges never form a cycle.
@@ -659,11 +1016,11 @@ function unitTree(units, lane, snap, parent = null) {
 function milestoneHead(id, units, lane) {
   const title = id ? [id, lane.milestones.get(id)].filter(Boolean).join(' ') : 'No milestone';
   const done = units.filter((u) => u.state === 'done').length;
-  const bar = Object.entries(BAR).map(([state, colour]) => {
-    const n = units.filter((u) => u.state === state).length;
-    return n ? `<i style="width:${((n / units.length) * 100).toFixed(1)}%;background:var(--${colour})"></i>` : '';
-  }).join('');
-  return `<div class="ms"><b>${escape(title)}</b><span>${done} of ${units.length} done</span></div><div class="bar">${bar}</div>`;
+  // The bar fills with done only, so it reads as the count beside it; the hover title breaks the rest down by state.
+  const counts = UNIT_STATES.map((state) => [state, units.filter((u) => u.state === state).length]).filter(([, n]) => n);
+  const key = counts.map(([state, n]) => `${n} ${state}`).join(', ');
+  return `<div class="ms"><b>${escape(title)}</b><span>${done} of ${units.length} done</span></div>`
+    + `<div class="bar" title="${escape(key)}">${done ? `<i style="width:${((done / units.length) * 100).toFixed(1)}%"></i>` : ''}</div>`;
 }
 
 function laneSection(lane, snap) {
@@ -672,16 +1029,23 @@ function laneSection(lane, snap) {
   const t = lane.head ? snap.threads.get(lane.head) : null;
   if (!lane.head) head.push('no coordinator');
   else if (!t) head.push(tone('peach', `no ${lane.headRole} thread`));
-  else head.push(`${escape(t.title)} ${live(t, snap.now, true)}`);
+  else head.push(`${escape(t.title)} <span class="kept">${live(t, snap.now, true)}</span>`);
+  // Short time phrases are kept on one line, so "ago" never wraps alone.
   if (lane.updatedAt) {
     const updated = `updated ${ago(snap.now - lane.updatedAt)} ago`;
-    head.push(t?.state === 'running' && snap.now - lane.updatedAt > STALE_MS ? tone('yellow', `stale, ${updated}`) : updated);
+    if (snap.now - lane.updatedAt > LANE_STALE_MS) head.push(tone('yellow kept', `stale since ${SGT({ day: 'numeric', month: 'short' }).format(lane.updatedAt)}`));
+    else head.push(t?.state === 'running' && snap.now - lane.updatedAt > STALE_MS ? tone('yellow kept', `stale, ${updated}`) : tone('kept', updated));
   }
+  if (lane.prs.size || lane.prError) head.push(lane.prError ? tone('yellow', `GitHub: ${lane.prError}`) : tone('kept', `PRs ${ago(snap.now - lane.prsAt)} ago`));
   // Milestones in the order of their first unit, so the coordinator orders them by writing them.
   const groups = Map.groupBy(lane.units, (u) => u.milestone);
   const titled = lane.units.some((u) => u.milestone);
+  const ledgerNotes = lane.ledgerSkipped.length
+    ? [`${lane.ledgerFile}: ${lane.ledgerSkipped.length} row${lane.ledgerSkipped.length === 1 ? '' : 's'} skipped (${lane.ledgerSkipped.slice(0, 2).map((s) => `line ${s.line}: ${s.why}`).join('; ')}${lane.ledgerSkipped.length > 2 ? '; more' : ''})`]
+    : [];
   return `<section><div class="lane"><b>${escape(lane.name)}</b><small>${head.join(' · ')}</small></div>`
-    + lane.notes.map((n) => `<div class="note">${escape(n)}</div>`).join('')
+    + [...lane.notes, ...ledgerNotes].map((n) => `<div class="note">${escape(n)}</div>`).join('')
+    + lane.skipped.map(warningRow).join('')
     + [...groups].map(([id, units]) => (titled ? milestoneHead(id, units, lane) : '') + unitTree(units, lane, snap)).join('')
     + '</section>';
 }
@@ -712,17 +1076,19 @@ function columns(sections, lanes) {
   return `<div class="cols"><div>${sections.slice(0, split).join('')}</div><div>${sections.slice(split).join('')}</div></div>`;
 }
 
-function needsRow(item, now) {
+// One line per item at the top of the map, the to-do: the ask, the wait and the links where he acts. The unit's
+// detail stays in its lane, so the phone page does not carry every row twice.
+function needsRow(item, snap) {
+  const todo = (name, ask, tag) => `<div class="u needs todo"><span class="state peach">you</span><b class="id">${escape(name)}</b>`
+    + `${ask.length ? `<span class="ask">${ask.join(' · ')}</span>` : ''}<span class="tag">${escape(tag ?? '')}</span></div>`;
   if (!item.unit) {
     const t = item.thread;
-    const sub = [t.ask, t.askedAt && `asked ${when(t.askedAt, now)}`, t.branch].filter(Boolean).map(escape).join(' · ');
-    return `<div class="u needs"><div class="row"><span class="id"><span class="state peach">you</span>${escape(t.title)}</span>`
-      + `<span class="pr">${escape(t.project ?? '')}</span></div><div class="sub">${sub}</div></div>`;
+    return todo(t.title, [t.ask, t.askedAt && `asked ${when(t.askedAt, snap.now)}`, t.branch].filter(Boolean).map(escape), t.project);
   }
   const u = item.unit;
-  const sub = [u.note, item.thread?.title, unitWait(item, now)].filter(Boolean).map(escape).join(' · ');
-  return `<div class="u needs"><div class="row"><span class="id"><span class="state peach">you</span>${escape(u.id)}</span>`
-    + `<span class="pr">${escape(u.lane)}</span></div>${sub ? `<div class="sub">${sub}</div>` : ''}${staleLine(u)}</div>`;
+  const lane = snap.lanes.lanes.find((l) => l.name === u.lane);
+  const ask = [item.blocker ?? u.note, item.thread?.title, unitWait(item, snap.now)].filter(Boolean).map(escape);
+  return todo(u.id, [...ask, ...actLinks(u, lane)], u.lane);
 }
 
 export function renderMap(snap) {
@@ -734,7 +1100,7 @@ export function renderMap(snap) {
   else body = columns(lanes.map((lane) => laneSection(lane, snap)), lanes);
   const issues = (lanes ?? []).map(laneIssues).join('');
   return page('project map', needs.length, `${pageHeader('map', snap.now)}
-${needs.length ? `<h2 class="attn">Needs you · ${needs.length}</h2>${needs.map((item) => needsRow(item, snap.now)).join('')}` : ''}
+${needs.length ? `<h2 class="attn">Needs you · ${needs.length}</h2>${needs.map((item) => needsRow(item, snap)).join('')}` : ''}
 ${body}
 <footer>Read-only view of ${escape(tilde(path.dirname(dir)))} lanes and T3 state.${issues}</footer>`, true);
 }
@@ -756,37 +1122,55 @@ body{background:var(--crust);color:var(--text);font-family:var(--mono);font-size
 main{max-width:720px;margin:0 auto;min-width:0}main.wide{max-width:1040px}
 header{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:baseline;gap:4px 12px;padding:18px 4px 6px}
 h1{font-size:17px;color:var(--lavender)}h1 span{color:var(--overlay1);font-weight:400}
+::selection{background:var(--surface1);color:var(--text)}a:focus-visible,.check:focus-visible{outline:2px solid var(--lavender);outline-offset:2px;border-radius:3px}
 h1 a{color:inherit;text-decoration:none}h1 u{color:var(--text);text-decoration-color:var(--lavender);text-underline-offset:4px}
 header small{font-size:12px;color:var(--overlay1)}
-@media (max-width:480px){.clock{display:none}.u .sub,.t.needs .sub{white-space:normal;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow-wrap:anywhere}}
+.kept{white-space:nowrap}
 h2{font-size:11.5px;letter-spacing:.6px;text-transform:uppercase;color:var(--overlay1);margin:16px 4px 7px;font-weight:500}
 h2.attn{color:var(--peach)}
 .t{background:var(--base);border:1px solid var(--surface0);border-radius:10px;padding:10px 12px;margin-bottom:8px;min-width:0}
 .t.needs,.u.needs{background:#2b2530;border-color:#5a4652}
-.name{font-weight:700;font-size:13.5px;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;overflow-wrap:anywhere}
-.sub{font-size:12px;color:var(--subtext);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:3px}
+.name{font-weight:700;font-size:13.5px;overflow-wrap:anywhere}
+.sub{font-size:12px;color:var(--subtext);margin-top:3px;overflow-wrap:anywhere}
 .line{font-size:12px;color:var(--subtext);margin-top:3px;overflow-wrap:break-word}
 .green{color:var(--green)}.red{color:var(--red)}.peach{color:var(--peach)}.muted{color:var(--overlay1)}
-.grey{color:var(--overlay2)}.sapphire{color:var(--sapphire)}.yellow{color:var(--yellow)}
+.grey{color:var(--overlay2)}.sapphire{color:var(--sapphire)}.yellow{color:var(--yellow)}.overlay{color:var(--overlay1)}.subtext{color:var(--subtext)}
 .ctx{height:5px;background:var(--surface0);border-radius:3px;margin-top:8px;overflow:hidden}
 .ctx i{display:block;height:100%;background:var(--teal)}.ctx i.warn{background:var(--yellow)}.ctx i.hot{background:var(--red)}
 .more{color:var(--overlay1);font-size:12px;margin:4px}
 .lane{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:baseline;gap:2px 10px;margin:20px 4px 6px}
-.lane b{font-size:13.5px;color:var(--lavender)}.lane small{font-size:12px;color:var(--overlay1)}
-.note{font-size:12px;color:var(--overlay2);margin:0 4px 7px}
+.lane b{font-size:13.5px;color:var(--lavender)}.lane small{font-size:12px;color:var(--overlay1);min-width:0;overflow-wrap:anywhere}
+.note{font-size:12px;color:var(--overlay2);margin:0 4px 7px;overflow-wrap:anywhere}
 .ms{display:flex;justify-content:space-between;align-items:baseline;gap:8px;margin:12px 4px 5px;font-size:12px;color:var(--subtext)}
 .ms b{font-weight:500;color:var(--text)}
-.bar{display:flex;height:4px;background:var(--surface0);border-radius:3px;overflow:hidden;margin:0 4px 8px}.bar i{display:block;height:100%}
+.bar{display:flex;height:4px;background:var(--surface0);border-radius:3px;overflow:hidden;margin:0 4px 8px}.bar i{display:block;height:100%;background:var(--green)}
 .u{background:var(--base);border:1px solid var(--surface0);border-radius:10px;padding:8px 12px;margin-bottom:7px;min-width:0}
-.u.done{opacity:.62}
-.row{display:flex;justify-content:space-between;align-items:baseline;gap:8px;min-width:0}
-.id{font-weight:700;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
-.id .state{font-weight:500;margin-right:7px}
-.pr{flex-shrink:0;max-width:55%;font-size:12px;color:var(--subtext);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.u.done{opacity:.62}.u.blocked{border-color:#5a3a48}.u.warn{background:#2a2a28;border-color:#5a5340}
+.todo{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 8px;padding:6px 12px;margin-bottom:5px;font-size:12px;color:var(--subtext)}
+.todo .state{font-weight:500}.todo .id{font-size:13px;color:var(--text);overflow-wrap:anywhere}.todo .tag{margin-left:auto;color:var(--overlay1)}
+.ask{min-width:0;overflow-wrap:anywhere}.ask a{color:inherit;text-decoration:none}.ask a b{font-weight:500;color:var(--blue)}
+.row{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:baseline;gap:2px 10px;min-width:0}
+.id{font-weight:700;font-size:13px;min-width:0;overflow-wrap:anywhere}
+.id .state{font-weight:500;margin-right:7px;white-space:nowrap}
+.pr{font-size:12px;color:var(--subtext);min-width:0;overflow-wrap:anywhere;margin-left:auto}
 .pr b{font-weight:500}.pr a{color:inherit;text-decoration:none}.pr a b{color:var(--blue)}
-.after{font-size:12px;color:var(--overlay2);margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.title{font-size:13px;color:var(--text);margin-top:3px;overflow-wrap:anywhere}
+.summary{font-size:12px;color:var(--subtext);margin-top:2px;overflow-wrap:anywhere}
+.unit-note{font-size:12px;color:var(--overlay2);margin-top:3px;overflow-wrap:anywhere}
+.pr-block{margin-top:5px;padding-top:5px;border-top:1px solid var(--surface0)}
+.meta{font-size:12px;color:var(--subtext);overflow-wrap:anywhere}.meta+.meta{margin-top:2px}
+.meta code{font-family:inherit;color:var(--lavender)}
+.link{color:var(--blue);text-decoration:none;text-underline-offset:3px;padding:6px 0;margin:-6px 0}.link:hover{text-decoration:underline}
+.more{margin-top:3px;font-size:11.5px;color:var(--overlay2)}.more summary{cursor:pointer;padding:4px 0;list-style-position:inside}
+.more summary:focus-visible{outline:2px solid var(--lavender);outline-offset:2px;border-radius:3px}.more .count{color:var(--subtext)}
+.more .meta{margin-top:3px}
+.checks{display:flex;flex-wrap:wrap;gap:3px 10px;margin-top:3px;font-size:11.5px;color:var(--subtext)}
+.check{display:inline-flex;align-items:baseline;gap:5px;color:inherit;text-decoration:none;overflow-wrap:anywhere;padding:5px 0;margin:-5px 0}
+.dot{display:inline-block;flex-shrink:0;width:7px;height:7px;border-radius:50%;background:var(--overlay1)}
+.dot.pass{background:var(--green)}.dot.fail{background:var(--red)}.dot.pending{background:var(--yellow)}.dot.skip{background:var(--surface1)}
+.after{font-size:12px;color:var(--overlay2);margin-top:3px;overflow-wrap:anywhere}
 .after b{font-weight:500;color:var(--subtext)}
-.stale{font-size:12px;color:var(--yellow);margin-top:3px}
+.stale{font-size:12px;color:var(--yellow);margin-top:3px;overflow-wrap:anywhere}
 .kids{margin-left:12px;padding-left:10px;border-left:1px solid var(--surface1)}
 @media (min-width:900px){.cols{display:grid;grid-template-columns:minmax(0,3fr) minmax(0,2fr);gap:0 22px;align-items:start}}
 footer{color:var(--overlay1);font-size:11px;margin:20px 4px 0}footer b{font-weight:500;color:var(--yellow)}`;

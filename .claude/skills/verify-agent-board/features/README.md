@@ -13,7 +13,9 @@ Read this index before driving the board, then use the matching feature file as 
 
 ## Driving conventions
 
-- Drive the agent Chrome through `chrome-devtools-axi`, with Codex as the driver (see the skill's Drive section).
+- Run the feature's Playwright written flow when it has one (`scripts/flows/`, see the skill's Drive section).
+- Otherwise Codex drives the agent Chrome with the feature's recipe below; `chrome-devtools-axi` by hand is the fallback only, and its evidence names the fallback and why.
+- The rest of this list is for the agent Chrome recipes.
 - Open each page with `chrome-devtools-axi open <url>`; it opens a background tab.
 - Size each tab with `chrome-devtools-axi emulate --viewport`, never `resize`.
 - Read values with `chrome-devtools-axi eval` over the selectors each recipe names, not from screenshot pixels.
@@ -37,7 +39,7 @@ It then uses exactly four H2 sections in this order.
 
 1. `Sub-features` lists short IDs with one line for each behavior.
 2. `How to get to it (user POV)` lists every user entry point.
-3. `Driving it with chrome-devtools-axi` starts with `Preconditions:` and uses labeled bullets that pair each user action with an exact command and observable result.
+3. `Driving it with chrome-devtools-axi` names the feature's written flow first when it has one, then starts the agent Chrome recipe with `Preconditions:` and uses labeled bullets that pair each user action with an exact command and observable result.
 4. `Gotchas` lists traps that can waste or invalidate a verification run.
 
 Keep implementation details out of the map.

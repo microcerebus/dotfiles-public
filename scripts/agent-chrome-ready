@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# Makes sure the agent Chrome (Google Chrome Beta, its own profile on
+# 127.0.0.1:9333) is up before a Codex browser check, and stops if it is not.
+# Its launchd agent com.myuser.agent-chrome (nix/user.nix) is the only way Chrome
+# Beta is ever started: it adds --disable-extensions --disable-sync and the port.
+# Started any other way (Finder, AppleScript, the binary), Chrome Beta opens its
+# default profile without those flags and the synced extensions load.
+# So this kickstarts the agent, waits up to 15 seconds for the port to answer,
+# and exits 1 if it never does.
+# This used to be shell lines in the codex-computer-use and verify-agent-board
+# skills. Agents copied them out by hand, and twice on 2026-10-17 the copy took
+# the Codex prompt next to them too and started a Codex run.
+# Tests: tests/codex_computer_use_test.mjs.
+set -u
+
+# Test hooks only: point the check at a stub port and replace the kickstart, so
+# tests never touch the real agent Chrome or launchd. A test port without a
+# kickstart hook is refused, never run against the real launchctl.
+port="${AGENT_CHROME_READY_TEST_PORT:-9333}"
+url="http://127.0.0.1:$port/json/version"
+if [ -n "${AGENT_CHROME_READY_TEST_PORT:-}" ] && [ -z "${AGENT_CHROME_READY_TEST_KICKSTART:-}" ]; then
+  echo "agent-chrome-ready: AGENT_CHROME_READY_TEST_PORT is set but AGENT_CHROME_READY_TEST_KICKSTART is not; refusing to kickstart the real agent Chrome" >&2
+  exit 1
+fi
+
+kickstart() {
+  if [ -n "${AGENT_CHROME_READY_TEST_PORT:-}" ]; then
+    sh -c "$AGENT_CHROME_READY_TEST_KICKSTART"
+  else
+    launchctl kickstart "gui/$(id -u)/com.myuser.agent-chrome"
+  fi
+}
+
+# -m 2 caps each request: --retry-max-time only limits retries, so a port that
+# accepts and never answers would otherwise hang the check.
+curl -sf -m 2 "$url" >/dev/null && exit 0
+kickstart
+curl -sf -m 2 --retry 15 --retry-delay 1 --retry-max-time 15 --retry-connrefused "$url" >/dev/null && exit 0
+echo "the agent Chrome is not up on 127.0.0.1:$port after 15s; see ~/Library/Logs/agent-chrome.log" >&2
+exit 1

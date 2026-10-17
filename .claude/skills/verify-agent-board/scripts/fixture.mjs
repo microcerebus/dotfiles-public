@@ -1,6 +1,7 @@
 // Seed data for a fixture run of the agent board (board.mjs launch --fixture). It writes, under one scratch directory:
 // a T3 database with the tables and columns files/bin/agent-board.mjs reads, Claude Code logs, three orchestrator lanes
-// with a small git checkout for the stale-row check, and dotfiles-autoupdate state with one alarm. Every time is
+// with a small git checkout for the stale-row check, a stub gh whose PR answers live in editable JSON files, and
+// dotfiles-autoupdate state with one alarm. Every time is
 // relative to now, so the pages read like a live board. Names carry "fixture" so a screenshot cannot pass for live data.
 // The columns follow tests/agent_board_test.mjs; when T3 changes its schema, a live run catches it and this does not.
 import { execFileSync } from 'node:child_process';
@@ -133,6 +134,7 @@ export function seed(dir, now = Date.now()) {
     ['await-rebuild', 'needs-myuser', '', 'feat/merged', 'rebuild', 'M1', '', iso(30), 'run rebuild at the Mac'],
     ['shipped', 'done', '', '', '11', 'M1', '', '', ''],
     ['map-polish', 'in-flight', 'mcp:fx-coord', 'feat/polish', '14', 'M2', '', iso(30), ''],
+    ['preview-live', 'in-flight', 'mcp:fx-warn', 'feat/preview', '16', 'M2', '', iso(10), 'one check still running; flip it in gh/prs-board.json'],
     ['phone-check', 'needs-myuser', '', '', '', 'M2', 'map-polish', '', 'look at the phone shots'],
     ['old-stall', 'in-flight', 'worker (opus high)', 'feat/old', '', 'M2', '', iso(600), ''],
     ['ghost', 'queued', '', '', '', 'M2', 'nope', '', ''],
@@ -147,10 +149,64 @@ export function seed(dir, now = Date.now()) {
   write('fixture-docs/lane.json', JSON.stringify({ priority: 2, orchestrator_thread: 'mcp:fx-gone' }, null, 2));
   write('fixture-docs/units.tsv', TSV([
     ['unit', 'state', 'owner', 'branch', 'pr', 'milestone', 'after', 'since', 'note'],
-    ['docs-pass', 'review', 'mcp:fx-quiet', 'docs/pass', '', '', '', iso(20), ''],
+    ['docs-pass', 'in-flight', 'mcp:fx-quiet', 'docs/pass', '', '', '', iso(20), 'in review'],
     ['research', 'queued', '', '', '', '', 'docs-pass', '', ''],
   ]));
   write('fixture-legacy/state/units.tsv', TSV([['unit', 'owner', 'status', 'branch', 'notes']]));
+  // A job-tracker-shaped lane: the ledger and review budgets under state/, one row in a state the board does not
+  // know, a PR blocker that names the owner, and lane files untouched for two days.
+  const days = (n) => n * 24 * 60;
+  write('fixture-jobs/lane.json', JSON.stringify({
+    priority: 3, repo: 'example/jobs', github: true, orchestrator_thread: 'mcp:fx-hot', milestones: [{ id: 'J1', title: 'Leads' }],
+  }, null, 2), days(2));
+  write('fixture-jobs/units.tsv', TSV([
+    ['unit', 'state', 'owner', 'branch', 'pr', 'milestone', 'after', 'since', 'note'],
+    ['leads', 'in-flight', 'mcp:fx-hot', 'feat/leads', '7', 'J1', '', iso(days(2)), 'hosted walkthrough next'],
+    ['exports', 'in-progress', '', 'feat/exports', '', 'J1', '', iso(days(2)), 'a state the board does not know'],
+    ['apply', 'paused', '', 'feat/apply', '8', 'J1', 'leads', iso(days(2)), 'waits for the batch'],
+  ]), days(2));
+  write('fixture-jobs/state/ledger.tsv', TSV([
+    ['pr', 'head', 'verdict', 'by', 'at', 'notes'],
+    ['7', 'aaa1111', 'approve r1', 'fable', '09:10', 'reviews/pr7.md'],
+    ['8', 'bbb2222', 'changes r1', 'opus', '09:40', 'reviews/pr8.md'],
+  ]), days(2));
+  write('fixture-jobs/state/review-scope-ledger.json', JSON.stringify({
+    prs: {
+      7: { priorIndependentRoundsUsed: 2, extraReviewAllowance: 1, independentApprovedHead: 'aaa1111aaa1111aaa1111aaa1111aaa1111aaa11111', mergeBlockers: ['hosted walkthrough on aaa1111'] },
+      8: { priorIndependentRoundsUsed: 1, extraReviewAllowance: 0, independentApprovedHead: null, mergeBlockers: ['the owner picks the job batch (order 56)', 'rebase after #7'] },
+    },
+  }, null, 2), days(2));
+
+  // ---- gh: a stub that answers the board's one GraphQL query per repo from gh/prs-<repo>.json ----
+  const gh = path.join(dir, 'gh');
+  fs.mkdirSync(gh, { recursive: true });
+  fs.writeFileSync(path.join(gh, 'gh'), '#!/bin/sh\n# Stub gh for the agent board fixture: prints gh/prs-<name>.json for the -f name=<name> argument.\n'
+    + 'for a in "$@"; do case "$a" in name=*) exec cat "$(dirname "$0")/prs-${a#name=}.json";; esac; done\necho "no repo" >&2; exit 1\n', { mode: 0o755 });
+  const check = (name, result, url = `https://ci.example/${name}`) => ({
+    __typename: 'CheckRun', name, status: result === 'PENDING' ? 'IN_PROGRESS' : 'COMPLETED', conclusion: result === 'PENDING' ? null : result, detailsUrl: url,
+  });
+  const pr = (number, title, body, { draft = false, state = 'OPEN', mergeState = 'CLEAN', mergeable = 'MERGEABLE', review = '', checks = [], preview = null, head = 'c0ffee1c0ffee1c0ffee1c0ffee1c0ffee1c0ffee1', branch = 'feat/x', mergedAt = null } = {}) => ({
+    number, title, url: `https://github.com/example/board/pull/${number}`, isDraft: draft, state, mergedAt, mergeable, mergeStateStatus: mergeState,
+    reviewDecision: review, headRefOid: head, headRefName: branch, baseRefName: 'main', updatedAt: iso(15), body,
+    commits: { nodes: [{ commit: {
+      statusCheckRollup: checks.length ? { state: checks.some((c) => c.conclusion === 'FAILURE') ? 'FAILURE' : checks.some((c) => !c.conclusion) ? 'PENDING' : 'SUCCESS', contexts: { nodes: checks } } : null,
+      deployments: { nodes: preview ? [{ environment: 'Preview', latestStatus: { state: 'SUCCESS', environmentUrl: preview } }] : [] },
+    } }] },
+  });
+  const answer = (name, prs) => fs.writeFileSync(path.join(gh, `prs-${name}.json`),
+    `${JSON.stringify({ data: { repository: Object.fromEntries(prs.map((p) => [`p${p.number}`, p])) } }, null, 2)}\n`);
+  answer('board', [
+    pr(12, 'feat: squash work (fixture)', '## Summary\n\nSquashed into main already; the row that names it is stale.', { state: 'MERGED', mergedAt: iso(45), head: 'd1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1', branch: 'feat/squash' }),
+    pr(14, 'feat(map): polish the unit rows (fixture)', '## Context\n\nThe unit rows clip their notes on a phone, so the owner cannot read what a unit waits for.\n\n## Solution\n\nWrap every line.',
+      { mergeState: 'BLOCKED', checks: [check('build', 'SUCCESS'), check('lint', 'FAILURE'), check('e2e', 'SUCCESS'), check('verify-agent-board / fixture flows and phone shots (390 and 1440)', 'SUCCESS')], preview: 'https://board-git-feat-polish.example.app', head: 'bbb0000bbb0000bbb0000bbb0000bbb0000bbb00000', branch: 'feat/polish' }),
+    pr(16, 'feat(map): live check status (fixture)', 'Shows each check as it finishes, so the map reads like the PR page.',
+      { mergeState: 'BLOCKED', checks: [check('build', 'SUCCESS'), check('e2e', 'PENDING')], preview: 'https://board-git-feat-preview.example.app', head: 'eee1111eee1111eee1111eee1111eee1111eee11111', branch: 'feat/preview' }),
+  ]);
+  answer('jobs', [
+    pr(7, 'feat(leads): add the Leads screen (fixture)', '## Context / problem\n\nThe private workspace needs a usable list of roles to open and track.\n\n## Solution\n\nLeads and Applied tabs.',
+      { mergeState: 'BLOCKED', checks: [check('verify', 'SUCCESS'), check('preview', 'PENDING')], preview: 'https://jobs-git-feat-leads.example.app', head: 'aaa1111aaa1111aaa1111aaa1111aaa1111aaa11111', branch: 'feat/leads' }),
+    pr(8, 'feat(apply): prototype the form helper (fixture)', 'Merges after the leads screen.', { draft: true, mergeState: 'BEHIND', checks: [check('verify', 'SUCCESS'), check('typecheck', 'FAILURE')], head: 'ccc3333ccc3333ccc3333ccc3333ccc3333ccc33333', branch: 'feat/apply' }),
+  ]);
 
   // ---- dotfiles-autoupdate state: a healthy sync and a failed switch (the alarm) ----
   const home = path.join(dir, 'home');
@@ -172,7 +228,10 @@ export function seed(dir, now = Date.now()) {
       AUTOUPDATE_DAEMON_DIR: daemon,
       AUTOUPDATE_LAVISH_URL: 'http://127.0.0.1:9', // nothing listens there, so the Lavish check stays quiet
       AUTOUPDATE_SILL_APP: path.join(dir, 'no-sill.app'),
+      AGENT_BOARD_GH: path.join(gh, 'gh'),
+      AGENT_BOARD_OWNER: 'the owner', // the fixture's review ledger names the owner by given name
+      AGENT_BOARD_PR_TTL_MS: '3000', // so an edited gh answer shows on the page's next self-refresh
     },
-    files: { units: path.join(lanes, 'fixture-board/units.tsv'), updater: path.join(daemon, 'status') },
+    files: { units: path.join(lanes, 'fixture-board/units.tsv'), updater: path.join(daemon, 'status'), prs: path.join(gh, 'prs-board.json') },
   };
 }
