@@ -233,8 +233,8 @@
       "group": "pstack skill",
       "item": "correct",
       "status": "adapted",
-      "evidence": "nix/user.nix skill declarations; files/.claude/skills/correct/SKILL.md",
-      "reason": "Model-invocable adaptation feeds the rule-enforcement record; upstream now has a less brittle test-quality rule.",
+      "evidence": "nix/user.nix skill declarations; files/.claude/skills/correct/SKILL.md; docs/pstack-audit/batch-3-delta.md",
+      "reason": "Model-invocable adaptation feeds the rule-enforcement record; batch 3 ports observable-behavior and internal-refactor test guidance locally.",
       "codex": "Not pending."
     },
     {
@@ -274,7 +274,7 @@
       "item": "in-your-own-words",
       "status": "adapted",
       "evidence": "nix/user.nix skill declarations; files/.claude/skills/in-your-own-words/SKILL.md",
-      "reason": "Explicit-only leaf; batch 2 prepares the approved goal-restatement route through poteto-mode.",
+      "reason": "Explicit-only leaf; batch 2 added the approved goal-restatement route through poteto-mode and is pushed at 2e8783a. Rebuild confirmation remains outstanding.",
       "codex": "Not pending."
     },
     {
@@ -289,8 +289,8 @@
       "group": "pstack skill",
       "item": "ketchup",
       "status": "adapted",
-      "evidence": "nix/user.nix skill declarations; files/.claude/skills/ketchup/SKILL.md",
-      "reason": "Local T3 rendering and action-first summary remain. Batch 2 prepares the approved catch-up route; rollout is tracked separately.",
+      "evidence": "nix/user.nix skill declarations; files/.claude/skills/ketchup/SKILL.md; docs/pstack-audit/batch-3-delta.md",
+      "reason": "Local T3 rendering and Needs the owner first remain. Batch 3 expands each waiting decision with evidence and risk; the batch 2 route is unchanged and rollout remains separate.",
       "codex": "Not pending."
     },
     {
@@ -338,15 +338,15 @@
       "item": "poteto-mode",
       "status": "adapted",
       "evidence": "nix/user.nix skill declarations; files/.claude/skills/poteto-mode/SKILL.md",
-      "reason": "Local router has 13 adapted playbooks plus three batch 2 routes. Batch 1 Codex roles are upstream; batch 2 is local, and activation remains separate.",
+      "reason": "Local router has 13 adapted playbooks plus three batch 2 routes. Batches 1 and 2 are pushed and independently verified through 2e8783a; their shared rebuild is requested but not confirmed.",
       "codex": "Not pending."
     },
     {
       "group": "pstack principle",
       "item": "principle-attack-the-premise",
       "status": "adapted",
-      "evidence": "files/OPINIONS.md",
-      "reason": "Two failed fixes trigger a premise check. The leaf skill is intentionally not installed.",
+      "evidence": "files/OPINIONS.md; docs/pstack-audit/batch-3-delta.md",
+      "reason": "The short OPINIONS summary remains; batch 3 adds a direct, rerunnable premise check to the bug-fix playbook. No leaf skill is installed.",
       "codex": "Not pending."
     },
     {
@@ -401,8 +401,8 @@
       "group": "pstack principle",
       "item": "principle-fix-root-causes",
       "status": "adapted",
-      "evidence": "files/OPINIONS.md; poteto-mode/references/bug-fix.md",
-      "reason": "Reproduce, instrument and fix the cause. The leaf skill is intentionally not installed.",
+      "evidence": "files/OPINIONS.md; poteto-mode/references/bug-fix.md; docs/pstack-audit/batch-3-delta.md",
+      "reason": "Batch 3 adds first-incorrect-transition and legitimate-state guard guidance to the real-user bug-fix workflow. No leaf skill is installed.",
       "codex": "Not pending."
     },
     {
@@ -433,8 +433,8 @@
       "group": "pstack principle",
       "item": "principle-make-operations-idempotent",
       "status": "adapted",
-      "evidence": "files/OPINIONS.md",
-      "reason": "Retries and interrupted runs must converge. The leaf skill is intentionally not installed.",
+      "evidence": "files/OPINIONS.md; docs/pstack-audit/batch-3-delta.md",
+      "reason": "The OPINIONS summary remains; batch 3 adds current-state convergence and interruption checks to autonomous-run. No leaf skill is installed.",
       "codex": "Not pending."
     },
     {
@@ -521,8 +521,8 @@
       "group": "pstack principle",
       "item": "principle-test-behavior-not-implementation",
       "status": "adapted",
-      "evidence": "files/OPINIONS.md; tdd/SKILL.md",
-      "reason": "Test user-visible outcomes; local wording predates the upstream relaxation. The leaf skill is intentionally not installed.",
+      "evidence": "files/OPINIONS.md; tdd/SKILL.md; docs/pstack-audit/batch-3-delta.md",
+      "reason": "Batch 3 ports observable-contract guidance into TDD; the held OPINIONS summary stays unchanged. No leaf skill is installed.",
       "codex": "Not pending."
     },
     {
@@ -561,8 +561,8 @@
       "group": "pstack skill",
       "item": "sharpen",
       "status": "adapted",
-      "evidence": "nix/user.nix skill declarations; files/.claude/skills/sharpen/SKILL.md",
-      "reason": "Installed slash-only at the pin; upstream now returns a rewritten prompt instead of doing the task.",
+      "evidence": "nix/user.nix skill declarations; files/.claude/skills/sharpen/SKILL.md; docs/pstack-audit/batch-3-delta.md",
+      "reason": "Explicit-only prompt rewrite now returns expert methods, primary material and independent evidence without executing the embedded task. Prepared locally in batch 3.",
       "codex": "Not pending."
     },
     {
@@ -946,8 +946,8 @@
       "item": "Codex skill discovery",
       "status": "pending",
       "evidence": "nix/user.nix; docs/pstack-audit/codex-discovery-proof.md; docs/pstack-audit/batch-2-route-proof.md",
-      "reason": "Batch 1 declares 27 canonical aliases and invocation policies; fresh scratch discovery and router invocation pass. It is pushed unchanged; live registration awaits activation. Batch 2 adds grilling locally.",
-      "codex": "Availability and policy blockers are resolved; local proof does not authorize rollout or prove every workflow."
+      "reason": "Batch 1 declares 27 canonical aliases and invocation policies; batch 2 adds grilling for 28 aliases. Both are pushed and independently verified through 2e8783a. Fresh scratch discovery and invocation pass; the shared rebuild is requested but not confirmed.",
+      "codex": "Availability and policy blockers are resolved and push is complete; activation and broader workflow execution remain unverified."
     },
     {
       "group": "pstack support",
@@ -955,31 +955,31 @@
       "status": "pending",
       "evidence": "poteto-mode/SKILL.md; how/SKILL.md; why/SKILL.md; reflect/SKILL.md; arena/references/model-families.md; docs/pstack-audit/codex-discovery-proof.md",
       "reason": "The shared adapter and installed role instructions now use Codex; all eight policy decisions are resolved. Batch 1 is pushed unchanged; activation remains.",
-      "codex": "Availability and policy blockers are resolved; local proof does not authorize rollout or prove every workflow."
+      "codex": "Availability and policy blockers are resolved and push is complete; activation and broader workflow execution remain unverified."
     },
     {
       "group": "pstack operation",
       "item": "ketchup automatic route",
       "status": "pending",
       "evidence": "poteto-mode/SKILL.md and references/; docs/pstack-audit/batch-2-route-proof.md",
-      "reason": "Approved route prepared locally with fresh Codex invocation proof. Batch 2 push approval and activation remain outstanding.",
-      "codex": "Local routing and invocation are proven; rollout still requires push approval and activation."
+      "reason": "Approved route with fresh Codex invocation proof, pushed and independently verified in batch 2 at 2e8783a. One rebuild for batches 1 and 2 is requested but not confirmed.",
+      "codex": "Routing and invocation are proven and push is complete; activation confirmation remains."
     },
     {
       "group": "pstack operation",
       "item": "in-your-own-words automatic route",
       "status": "pending",
       "evidence": "poteto-mode/SKILL.md and references/; docs/pstack-audit/batch-2-route-proof.md",
-      "reason": "Approved route prepared locally with fresh Codex invocation proof. Batch 2 push approval and activation remain outstanding.",
-      "codex": "Local routing and invocation are proven; rollout still requires push approval and activation."
+      "reason": "Approved route with fresh Codex invocation proof, pushed and independently verified in batch 2 at 2e8783a. One rebuild for batches 1 and 2 is requested but not confirmed.",
+      "codex": "Routing and invocation are proven and push is complete; activation confirmation remains."
     },
     {
       "group": "pstack operation",
       "item": "grilling automatic route",
       "status": "pending",
       "evidence": "poteto-mode/SKILL.md and references/; docs/pstack-audit/batch-2-route-proof.md",
-      "reason": "Approved route prepared locally with fresh Codex invocation proof. Batch 2 push approval and activation remain outstanding.",
-      "codex": "Local routing and invocation are proven; rollout still requires push approval and activation."
+      "reason": "Approved route with fresh Codex invocation proof, pushed and independently verified in batch 2 at 2e8783a. One rebuild for batches 1 and 2 is requested but not confirmed.",
+      "codex": "Routing and invocation are proven and push is complete; activation confirmation remains."
     },
     {
       "group": "pstack operation",
@@ -1130,7 +1130,7 @@
       "item": "grilling",
       "status": "adopted",
       "evidence": "files/.claude/skills/grilling/SKILL.md; nix/user.nix",
-      "reason": "Explicit-only leaf; batch 2 adds the Codex alias and approved questioning route through poteto-mode.",
+      "reason": "Explicit-only leaf; batch 2 added its Codex alias and approved questioning route through poteto-mode. It is pushed at 2e8783a; rebuild confirmation remains outstanding.",
       "codex": "Not pending."
     },
     {
@@ -1371,7 +1371,7 @@
       "status": "pending",
       "evidence": "docs/workflow-north-star.md; arena/references/model-families.md; docs/pstack-audit/codex-discovery-proof.md",
       "reason": "The adapter supports native, T3 and CLI delegation, with fresh Codex discovery and explanation proof. Batch 1 is pushed unchanged; activation and broader playbook execution remain.",
-      "codex": "Availability and policy blockers are resolved; local proof does not authorize rollout or prove every workflow."
+      "codex": "Availability and policy blockers are resolved and push is complete; activation and broader workflow execution remain unverified."
     },
     {
       "group": "Other audited source",
@@ -1616,74 +1616,74 @@
     {
       "group": "Upstream delta",
       "item": "correct",
-      "status": "pending",
-      "evidence": "cursor/plugins compare 1e5c90a4...88d47514; pstack/skills/correct",
-      "reason": "Test quality now means breaking when observable behavior breaks and surviving internal refactors. No upstream refresh is applied.",
-      "codex": "Codex is available; the orchestrator assigns this later batch after its dependencies. Review of local patches and separate rollout approval remain."
+      "status": "adapted",
+      "evidence": "docs/pstack-audit/batch-3-delta.md; frozen upstream comparison 1e5c90a4...88d47514",
+      "reason": "Ported the broken-behavior and internal-refactor test-quality rule; kept its automatic correction trigger and enforcement-table workflow. Prepared locally; push approval and activation remain.",
+      "codex": "Source review complete; local preparation does not claim rollout."
     },
     {
       "group": "Upstream delta",
       "item": "ketchup",
-      "status": "pending",
-      "evidence": "cursor/plugins compare 1e5c90a4...88d47514; pstack/skills/ketchup",
-      "reason": "Use visuals to explain changes and list every waiting decision without a word-count cutoff. No upstream refresh is applied.",
-      "codex": "Codex is available; the orchestrator assigns this later batch after its dependencies. Review of local patches and separate rollout approval remain."
+      "status": "adapted",
+      "evidence": "docs/pstack-audit/batch-3-delta.md; frozen upstream comparison 1e5c90a4...88d47514; docs/pstack-audit/batch-3-route-proof.md",
+      "reason": "Ported complete decision lists with evidence and risk, no total word cap, and explanatory visuals; kept Needs the owner first and authorization deduplication. Prepared locally; push approval and activation remain.",
+      "codex": "Source review complete; local preparation does not claim rollout."
     },
     {
       "group": "Upstream delta",
       "item": "poteto-mode",
-      "status": "pending",
-      "evidence": "cursor/plugins compare 1e5c90a4...88d47514; pstack/skills/poteto-mode",
-      "reason": "Normalizes its skill name and updates premise, root-cause and test principles. No upstream refresh is applied.",
-      "codex": "Codex is available; the orchestrator assigns this later batch after its dependencies. Review of local patches and separate rollout approval remain."
+      "status": "adapted",
+      "evidence": "docs/pstack-audit/batch-3-delta.md; frozen upstream comparison 1e5c90a4...88d47514",
+      "reason": "Retain the normalized name, automatic router, 16 playbooks and batch 2 route precedence; principle ports live in the relevant playbooks and TDD.",
+      "codex": "Not pending."
     },
     {
       "group": "Upstream delta",
       "item": "interrogate",
-      "status": "pending",
-      "evidence": "cursor/plugins compare 1e5c90a4...88d47514; pstack/skills/interrogate",
-      "reason": "Lead-judgment guidance is trimmed; compare against the local review adapter. No upstream refresh is applied.",
-      "codex": "Codex is available; the orchestrator assigns this later batch after its dependencies. Review of local patches and separate rollout approval remain."
+      "status": "adapted",
+      "evidence": "docs/pstack-audit/batch-3-delta.md; frozen upstream comparison 1e5c90a4...88d47514",
+      "reason": "Ported the lead-judgment trim, removing the five-finding cutoff; kept Codex reviewers and four verdict buckets. Prepared locally; push approval and activation remain.",
+      "codex": "Source review complete; local preparation does not claim rollout."
     },
     {
       "group": "Upstream delta",
       "item": "make-bot-ui",
-      "status": "pending",
-      "evidence": "cursor/plugins compare 1e5c90a4...88d47514; pstack/skills/make-bot-ui",
-      "reason": "Trims marginal guidance; still depends on the unadopted automation route. No upstream refresh is applied.",
-      "codex": "Codex is available; the orchestrator assigns this later batch after its dependencies. Review of local patches and separate rollout approval remain."
+      "status": "skipped",
+      "evidence": "docs/pstack-audit/batch-3-delta.md; frozen upstream comparison 1e5c90a4...88d47514",
+      "reason": "Keep the deliberate skip: upstream only normalizes its name; Cursor/Grok webhook setup does not match the local T3 pack workflow.",
+      "codex": "Not pending."
     },
     {
       "group": "Upstream delta",
       "item": "poteto-help",
-      "status": "pending",
-      "evidence": "cursor/plugins compare 1e5c90a4...88d47514; pstack/skills/poteto-help",
-      "reason": "Help and recipes now include formal verification and refreshed guide navigation. No upstream refresh is applied.",
-      "codex": "Codex is available; the orchestrator assigns this later batch after its dependencies. Review of local patches and separate rollout approval remain."
+      "status": "skipped",
+      "evidence": "docs/pstack-audit/batch-3-delta.md; frozen upstream comparison 1e5c90a4...88d47514",
+      "reason": "Keep the deliberate skip: local routing and documentation cover help; formal-verification adoption remains assigned to batches 4 and 5.",
+      "codex": "Not pending."
     },
     {
       "group": "Upstream delta",
       "item": "setup-pstack",
-      "status": "pending",
-      "evidence": "cursor/plugins compare 1e5c90a4...88d47514; pstack/skills/setup-pstack",
-      "reason": "Offers formal verification and supports the new harness mapping. No upstream refresh is applied.",
-      "codex": "Codex is available; the orchestrator assigns this later batch after its dependencies. Review of local patches and separate rollout approval remain."
+      "status": "skipped",
+      "evidence": "docs/pstack-audit/batch-3-delta.md; frozen upstream comparison 1e5c90a4...88d47514",
+      "reason": "Keep the deliberate skip: model-routing.md owns roles, and the added formal-verification offer belongs to separately assigned adoption work.",
+      "codex": "Not pending."
     },
     {
       "group": "Upstream delta",
       "item": "sharpen",
-      "status": "pending",
-      "evidence": "cursor/plugins compare 1e5c90a4...88d47514; pstack/skills/sharpen",
-      "reason": "Returns a deeper rewritten prompt rather than silently executing the task. No upstream refresh is applied.",
-      "codex": "Codex is available; the orchestrator assigns this later batch after its dependencies. Review of local patches and separate rollout approval remain."
+      "status": "adapted",
+      "evidence": "docs/pstack-audit/batch-3-delta.md; frozen upstream comparison 1e5c90a4...88d47514; docs/pstack-audit/batch-3-route-proof.md",
+      "reason": "Ported prompt rewriting without task execution, with primary material, concrete methods and an independent check; remains explicit-only. Prepared locally; push approval and activation remain.",
+      "codex": "Source review complete; local preparation does not claim rollout."
     },
     {
       "group": "Upstream delta",
       "item": "swarm",
-      "status": "pending",
-      "evidence": "cursor/plugins compare 1e5c90a4...88d47514; pstack/skills/swarm",
-      "reason": "Removes redundant worker-count and report guidance. No upstream refresh is applied.",
-      "codex": "Codex is available; the orchestrator assigns this later batch after its dependencies. Review of local patches and separate rollout approval remain."
+      "status": "adapted",
+      "evidence": "docs/pstack-audit/batch-3-delta.md; frozen upstream comparison 1e5c90a4...88d47514",
+      "reason": "Removed duplicated report guidance; retained worktree ownership, explicit worker count, lane concurrency and Codex roles. Prepared locally; push approval and activation remain.",
+      "codex": "Source review complete; local preparation does not claim rollout."
     },
     {
       "group": "Upstream delta",
@@ -1696,58 +1696,58 @@
     {
       "group": "Upstream delta",
       "item": "principle-attack-the-premise",
-      "status": "pending",
-      "evidence": "cursor/plugins compare 1e5c90a4...88d47514; pstack/skills/principle-attack-the-premise",
-      "reason": "Directly test the failed premise instead of mandating one specific imbalance census. No upstream refresh is applied.",
-      "codex": "Codex is available; the orchestrator assigns this later batch after its dependencies. Review of local patches and separate rollout approval remain."
+      "status": "adapted",
+      "evidence": "docs/pstack-audit/batch-3-delta.md; frozen upstream comparison 1e5c90a4...88d47514",
+      "reason": "Ported the direct, rerunnable premise check into the bug-fix playbook; no mandatory imbalance census. Prepared locally; push approval and activation remain.",
+      "codex": "Source review complete; local preparation does not claim rollout."
     },
     {
       "group": "Upstream delta",
       "item": "principle-fix-root-causes",
-      "status": "pending",
-      "evidence": "cursor/plugins compare 1e5c90a4...88d47514; pstack/skills/principle-fix-root-causes",
-      "reason": "Allow guards for legitimate states and find the first incorrect transition. No upstream refresh is applied.",
-      "codex": "Codex is available; the orchestrator assigns this later batch after its dependencies. Review of local patches and separate rollout approval remain."
+      "status": "adapted",
+      "evidence": "docs/pstack-audit/batch-3-delta.md; frozen upstream comparison 1e5c90a4...88d47514",
+      "reason": "Ported the first-incorrect-transition and legitimate-state guard distinction into the bug-fix playbook. Prepared locally; push approval and activation remain.",
+      "codex": "Source review complete; local preparation does not claim rollout."
     },
     {
       "group": "Upstream delta",
       "item": "principle-make-operations-idempotent",
-      "status": "pending",
-      "evidence": "cursor/plugins compare 1e5c90a4...88d47514; pstack/skills/principle-make-operations-idempotent",
-      "reason": "Derive actions from current state and recognize leftovers after interruption. No upstream refresh is applied.",
-      "codex": "Codex is available; the orchestrator assigns this later batch after its dependencies. Review of local patches and separate rollout approval remain."
+      "status": "adapted",
+      "evidence": "docs/pstack-audit/batch-3-delta.md; frozen upstream comparison 1e5c90a4...88d47514",
+      "reason": "Ported current-state convergence and recognizable interruption leftovers into the autonomous-run playbook. Prepared locally; push approval and activation remain.",
+      "codex": "Source review complete; local preparation does not claim rollout."
     },
     {
       "group": "Upstream delta",
       "item": "principle-migrate-callers-then-delete-legacy-apis",
-      "status": "pending",
-      "evidence": "cursor/plugins compare 1e5c90a4...88d47514; pstack/skills/principle-migrate-callers-then-delete-legacy-apis",
-      "reason": "Removes redundant migration rules. No upstream refresh is applied.",
-      "codex": "Codex is available; the orchestrator assigns this later batch after its dependencies. Review of local patches and separate rollout approval remain."
+      "status": "adapted",
+      "evidence": "docs/pstack-audit/batch-3-delta.md; frozen upstream comparison 1e5c90a4...88d47514",
+      "reason": "Retain the local coordinated migration and deletion policy; upstream removes instructions that still enforce the approved local simplification rule.",
+      "codex": "Not pending."
     },
     {
       "group": "Upstream delta",
       "item": "principle-test-behavior-not-implementation",
-      "status": "pending",
-      "evidence": "cursor/plugins compare 1e5c90a4...88d47514; pstack/skills/principle-test-behavior-not-implementation",
-      "reason": "Uses observable contracts instead of banning assertion shapes categorically. No upstream refresh is applied.",
-      "codex": "Codex is available; the orchestrator assigns this later batch after its dependencies. Review of local patches and separate rollout approval remain."
+      "status": "adapted",
+      "evidence": "docs/pstack-audit/batch-3-delta.md; frozen upstream comparison 1e5c90a4...88d47514",
+      "reason": "Ported observable-contract guidance into TDD, including external effects, meaningful absence and invariants; held OPINIONS stays unchanged. Prepared locally; push approval and activation remain.",
+      "codex": "Source review complete; local preparation does not claim rollout."
     },
     {
       "group": "Upstream delta",
       "item": "principle-type-system-discipline",
-      "status": "pending",
-      "evidence": "cursor/plugins compare 1e5c90a4...88d47514; pstack/skills/principle-type-system-discipline",
-      "reason": "Shortens and refines type guidance. No upstream refresh is applied.",
-      "codex": "Codex is available; the orchestrator assigns this later batch after its dependencies. Review of local patches and separate rollout approval remain."
+      "status": "adapted",
+      "evidence": "docs/pstack-audit/batch-3-delta.md; frozen upstream comparison 1e5c90a4...88d47514",
+      "reason": "Retain the concise local illegal-state, boundary parsing and compiler-honesty guidance; upstream deletions do not improve that adaptation.",
+      "codex": "Not pending."
     },
     {
       "group": "Upstream delta",
       "item": "Documentation and package metadata",
-      "status": "pending",
-      "evidence": "pstack README, plugin manifests, docs/guide and docs/harness at upstream head",
-      "reason": "Guide and package docs now cover Claude Code and formal verification; version is 0.15.29; no pin bump is applied.",
-      "codex": "Codex is available; the orchestrator assigns this later batch after its dependencies. Review of local patches and separate rollout approval remain."
+      "status": "adapted",
+      "evidence": "docs/pstack-audit/batch-3-delta.md; frozen upstream comparison 1e5c90a4...88d47514",
+      "reason": "Retain the 0.15.24 baseline pin and local package model; record selected 0.15.29 ports and revised recipes without installing the upstream Claude adapter.",
+      "codex": "Not pending."
     },
     {
       "group": "Other audited source",
@@ -1779,8 +1779,265 @@
       "status": "pending",
       "evidence": "arena/references/model-families.md; show-me-your-work/SKILL.md; docs/pstack-audit/codex-discovery-proof.md",
       "reason": "Fresh Codex contexts are approved as the default, with explicit or capability/quota exceptions for Claude. Batch 1 routing is pushed unchanged; activation and a complete arena/audit run remain.",
-      "codex": "Availability and policy blockers are resolved; local proof does not authorize rollout or prove every workflow."
+      "codex": "Availability and policy blockers are resolved and push is complete; activation and broader workflow execution remain unverified."
     }
   ],
-  "project_typescript_pin": "23e4138daa01c42d4969f7a5465f82704e64f798"
+  "project_typescript_pin": "23e4138daa01c42d4969f7a5465f82704e64f798",
+  "batch_3_outcomes": {
+    "principle-attack-the-premise": "ported",
+    "principle-fix-root-causes": "ported",
+    "principle-make-operations-idempotent": "ported",
+    "principle-test-behavior-not-implementation": "ported",
+    "correct": "ported",
+    "interrogate": "ported",
+    "ketchup": "ported",
+    "sharpen": "ported",
+    "swarm": "ported",
+    "principle-migrate-callers-then-delete-legacy-apis": "kept local",
+    "principle-type-system-discipline": "kept local",
+    "poteto-mode": "kept local",
+    "Documentation and package metadata": "kept local",
+    "make-bot-ui": "skipped",
+    "poteto-help": "skipped",
+    "setup-pstack": "skipped"
+  },
+  "ownership_intro": [
+    "This table assigns all 42 entries that were pending in the audited snapshot.",
+    "The proposed order is a batch number, not permission to bypass a dependency.",
+    "\"None\" means local preparation or read-only verification can start; deploying every dotfiles change still needs push approval and the normal activation path.",
+    "Batch 3 reviews the 16 assigned delta entries; this table retains the original 42-entry inventory.",
+    "Orchestrator 36 owns the schedule rows and deduplicates existing tasks.",
+    "Job-tracker coordinator 36 owns all seven order 71 rows and the later TypeScript refresh.",
+    "Levers 5, 2 and 7 stay held until 22 October at 16:00 SGT and are outside this unit.",
+    "the owner finalized the exact OPINIONS paragraph in `preference-wording-draft.md`; it is applied locally, with VOICE unchanged.",
+    "[Current rollout status](audit.md#rollout-status) records the confirmed pushes and outstanding rebuild confirmation.",
+    "Batch 2 closes the package comparison by retaining the local set and confirms built-in plugin enablement.",
+    "Wheelhouse and Guide Part 3 remain pending on the named external evidence blockers below.",
+    "Batch 3 closes all 16 assigned source reviews: 9 ported, 4 kept local and 3 skipped.",
+    "Its ports remain local pending push approval and activation; see batch-3-delta.md and batch-3-route-proof.md.",
+    "The table is generated from audit.json by render.py."
+  ],
+  "ownership": [
+    {
+      "entry": "pstack skill: create-formal-verification-skill",
+      "lane": "dotfiles",
+      "blocked_by": "none",
+      "order": "4. Review and adapt the generator, then prove one bounded project case."
+    },
+    {
+      "entry": "pstack skill: maintain-formal-verification-skill",
+      "lane": "dotfiles",
+      "blocked_by": "none",
+      "order": "5. Follow the first project proof with a source-drift check."
+    },
+    {
+      "entry": "pstack support: Claude Code package",
+      "lane": "dotfiles",
+      "blocked_by": "none",
+      "order": "2. Closed: retain the local set; the replacement loses local patches and adds executable tooling. See batch-2-sources.md."
+    },
+    {
+      "entry": "pstack support: Codex skill discovery",
+      "lane": "dotfiles",
+      "blocked_by": "none",
+      "order": "1. Migrate routing and prove discovery and fresh-context execution locally."
+    },
+    {
+      "entry": "pstack support: Codex role migration for installed skills",
+      "lane": "dotfiles",
+      "blocked_by": "none",
+      "order": "1. Migrate routing and prove discovery and fresh-context execution locally."
+    },
+    {
+      "entry": "pstack operation: ketchup automatic route",
+      "lane": "dotfiles",
+      "blocked_by": "activation confirmation",
+      "order": "2. Pushed and independently verified at 2e8783a with a fresh Codex catch-up trigger; see batch-2-route-proof.md."
+    },
+    {
+      "entry": "pstack operation: in-your-own-words automatic route",
+      "lane": "dotfiles",
+      "blocked_by": "activation confirmation",
+      "order": "2. Pushed and independently verified at 2e8783a with a fresh Codex goal-restatement trigger; see batch-2-route-proof.md."
+    },
+    {
+      "entry": "pstack operation: grilling automatic route",
+      "lane": "dotfiles",
+      "blocked_by": "activation confirmation",
+      "order": "2. Pushed and independently verified at 2e8783a with a fresh Codex questioning trigger and explicit-only alias; see batch-2-route-proof.md."
+    },
+    {
+      "entry": "pstack operation: Daily reflect retro",
+      "lane": "schedules",
+      "blocked_by": "none",
+      "order": "6. Orchestrator 36 checks existing schedules and evidence before changing any task."
+    },
+    {
+      "entry": "pstack operation: Daily verification upkeep",
+      "lane": "schedules",
+      "blocked_by": "none",
+      "order": "6. Orchestrator 36 checks existing schedules and evidence before changing any task."
+    },
+    {
+      "entry": "Other audited source: ig-collection-extract",
+      "lane": "dotfiles",
+      "blocked_by": "none",
+      "order": "6. Inspect the unmanaged skill and prepare a managed migration without overwriting the live copy."
+    },
+    {
+      "entry": "Other audited source: cc-plugin-you-should-know",
+      "lane": "external sources",
+      "blocked_by": "none",
+      "order": "2. Closed: enabled in local settings, with historical runtime records; current notice delivery is unverified. See batch-2-sources.md."
+    },
+    {
+      "entry": "Other audited source: Wheelhouse",
+      "lane": "external sources",
+      "blocked_by": "authoritative source, provenance and license",
+      "order": "2. Investigated: original source returns 404; discovered copy has no verified successor provenance or license. See batch-2-sources.md."
+    },
+    {
+      "entry": "Other audited source: Agent-agnostic workflows",
+      "lane": "dotfiles",
+      "blocked_by": "none",
+      "order": "1. Migrate routing and prove discovery and fresh-context execution locally."
+    },
+    {
+      "entry": "Review article/video: 1. Async timer lint guard",
+      "lane": "job-tracker",
+      "blocked_by": "none",
+      "order": "Existing coordinator 36 work: issue 108 proceeds through the selected separate helper-fix PR."
+    },
+    {
+      "entry": "Review article/video: 2. Two-strike hosted walkthrough rule",
+      "lane": "job-tracker",
+      "blocked_by": "none",
+      "order": "In force under order 71; coordinator 36 owns application."
+    },
+    {
+      "entry": "Review article/video: 3. PR size cap and scope freeze",
+      "lane": "job-tracker",
+      "blocked_by": "hold",
+      "order": "Coordinator 36 applies this after issue 108."
+    },
+    {
+      "entry": "Review article/video: 4. REVIEW.md and concise project pointers",
+      "lane": "job-tracker",
+      "blocked_by": "hold",
+      "order": "Coordinator 36 starts this after 22 October at 16:00 SGT."
+    },
+    {
+      "entry": "Review article/video: 5. Fresh-context worker pre-review",
+      "lane": "job-tracker",
+      "blocked_by": "hold",
+      "order": "Coordinator 36 starts this after 22 October at 16:00 SGT."
+    },
+    {
+      "entry": "Review article/video: 6. Review rounds, walkthroughs and escapes ledger",
+      "lane": "job-tracker",
+      "blocked_by": "hold",
+      "order": "Coordinator 36 starts this after 22 October at 16:00 SGT."
+    },
+    {
+      "entry": "Review article/video: 7. Reviewer replay on escaped bugs",
+      "lane": "job-tracker",
+      "blocked_by": "hold",
+      "order": "Coordinator 36 starts this after 22 October at 16:00 SGT."
+    },
+    {
+      "entry": "Review article/video: jt map shared context",
+      "lane": "job-tracker",
+      "blocked_by": "none",
+      "order": "Done: the PR is merged and Orchestrator 35 verified production."
+    },
+    {
+      "entry": "Review article/video: CodeRabbit",
+      "lane": "external sources",
+      "blocked_by": "the owner's finalization",
+      "order": "6. Inspect existing provider setup and price; present any required provider or paid-plan decision."
+    },
+    {
+      "entry": "Upstream delta: correct",
+      "lane": "dotfiles"
+    },
+    {
+      "entry": "Upstream delta: ketchup",
+      "lane": "dotfiles"
+    },
+    {
+      "entry": "Upstream delta: poteto-mode",
+      "lane": "dotfiles"
+    },
+    {
+      "entry": "Upstream delta: interrogate",
+      "lane": "dotfiles"
+    },
+    {
+      "entry": "Upstream delta: make-bot-ui",
+      "lane": "dotfiles"
+    },
+    {
+      "entry": "Upstream delta: poteto-help",
+      "lane": "dotfiles"
+    },
+    {
+      "entry": "Upstream delta: setup-pstack",
+      "lane": "dotfiles"
+    },
+    {
+      "entry": "Upstream delta: sharpen",
+      "lane": "dotfiles"
+    },
+    {
+      "entry": "Upstream delta: swarm",
+      "lane": "dotfiles"
+    },
+    {
+      "entry": "Upstream delta: typescript-best-practices",
+      "lane": "job-tracker",
+      "blocked_by": "hold",
+      "order": "Coordinator 36 queues this after order 71."
+    },
+    {
+      "entry": "Upstream delta: principle-attack-the-premise",
+      "lane": "dotfiles"
+    },
+    {
+      "entry": "Upstream delta: principle-fix-root-causes",
+      "lane": "dotfiles"
+    },
+    {
+      "entry": "Upstream delta: principle-make-operations-idempotent",
+      "lane": "dotfiles"
+    },
+    {
+      "entry": "Upstream delta: principle-migrate-callers-then-delete-legacy-apis",
+      "lane": "dotfiles"
+    },
+    {
+      "entry": "Upstream delta: principle-test-behavior-not-implementation",
+      "lane": "dotfiles"
+    },
+    {
+      "entry": "Upstream delta: principle-type-system-discipline",
+      "lane": "dotfiles"
+    },
+    {
+      "entry": "Upstream delta: Documentation and package metadata",
+      "lane": "dotfiles"
+    },
+    {
+      "entry": "Other audited source: Guide Part 3",
+      "lane": "external sources",
+      "blocked_by": "accessible author publication or authoritative link",
+      "order": "2. Investigated: current searches did not establish publication and direct X reading failed. See batch-2-sources.md."
+    },
+    {
+      "entry": "Other audited source: Cross-family audit operation",
+      "lane": "dotfiles",
+      "blocked_by": "none",
+      "order": "1. Migrate routing and prove discovery and fresh-context execution locally."
+    }
+  ],
+  "rollout_status": "Batches 1 and 2 are approved, pushed and independently verified through 2e8783a; the main checkout is fast-forwarded there. One rebuild for both batches is requested but not confirmed. Batch 3 remains local and unpushed."
 }

@@ -65,13 +65,19 @@ bare command (the scripts/ wrappers), never `pnpm dlx`, and chrome-devtools-axi
 keeps its "Which browser" and "Sharing the agent Chrome" sections. Bump no-mistakes by changing the flake input tag + vendorHash.
 When you refresh the no-mistakes SKILL.md from a new tag, keep its "PR descriptions (dotfiles addition)" section and its own `references/pr-description.md`.
 pstack skills are pinned to cursor/plugins 1e5c90a4 (pstack 0.15.24, 2026-10-14); nix/user.nix lists them, the skipped ones, and every local edit.
+Batch 3 selectively ports changes from 88d47514, pstack 0.15.29, while retaining that baseline pin.
+The [delta record](pstack-audit/batch-3-delta.md) covers every assigned entry, retained local difference and deliberate skip.
 poteto-mode is the entry point (2026-10-16).
 The only other model-invocable pstack skills are unslop, correct and show-me-your-work, which are vendored from pstack and opened up here as a local edit (listed in nix/user.nix).
 Its body routes the task to one playbook in `poteto-mode/references/`, and each playbook runs the slash-only skills it needs (how, why, teach, architect, arena, figure-it-out, technical-writing, tdd, blast-radius, codex-review, interrogate) by reading their SKILL.md.
 The approved batch 2 routes map catch-up requests to ketchup, requests to restate goals to in-your-own-words, and requests for questioning or interview drills to grilling.
 They precede the general review and explanation routes; ordinary plan reviews still use review.
 The leaf skills stay explicit-only in both harnesses, with Codex aliases and invocation metadata; poteto-mode reads them through its three local playbooks.
-These routes are prepared in the worktree and require the normal push and activation before live use.
+Batch 2 was approved, pushed and independently verified at 2e8783a, and the main checkout was fast-forwarded there.
+One rebuild covering batches 1 and 2 has been requested but not confirmed.
+The batch 3 ketchup refresh lists every waiting decision with evidence and risk, without a total reply word cap.
+`/sharpen` returns an improved prompt with primary sources, concrete methods and an independent check; it does not execute the embedded task.
+Sharpen remains explicit-only.
 A new pstack skill stays slash-only and gets a route from a playbook, so the always-loaded skill list does not grow.
 `python3 -I scripts/check-skills` checks every skill's frontmatter (as YAML), LICENSE, links and `home.file` line.
 `.githooks/pre-push` runs the pushed commit's checker against an exported copy of that commit before the public mirror leak gate on pushes to `main`.
@@ -82,7 +88,9 @@ the owner asked on 2026-10-14 for the rest of the pstack set, which overrides th
 To update: clone cursor/plugins, check out the old pin's `pstack/skills` next to the new one, and save `diff -ru old/<name> files/.claude/skills/<name>` as the local patch.
 Copy the new upstream dir over, re-apply the patch, and fix rejected hunks by hand.
 Security-read every changed upstream file (they instruct agents; flag any script, network call, or hook), keep each dir's MIT LICENSE, and record the new commit and date in nix/user.nix.
-Rewrite any new Cursor-only line the same way: `Task` becomes Agent tool roles from CLAUDE.md, `pstack-models.mdc` and poteto-mode "Subagents" become CLAUDE.md model routing, a second model family goes through arena/references/model-families.md, `/visualize` becomes html_render, and principle skills point at ~/OPINIONS.md.
+Rewrite Cursor-only instructions through `docs/model-routing.md` and `arena/references/model-families.md`, preserving Codex-first roles, worktree ownership and explicit-only metadata.
+Use T3 rendering for HTML visuals and keep principle guidance in OPINIONS or the relevant routed playbook.
+A refresh never authorizes editing held preference files or replacing the shared adapter with the upstream Claude-only model mapping.
 unslop follows upstream since 0.15.24 but keeps its model-invocable "Must always apply." frontmatter.
 gnhf was evaluated and skipped for now (/loop covers most of it).
 Treehouse and firstmate came off hold 2026-07-05 (owner's call; firstmate's herdr backend resolves the overlap concern).

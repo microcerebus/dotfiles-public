@@ -32,18 +32,20 @@ SOURCES = [
 INTRO = [
     'The core pstack workflow is present, but not every item is adopted or operational.',
     'The old Later list is stale: the explanation and multi-model skills, reflect and poteto-mode are installed; the TypeScript project skill is merged.',
-    'Batch 1 is pushed unchanged with 27 Codex aliases; activation remains pending. Batch 2 prepares three automatic routes and a 28th alias locally.',
+    'Batch 1 declares 27 Codex aliases; batch 2 adds three automatic routes and a 28th alias.',
     'The audited upstream is 0.15.29, compared with the dotfiles pin at 0.15.24. Keep the local skill set after comparing the Claude package; formal-verification adoption remains pending.',
+    'Batch 3 closes its 16 source reviews: 9 entries ported, 4 kept local and 3 skipped. The selective refresh is local; the baseline pin stays at 0.15.24.',
 ]
 DECISION = [
-    'Batch 1 is pushed; the owner owns its rebuild. Batch 2 routes are prepared and checked locally, with push approval and activation still outstanding.',
-    'Batch 2 retains the local Claude skill set and confirms built-in plugin enablement. Wheelhouse source/license and Guide Part 3 publication evidence remain blocked.',
+    DATA['rollout_status'],
+    'Batch 2 retains the local skill set and confirms built-in plugin enablement. Batch 3 ports selected upstream guidance locally. Wheelhouse source/license and Guide Part 3 publication evidence remain blocked.',
     'The job-tracker coordinator owns order 71: the two-strike rule is in force, the async guard is active work, the size cap follows it, and the four larger rows start after 22 October at 16:00 SGT.',
     'This batch changes no live skill links, dependency, plugin, schedule or provider setting. The orchestrator owns later batches and rollout.',
 ]
 LIMITS = [
     'Checked on 20 October 2026 at 19:01 SGT using local files and read-only GitHub calls; the head is frozen in audit.json.',
-    'Batch 1 landing was confirmed by the orchestrator. Batch 2 source evidence and exact route prompts are in batch-2-sources.md and batch-2-route-proof.md; scratch results do not claim live rollout.',
+    'The orchestrator independently verified both batch 1 and batch 2 pushes. Batch 2 source evidence and exact route prompts are in batch-2-sources.md and batch-2-route-proof.md; scratch results do not claim live rollout.',
+    'Batch 3 decisions, retained differences and fresh invocation evidence are in batch-3-delta.md and batch-3-route-proof.md. Its source review is complete, with push approval and activation still outstanding.',
     'Adopted means an inspected installation, declaration or explicitly retained practice; adapted means an inspected local equivalent.',
     'Neither status claims that every workflow has run successfully on Codex; pending means a named blocker, missing proof or unselected update remains.',
     'Pending update rows are separate from the adoption status of the pinned item, so an adapted skill can also have an unselected upstream change.',
@@ -67,6 +69,33 @@ def check_inventory():
     changes = {p.split('/')[2] for p in DATA['changed_pstack_files'] if p.startswith('pstack/skills/')}
     covered = {r['item'] for r in ROWS if r['group'] == 'Upstream delta'} | {r['item'] for r in ROWS if r['group'] == 'pstack skill' and r['status'] == 'pending'}
     assert changes <= covered, f'Uncovered upstream changes: {changes - covered}'
+    outcomes = DATA['batch_3_outcomes']
+    expected = changes - {'typescript-best-practices', 'create-formal-verification-skill', 'maintain-formal-verification-skill'}
+    expected.add('Documentation and package metadata')
+    assert set(outcomes) == expected, 'Incomplete batch 3 outcome inventory'
+    assert collections.Counter(outcomes.values()) == {'ported': 9, 'kept local': 4, 'skipped': 3}, 'Batch 3 totals changed'
+    by_item = {r['item']: r for r in ROWS if r['group'] == 'Upstream delta'}
+    for item, outcome in outcomes.items():
+        assert by_item[item]['status'] == ('skipped' if outcome == 'skipped' else 'adapted'), item
+        assert 'batch-3-delta.md' in by_item[item]['evidence'], item
+    ownership = DATA['ownership']
+    assert len(ownership) == len({r['entry'] for r in ownership}) == 42, 'Original ownership inventory changed'
+    assert {f'Upstream delta: {item}' for item in outcomes} <= {r['entry'] for r in ownership}, 'Missing batch 3 owner'
+
+
+def ownership_markdown():
+    text = '# Pending audit ownership\n\n' + '\n'.join(DATA['ownership_intro']) + '\n\n'
+    text += '| Entry | Owning lane | Blocked by | Proposed order |\n|---|---|---|---|\n'
+    for row in DATA['ownership']:
+        item = row['entry'].removeprefix('Upstream delta: ')
+        outcome = DATA['batch_3_outcomes'].get(item)
+        if outcome:
+            blocked = 'push approval and activation' if outcome == 'ported' else 'none'
+            order = f'3. Source review closed: {outcome}' + (' locally' if outcome == 'ported' else '') + '; see batch-3-delta.md.'
+        else:
+            blocked, order = row['blocked_by'], row['order']
+        text += '| ' + ' | '.join((row['entry'], row['lane'], blocked, order)) + ' |\n'
+    return text
 
 
 def markdown():
@@ -124,7 +153,7 @@ def page():
 <div class="scroll" tabindex="0" aria-label="Scrollable adoption record"><table><caption>Evidence, current adoption and remaining blockers for each item.</caption><thead><tr><th scope="col">Item</th><th scope="col">Status</th><th scope="col">Current state or blocker</th><th scope="col">Does Codex unblock it?</th><th scope="col">Evidence</th></tr></thead><tbody>''' + body + '''</tbody></table><p id="empty">No items match. Clear the filters to see the full record.</p></div>
 <details><summary>Eight approved routing resolutions</summary><ol>''' + conflicts + '''</ol></details>
 <details><summary>Scope and limits of the evidence</summary>''' + ''.join(f'<p>{esc(x)}</p>' for x in LIMITS) + '''</details>
-<details><summary>Source links and downloadable record</summary><ul>''' + sources + '''<li><a href="codex-discovery-proof.md">Batch 1 discovery proof</a></li><li><a href="batch-2-route-proof.md">Batch 2 route proof</a></li><li><a href="batch-2-sources.md">Batch 2 package and external sources</a></li><li><a href="pending-ownership.md">Original 42 pending entries and owners</a></li><li><a href="audit.md">Complete Markdown table</a></li><li><a href="audit.json">Evidence inventory and pinned upstream revisions</a></li></ul><p>Local evidence: the original install list and catalog, workflow-north-star.md, nix/user.nix, installed skill files, the supplied code-review report, current standing order 71 and read-only forge checks.</p></details>
+<details><summary>Source links and downloadable record</summary><ul>''' + sources + '''<li><a href="codex-discovery-proof.md">Batch 1 discovery proof</a></li><li><a href="batch-2-route-proof.md">Batch 2 route proof</a></li><li><a href="batch-2-sources.md">Batch 2 package and external sources</a></li><li><a href="batch-3-delta.md">Batch 3 upstream decisions</a></li><li><a href="batch-3-route-proof.md">Batch 3 invocation proof</a></li><li><a href="pending-ownership.md">Original 42 pending entries and owners</a></li><li><a href="audit.md">Complete Markdown table</a></li><li><a href="audit.json">Evidence inventory and pinned upstream revisions</a></li></ul><p>Local evidence: the original install list and catalog, workflow-north-star.md, nix/user.nix, installed skill files, the supplied code-review report, current standing order 71 and read-only forge checks.</p></details>
 <footer>Catppuccin Mocha with JetBrains Mono. Tailnet pack; no external assets or analytics.</footer>
 </main><script>
 const rows=[...document.querySelectorAll('tbody tr')];
@@ -137,11 +166,11 @@ console.log('Audit rows:',rows.length,'document width:',document.documentElement
 '''
 
 check_inventory()
-outputs = {'audit.md': markdown(), 'index.html': page()}
+outputs = {'audit.md': markdown(), 'index.html': page(), 'pending-ownership.md': ownership_markdown()}
 if '--check' in sys.argv:
     for name, content in outputs.items():
         assert (ROOT / name).read_text() == content, f'{name} is stale; run render.py'
-    print(f'Audit check passed: {len(ROWS)} unique rows, {len(DATA["skills_at_head"])} current skills, {len(DATA["playbooks"])} playbooks, all upstream skill changes covered; rendered files match.')
+    print(f'Audit check passed: {len(ROWS)} unique rows, {len(DATA["skills_at_head"])} current skills, {len(DATA["playbooks"])} playbooks, all upstream skill changes covered; three rendered files match.')
 else:
     for name, content in outputs.items():
         (ROOT / name).write_text(content)

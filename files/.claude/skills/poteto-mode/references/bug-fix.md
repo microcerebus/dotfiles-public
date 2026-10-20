@@ -18,6 +18,11 @@ When evidence refutes a hypothesis, revert what it motivated.
    Seed the hypotheses with `how/SKILL.md` over the subsystem and `why/SKILL.md` for regression history.
    Each pass, run the check that cuts the most remaining space, and get runtime evidence.
    When state is unclear, add logging and read it as the code runs.
+   Trace the symptom to the first incorrect transition.
+   A guard is a fix when the state it handles is legitimate; otherwise find what produced the invalid state instead of hiding it with a guard, retry or discarded data.
+   For restart-only failures, inspect persisted config, caches, locks and serialized state.
+   After two failed fixes that share a premise, write that premise down and test it directly before another fix.
+   Use a rerunnable observation that would differ if the premise were false, then follow the evidence.
    Confirm the mechanism before you plan a fix.
 3. Plan the smallest fix the evidence justifies.
    If it crosses a function boundary, run `references/architect.md` first.

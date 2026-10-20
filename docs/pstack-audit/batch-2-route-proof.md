@@ -79,5 +79,5 @@ The first catch-up and grilling attempts had also read their intended leaves, bu
 These sessions prove automatic router selection and the first response for each supplied trigger, not every possible phrasing.
 They do not prove a multi-turn interview, live T3 rendering, Claude invocation or live user-level registration.
 Grilling's interview-drill behavior and the ordinary-review exclusion are documented boundaries, not separately executed scenarios in this batch.
-Batch 1 is pushed unchanged according to the orchestrator; activation remains pending.
-Batch 2 routes and the additional alias require their own push approval and normal activation.
+At this proof boundary on 20 October 2026, batch 1 was pushed unchanged and batch 2 still needed push approval and activation.
+For subsequent push verification and outstanding rebuild confirmation, see the [current rollout status](audit.md#rollout-status).

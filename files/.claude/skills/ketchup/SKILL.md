@@ -1,37 +1,73 @@
 ---
 name: ketchup
-description: "Catch the user up on what changed in this chat since their last message, in a few plain sentences and small visuals. Give each action item just enough context to make the call. Use for /ketchup."
+description: "Catch the user up on what changed in this chat, in plain words and useful visuals. List every waiting decision with enough context to decide from the reply alone. Use for /ketchup."
 disable-model-invocation: true
 ---
 
 # Ketchup
 
-Catch the user up on what changed in this chat since the last message they wrote before `/ketchup`. Notifications and subagent results are not their messages. Assume the user remembers their last message and nothing after it.
-
-Write in plain words and short sentences, with no jargon, like one person catching up another. Say what changed for the user, not how you did it. Say "the tests pass", not "CI is green". Leave out file paths, commands, build numbers, and test counts unless the user needs one to act. Never show a raw SHA, thread ID, or other ID unless the user asks for it. Call each PR, branch, or agent by a name the user would know, not by a label you invented. If a fact needs context to make sense, give the context or leave the fact out.
+Explain what changed since the user's last message before `/ketchup`, then make every waiting decision understandable from the reply alone.
+Notifications and subagent results are not user messages.
+Assume the user remembers their last message and nothing after it.
+Apply unslop.
+Use names the user knows and plain words such as "the tests pass".
+Leave out file paths, commands, build numbers and test counts unless needed to act.
+Never show raw SHAs, thread IDs or other identifiers unless the user asks.
 
 ## Gather what changed
 
-Keep this turn read-only. Make visuals only from what you already have: do not change code, start an app or a job, or post anything. Collect your own work since that message, reports from subagents, and messages from anyone else in this chat. Check the current state of each PR, CI run, or agent this chat touched, with `gh` for PRs and CI and T3's `task_status` or `t3_thread_read` for delegated work and other threads. Check each number you will show against the facts it comes from, and say so when you correct one.
+Keep this turn read-only.
+Use existing facts and artifacts; do not change code, start an app or job, or post anything.
+Collect your work, subagent reports and messages since that user message.
+Check current PR and check state with `gh-axi`, and delegated work with T3 `task_status` or `t3_thread_read`.
+Verify every number you show against its source and explain any correction.
 
-An action item is a decision or step only the user can take, such as a product choice, an approval, an irreversible action, or access you lack. Include any still waiting on the user, even one raised before their last message. Before listing one, check the lane's `authorizations.md` and the thread history, and drop anything the user already approved or finished. Work you can still do yourself is not an action item. Never make up a call to fill the reply. A step the user did not ask for and the work does not need is not an action item, unless it is irreversible and waiting on the user: give it one action line, no visual, and skip what happens if the user does not answer.
+An action item is a call only the user can make, such as a product choice, approval, irreversible action or access you lack.
+Include unresolved items raised before their last message.
+First check the lane's `authorizations.md` and thread history; omit anything already approved or finished.
+Work you can do yourself is not an action item.
+Never invent a decision to fill the reply.
+For an unasked, unnecessary irreversible step awaiting approval, use only one line and no visual.
+
+For each item, collect its link when available, what it changes for users, evidence, risk and your recommendation.
+Write "unknown" for a needed fact you could not establish.
+Do not invent links or evidence.
 
 ## Write the reply
 
-Keep the whole reply well under 150 words, counting the words inside visuals and tables. Never give a fact in both the text and a visual. Leave out work that changed nothing for the user. When words run short, cut from what happened before you cut from the action items.
+Open with a **Needs the owner** list containing every action item, or "Needs the owner: nothing."
+If nothing happened and nothing waits on the user, stop there.
+For one item, state the decision, your recommendation, user impact, evidence and risk together.
+When several items share a decision, state that decision and recommendation once, then list every item separately, riskiest first.
+Include each item's name and link when known, impact, evidence and risk, even when the risk is low.
+Name a different recommendation only where it differs from the shared one.
+Include prerequisites and irreversible consequences in the recommendation.
+Say what waiting costs only when it means more than delay.
+For choices, give each considered option's gain and cost, including the current state when relevant.
 
-Open with a **Needs the owner** list, before anything else. It holds every action item, written as described below, or the single line "Needs the owner: nothing." If nothing happened and nothing waits on the user, say so and stop.
+Keep each unit to at most five plain lines.
+Spend words on decisions and keep the account of what happened under 100 words, excluding visuals.
+Do not cut, collapse or replace action items with a count or link to meet a word limit.
+The reply may grow with the number of decisions.
+Give each fact once.
 
-Then show what happened in one visual of at most four boxes. Keep each unit (a PR, a lane, an agent) to at most five plain lines across its box and the text about it. Give each thing the user asked for a box that says what came of it and whether it is done, still running, failed, or not checked. Write each box the way you would say it out loud: "Search was slow from a missing index", not "Search review: done" or "Slow search: missing index". Name any bug found and fixed on the way. Each box must stay true when read alone. Never mark something done that still waits on the user. Under the visual, give at most three short lines that change what the user knows or must do. Then name in one line any work left that you can do yourself.
-
-In the Needs the owner list, give each action item two lines, or one for an unasked irreversible step: the decision with your recommendation and why, then what happens if the user does not answer. Ask the call the user owns, such as merge, approve, or pick. A step you would take first goes in your recommendation. So does anything that must happen first, and anything that cannot be undone. Write "unknown" for a part you do not know. Link to the detail.
-
-Show each action item as a before and after, side by side, in a visual placed right after the Needs the owner list. For a choice, put the current state beside each option, or the options alone when there is no current state. Put every option the work weighed in the visual, each with what it gets the user and what it costs. Keep them out of the text. Skip the visual only for access requests and unasked irreversible steps.
+After the action list, embed existing screenshots or videos and diagrams that explain a change.
+Summarize each requested outcome that the action list has not already covered: done, running, failed or unverified.
+Name bugs found and fixed on the way.
+An item awaiting user action is not done.
+For a visible change without captured evidence, say "No screenshot yet" and describe what changed on screen.
+End with any work you can still do yourself, if there is any.
 
 ## Visuals
 
-A visual is a picture: a screenshot, a video, a Mermaid diagram, or a chart or diagram you build as a self-contained HTML page. In T3 Code, check each page with `html_preview` and publish it with `html_render`. The page shows above your reply, so don't restate it in the text. A Markdown table is not a visual, even with before and after columns.
+Use pictures to explain connections, behavior, dependencies or choices.
+Do not draw status lists, action lists or unconnected boxes.
+A Markdown table is not a picture.
+Keep diagrams small, with at most six boxes and eight words per box.
+Embed actual screenshots and videos inline.
+Never invent numbers or draw a screen you did not capture.
+Link only artifacts that exist.
 
-Keep each visual small enough to read at a glance: at most six boxes, with at most eight words in each, not counting "No screenshot yet." Write labels as plain words a person would say, not tags like "Tests: pass". Group small items into one box. A fact that needs a sentence belongs in the text, or nowhere.
-
-Use screenshots or a video when the change is visible. If a visible change has none, mark the box it belongs to "No screenshot yet," and say in a line under the visual what changed on screen. For anything else, draw the visual from facts you have: a Mermaid diagram for states, flows, and structures, and an `html_render` chart for numbers. Never invent a number, and never draw a picture of a screen you did not capture. Link only artifacts that exist.
+In T3 Code, check a self-contained HTML page with `html_preview` and publish it with `html_render`.
+The page appears above the reply; put its Needs the owner list first and do not repeat its content in chat.
+Use Mermaid for small flow diagrams and `html_render` for charts when they help explain the work.

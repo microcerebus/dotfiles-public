@@ -47,8 +47,8 @@ Browser quota mechanics remain unchanged, and no live rollout occurred.
   Its JSON, route proof, source evidence and ownership record return HTTP 200 with exact local content.
   The pack link now points to this worktree's audit directory.
 
-Batch 1 landing was confirmed by the orchestrator after the original checks above.
-Batch 2 remains local and awaits push approval and activation.
+At the original batch 2 check boundary on 20 October 2026, the orchestrator had confirmed batch 1 landing and batch 2 still awaited push approval and activation.
+The [current rollout status](audit.md#rollout-status) records subsequent push verification and the outstanding rebuild confirmation.
 The package comparison and external-source findings are in [the source evidence](batch-2-sources.md).
 
 ## Batch 2 independent review
@@ -62,3 +62,52 @@ No re-review was needed.
 The reviewer did not independently repeat the external publication searches, tailnet check or document previews.
 The ordinary-review exclusion and multi-turn interview behavior remain unexecuted scenarios.
 Neither this review nor the scratch sessions claim live activation, current account notice delivery or a full package security audit.
+
+## Batch 3 checks
+
+- A fresh GitHub comparison matched all 35 changed pstack file blobs to the frozen 0.15.29 source used for the delta review.
+- `python3 -I scripts/check-skills`: all skills pass, including the repository-local verifier.
+- `python3 -I tests/check_skills_test.py`: 20 tests pass.
+- `python3 -I tests/check_plan_test.py`: 14 tests pass.
+- `node --test tests/chrome_devtools_axi_test.cjs tests/codex_browser_fallback_test.cjs tests/axi_session_start_test.cjs tests/agent_chrome_session_test.cjs tests/agent_chrome_gate_test.cjs tests/agent_chrome_replay_test.cjs`: 76 tests pass.
+  These use stubs and a throwaway replay browser; no agent Chrome session ran.
+- `bash tests/claude_fallback_test.sh`: 30 shell assertions and 22 Python tests pass.
+  The watcher stays disabled and no provider switch ran.
+- `bash tests/pre_push_test.sh`: all 68 scratch-repository assertions pass.
+- `nix flake check --no-build`: Darwin evaluation passes without a build or activation.
+- Two fresh Astra High sessions, Fast off: the automatic catch-up route lists all eight waiting decisions; explicit sharpen returns a rewritten prompt without performing the task.
+  [Exact prompts and transcript limits](batch-3-route-proof.md) include the extra writing-skill reads and unproven risk ordering.
+- `python3 docs/pstack-audit/render.py --check`: all 200 rows, 56 current skills, 23 playbooks, 16 batch 3 outcomes and 42 original ownership rows agree.
+  Markdown, HTML and ownership are now generated from the same inventory; the checker rejects stale outputs.
+- Original inventory order, unrelated audit rows, held preferences, router precedence, 28 aliases and explicit-only metadata are preserved.
+- T3 document previews at 390 px and 728 px: both screenshots inspected, with no horizontal overflow or console errors.
+  Filters show 17 upstream entries, only the held TypeScript entry still pending, three deliberate skips and thirteen reviewed local entries.
+  Combined filtering, case-insensitive search, empty state and reset pass at both widths.
+- Local Markdown link and whitespace checks pass.
+
+These results prove the local artifacts and two bounded invocation cases.
+They do not claim live skill activation, a physical-phone test, every edited workflow running end to end, or upstream package installation.
+
+## Batch 3 independent review
+
+One fresh-context Codex Astra High reviewer, with Fast off, found no actionable findings in the full batch 3 diff against batch 2.
+It verified all 16 outcomes, all 35 upstream blobs and comparison patches, the saved pre-edit local adaptations, final skill text in both invocation transcripts, and the inventory and ownership records.
+It independently passed the skill checker, renderer consistency check, full-diff whitespace check and local Markdown link checks.
+No re-review was needed.
+
+The reviewer assessed the broader test results from their logs.
+It did not rerun the agent invocations, T3 previews, browser fixtures or live activation.
+The second commit and the authorized pack repoint and HTTP verification follow this review boundary.
+The initial second commit added only this review record after the reviewed implementation.
+The later factual rollout correction below does not change skills or their review outcomes.
+
+## Rollout copy correction
+
+On 21 October 2026, the orchestrator confirmed that batch 2 was approved, pushed and independently verified at `2e8783a`, with the main checkout fast-forwarded there.
+One rebuild covering batches 1 and 2 is requested but not confirmed.
+The served page still described batch 2 as local and awaiting push approval; reading that page reproduced both stale statements.
+Current rollout prose now comes from `audit.json`, and current route and ownership entries identify only activation confirmation as outstanding.
+Dated proof-boundary descriptions remain historical and link to current status.
+The targeted copy check failed before the correction and passes afterward, alongside renderer consistency and whitespace checks.
+Regenerated T3 previews at 390 px and 728 px pass the current-copy, row-count and overflow checks; both screenshots were inspected.
+This factual correction does not start another review round or authorize pushing batch 3.

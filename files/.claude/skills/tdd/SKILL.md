@@ -33,6 +33,15 @@ Prefer no new test over a bad test. A bad test is one that mostly tests mocks, e
 - If the bug is flaky, make the test deterministic where possible and document the signal being locked down.
 - If the bug exposes a broader class of failures, first land the focused regression path, then consider additional sibling coverage.
 
+## Check the observable contract
+
+Drive the interface its caller uses and derive expectations from the requirement.
+A useful test fails when a promised return value, error, readable state or external effect breaks, and survives an internal refactor that preserves those results.
+An empty result or no external call can be the contract; pair an absence check with a case that proves the test can observe presence.
+Assert the payload an external service receives, not which private helper produced it.
+For errors, assert the type or wording callers rely on, without pinning incidental text.
+Cross-table invariants and compile-time checks also test contracts.
+
 ## Final Response
 
 Report the evidence, not just the outcome:

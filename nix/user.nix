@@ -423,7 +423,10 @@ in
   home.file.".claude/skills/standing-orders".source = link "files/.claude/skills/standing-orders";
   # pstack (cursor/plugins, pstack/skills, MIT, Lauren Tan), vendored at
   # 1e5c90a4b6f249917bd21fe361b3a2a7deb741b8 (pstack 0.15.24, 2026-10-14) and
-  # security-read 2026-10-14: prompt-only markdown plus one append-only TSV
+  # selectively refreshed against 88d47514b82e7c44f00f2b2a72ff6dd12158038c
+  # (pstack 0.15.29); per-entry ports and retained differences are recorded in
+  # docs/pstack-audit/batch-3-delta.md. The baseline pin remains 0.15.24.
+  # Security-read: prompt-only markdown plus one append-only TSV
   # helper (show-me-your-work/scripts/log.sh), no network, no hooks. Edits
   # from upstream: Cursor paths (.cursor/skills -> .claude/skills, transcript
   # location), Cursor Task/model lines -> Codex-first roles in model-routing.md,
