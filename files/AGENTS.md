@@ -51,23 +51,26 @@ These are common instructions for my agents across all scenarios.
 ## Model routing
 
 - Read `~/dotfiles/docs/model-routing.md` before choosing a model for a subagent, workflow stage, review or design work, and when Claude or Codex reports a usage limit.
-  It holds the model table, the routing rules and the T3 Code fallback table.
-- Defaults: main chats on Opus 5.5; reviews on Fable 5.1 or Opus 5.5; design on Fable 5.1 with the Impeccable skills; bulk mechanical work to GPT via Codex.
-  Anything user-facing needs taste >= 7 (Fable, Opus or Sonnet).
-- Until Thu 22 Oct 2026, send read-only lookups to the `reader` subagent (Haiku 5.5, low effort); the trial rules are in that doc.
-- If a cheaper model's output misses the bar, redo the work with a smarter model without asking.
-- When Claude reports a usage or quota limit, switch to the Codex fallback in that doc without asking.
+  It holds the role defaults, fallback mechanics and approved specialist routing.
+- New threads, workers, reviewers, coordinators and orchestrators default to Codex: `gpt-6-astra` High for judgment, `gpt-6.1-sol` High for routine implementation, and `gpt-6.1-sol` Low for mechanical collection.
+  Keep Fast off; running threads keep their model.
+- Claude is the fallback when Codex is usage-limited or cannot do the job.
+  Record a concrete capability gap before choosing Claude without a quota limit.
+- Use artifact acceptance checks for user-facing work, Astra High for design and Codex plus unslop for writing.
+  The reader trial takes no new assignments; keep its measurements.
+  Reviews use fresh Codex contexts; another provider requires an explicit task exception or capability/quota fallback.
+- If routine work misses acceptance checks or exposes harder judgment, move the next committed unit to Astra High.
+- When either provider reports a usage limit, follow the fallback mechanics in that guide without asking again.
 
 ## Reasoning effort
 
-- Default open-ended main chats to Opus 5.5 at xhigh.
-  Use High for routine coordination and clearly scoped implementation, following the evidence and escalation guideline in `~/dotfiles/docs/model-routing.md`.
-  Codex fallbacks stay at High or below according to their routing table.
-  Use Low for mechanical stages, and use another lower effort when the owner requests it.
-- Hard cap at xhigh; max is banned.
+- Use High for Codex judgment and routine implementation, and Low for mechanical collection.
+  Keep Codex at High or below and Fast off unless explicitly requested.
+- For Claude fallback work, use the role-specific High or Extra High setting in `~/dotfiles/docs/model-routing.md`.
+  The hard cap is xhigh; max is banned.
   Do not reach for ultracode casually either.
-- Effort applies per tool call, not per run: a long task needs more steps, not higher effort.
-- When spawning subagents or workflow stages, use Low for mechanical stages (scanning, formatting, collection) and the role-specific High or Extra High setting in `~/dotfiles/docs/model-routing.md` for judgment stages.
+- Effort applies per stage: a long task needs more steps, not higher effort.
+- Skill-specific effort settings do not create provider exceptions; follow the approved routing guide.
 
 ## Writing
 

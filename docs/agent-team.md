@@ -15,18 +15,19 @@ So each product repo gets a verification skill and a Feature Map before it gets 
 | Role | Team analogy | Lives in | Owns | Never does | Model |
 | --- | --- | --- | --- | --- | --- |
 | the owner | Product owner | Phone, T3 | Goals, irreversible calls, taste | Babysitting runs | - |
-| Orchestrator | Engineering manager | One pinned T3 thread, fresh each day | `board.md`, routing between lanes, the morning brief | Lane work, code | Opus 5.5 High for routine coordination, xhigh for open-ended work |
-| Heartbeat | On-call | A fresh scheduled thread every hour | Usage, context and stall checks, `log.md` | Long work, messages without a reason | Opus 5.5 xhigh (low effort is proposed, pending the owner's OK) |
-| Lane coordinator | Tech lead | One T3 thread per lane, rotated at 200k tokens | Briefs, the lane's units, ledger and decisions | Writing code | Opus 5.5 High for routine coordination, xhigh for open-ended judgment |
-| Worker | Engineer | One thread and one worktree per unit | One PR, proven with the verification skill | Merging its own PR, touching other units | Opus 5.5 High for scoped implementation, xhigh for unresolved complexity; Codex `gpt-6.1-sol` for clear-spec bulk work |
-| Verifier | Reviewer and QA | A fresh thread per review round, read-only | One verdict row in the ledger | Fixing what it reviews | Fable 5.1 for risky PRs, Opus 5.5 xhigh in a fresh context for the rest |
-| Retro | Staff engineer | A fresh scheduled thread each day | Proposals that turn repeated mistakes into rules, checks or skills | Applying them live | Opus 5.5 xhigh |
+| Orchestrator | Engineering manager | One pinned T3 thread, fresh each day | `board.md`, routing between lanes, the morning brief | Lane work, code | Codex `gpt-6-astra` High |
+| Heartbeat | On-call | A fresh scheduled thread every hour | Usage, context and stall checks, `log.md` | Long work, messages without a reason | Codex `gpt-6.1-sol` Low for collection; Astra High for judgment |
+| Lane coordinator | Tech lead | One T3 thread per lane, rotated at 200k tokens | Briefs, the lane's units, ledger and decisions | Writing code | Codex `gpt-6-astra` High |
+| Worker | Engineer | One thread and one worktree per unit | One PR, proven with the verification skill | Merging its own PR, touching other units | Codex `gpt-6.1-sol` High for routine implementation; Astra High for substantial changes |
+| Verifier | Reviewer and QA | A fresh thread per review round, read-only | One verdict row in the ledger | Fixing what it reviews | Codex `gpt-6-astra` High in a fresh context |
+| Retro | Staff engineer | A fresh scheduled thread each day | Proposals that turn repeated mistakes into rules, checks or skills | Applying them live | Codex `gpt-6-astra` High |
 
 Subagents inside any role do mechanical reading (logs, CI output, transcripts) at low effort and return summaries.
 
-Use the role and uncertainty rules in [model routing](model-routing.md#opus-55-reasoning-effort) when selecting effort.
-Routine coordination and scoped implementation use High; Opus review, verify and judge stages use Extra High.
-The automation table below records baseline selections, not a requirement to use Extra High for every routine action.
+Use the role and uncertainty rules in [model routing](model-routing.md#default-routing) when selecting effort.
+New work follows the Codex-first defaults in `model-routing.md`, with Fast off.
+Running threads keep their model; Claude fallback and approved specialist routing are described in that guide.
+The automation table below records defaults for new launches.
 Apply role-specific effort at launch or a committed task boundary; this documentation does not reconfigure existing schedules or running threads.
 
 ## Standards
@@ -46,8 +47,8 @@ Apply role-specific effort at launch or a committed task boundary; this document
   CI green is an input to a verdict, not a verdict.
   A new head SHA voids the row, except after a clean update to main: the verdict carries over when `git range-diff` shows the PR's own commits unchanged and CI passes on the new head.
   After a conflicted update, only the conflict resolution gets a quick fresh review.
-- **Review scales with risk**: Fable 5.1 reviews risky PRs (sign-in, deploy wiring, screens the owner uses) and acts as the verifier.
-  Opus 5.5 at xhigh, in a fresh context, reviews the rest (docs, tooling, pure logic).
+- **Review scales with risk**: Codex Astra High reviews in a fresh context.
+  Risk determines review scope and verification depth; provider exceptions follow `model-routing.md`.
   At most two review rounds per PR, then the coordinator decides.
   A PR open for 8 hours of active work goes on the board as a stall.
 - **Small units**: a PR a reviewer can read in one sitting.
@@ -102,11 +103,11 @@ All recurring work runs as T3 scheduled tasks that open a fresh thread, so the o
 
 | Job | When | Model |
 | --- | --- | --- |
-| Heartbeat | Hourly | Opus 5.5 xhigh (low pending the owner's OK) |
-| Morning brief | 09:45 SGT | Opus 5.5 xhigh |
-| Retro | Daily, early morning | Opus 5.5 xhigh |
-| Verification upkeep | Daily per product repo | Opus 5.5 xhigh |
-| Orchestrator rotation | Daily, before the morning brief | Opus 5.5 xhigh |
+| Heartbeat | Hourly | Codex `gpt-6.1-sol` Low for collection; Astra High for judgment |
+| Morning brief | 09:45 SGT | Codex `gpt-6-astra` High |
+| Retro | Daily, early morning | Codex `gpt-6-astra` High |
+| Verification upkeep | Daily per product repo | Codex `gpt-6-astra` High |
+| Orchestrator rotation | Daily, before the morning brief | Codex `gpt-6-astra` High |
 
 ## Lane layout
 

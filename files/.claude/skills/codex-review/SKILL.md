@@ -6,22 +6,27 @@ disable-model-invocation: true
 
 # codex-review
 
-Route independent second-pass code review to the codex CLI (model set in ~/.codex/config.toml).
+Route independent second-pass code review through the [shared model adapter](../arena/references/model-families.md).
+Default to Astra High with Fast off and a fresh read-only context.
+Use native or T3 delegation when available; the CLI is the fallback transport.
 Codex is an outside reviewer: it sees the repo read-only and reports back; you stay the editor of record.
 
 ## Workflow
 
 1. Identify the review target: working tree, a branch diff, a commit, or specific paths.
-2. Run the purpose-built review subcommand - it is diff-scoped and takes a review stance natively:
+2. For the CLI fallback, read its installed help before constructing the command.
+   Select the model explicitly instead of inheriting a user config default:
 
    ```sh
-   codex review --uncommitted "<focus>"    # staged + unstaged + untracked changes
-   codex review --base main "<focus>"      # current branch against a base branch
-   codex review --commit <sha> "<focus>"   # a single commit
+   codex -c 'model="gpt-6-astra"' -c 'review_model="gpt-6-astra"' \
+     -c 'model_reasoning_effort="high"' -c 'service_tier="default"' \
+     -c 'sandbox_mode="read-only"' review --uncommitted
    ```
 
-   The optional prompt narrows focus; ask for concrete problems with file:line references and an explicit statement if nothing is found.
-   For targets `codex review` cannot express (e.g. specific paths only), fall back to `codex exec -s read-only` with a short, self-contained prompt.
+   Use `--base main` or `--commit <sha>` instead of `--uncommitted` for those targets.
+   Do not combine a target flag with a prompt; the CLI rejects that combination.
+   For a custom focus or selected paths, use `codex exec -m gpt-6-astra -c 'model_reasoning_effort="high"' -c 'service_tier="default"' -s read-only -` with the complete review target and focus on stdin.
+   Ask for concrete problems with file:line references and an explicit statement if nothing is found.
 3. Read the findings and verify the important claims against the code before presenting them.
    Drop anything you cannot confirm.
 4. If codex finds nothing, report "codex found no issues in <target>" - never silently re-run.

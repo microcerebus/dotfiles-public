@@ -1,6 +1,6 @@
 ---
 name: reflect
-description: Spawn three parallel review subagents over the active transcript, surface learnings, and route each to a concrete edit on an existing skill. Use when the user says reflect.
+description: Spawn three independent review subagents over the active transcript, surface learnings, and route each to a concrete edit on an existing skill. Use when the user says reflect.
 disable-model-invocation: true
 ---
 
@@ -20,21 +20,23 @@ python3 -I ~/.claude/skills/recall/scripts/recall.py self
 
 It prints this session's path under `~/.claude/projects/<cwd-slug>/`, or the Codex rollout path when running in Codex. Do not glob across every project directory. That crosses workspace boundaries and reads private chats from unrelated projects. If the script finds nothing, pass a tight digest of the session instead.
 
-## 2. Spawn three reviewers in parallel
+## 2. Spawn three independent reviewers
 
-One message, three Agent tool calls, `subagent_type: "general-purpose"`, so reviewers can run `git` and `gh` to look up the PRs, commits, and lane records the transcript references. Never use Haiku, and keep Fast off. Each reviewer is a judgment stage, so give it high effort.
+Use `../arena/references/model-families.md` for three independent Astra High reviewers.
+Each may read git, forge records and the cited lane files, but must not edit them.
+Run within the lane concurrency limit, sequentially when necessary, and keep Fast off.
 
 | Lens | `model` | Prompt template |
 |---|---|---|
-| Judgment | `opus` | `references/judgment-reviewer.md` |
-| Tooling | `sonnet` | `references/tooling-reviewer.md` |
-| Divergent | `opus` | `references/divergent-reviewer.md` |
+| Judgment | `gpt-6-astra` | `references/judgment-reviewer.md` |
+| Tooling | `gpt-6-astra` | `references/tooling-reviewer.md` |
+| Divergent | `gpt-6-astra` | `references/divergent-reviewer.md` |
 
-Pass each template verbatim, substituting the transcript path or digest where marked. Reviewers return findings in the Agent response body.
+Pass each template verbatim, substituting the transcript path or digest where marked. Reviewers return findings through the selected delegation tool.
 
 ## 3. Synthesize
 
-One Agent tool call, `subagent_type: "general-purpose"`, `model: "opus"`, high effort. It spot-verifies citations with `git`, `gh`, and the files the reviewers cite. Pass `references/synthesizer.md` verbatim, with each reviewer's full output inlined where marked. It returns an Accepted / Rejected / Backlog list.
+One fresh Astra High synthesizer spot-verifies citations with git, forge records and the files the reviewers cite. Pass `references/synthesizer.md` verbatim, with each reviewer's full output inlined where marked. It returns an Accepted / Rejected / Backlog list.
 
 ## 4. Structural enforcement check
 

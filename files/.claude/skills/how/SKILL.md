@@ -8,7 +8,9 @@ disable-model-invocation: true
 
 Explore the codebase to answer "how does X work?" questions. Produce architectural explanations at the level of a senior engineer onboarding onto a subsystem, enough to build a working mental model, not so much that it reads like annotated source code.
 
-Every spawn is an Agent tool call. Explorers use `subagent_type: "Explore"` (read-only) with `model: "sonnet"` and low effort. Every explainer uses `subagent_type: "general-purpose"` with `model: "opus"` and high effort, and its prompt says to read only and change nothing. Never use Haiku, and keep Fast off.
+Use `../arena/references/model-families.md` for delegation.
+Mechanical file collection uses Sol Low; explorers that interpret architecture and explainers use Astra High.
+Keep every run read-only and Fast off.
 
 ## 1. Assess complexity
 

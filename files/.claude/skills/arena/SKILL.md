@@ -16,18 +16,20 @@ Every candidate gets the same prompt, so the prompt is the contract.
 
 1. State the artifact each candidate is producing.
 2. Derive the rubric, 3-6 concrete gradeable criteria for what success looks like on *this* task. It is the picker's tool in Phase D. Candidates only see the task.
-3. Pick the runners and the mode per [`references/model-families.md`](references/model-families.md). Two families: one runner on Opus 5.5 and one GPT runner through `codex exec`. Claude only: two runners on Opus 5.5. Spawn more runners when the arena covers multiple design directions. Use the same model N times when the work is generation-bound rather than judgment-sensitive.
+3. Pick independent Astra High runners per [`references/model-families.md`](references/model-families.md).
+   Use multiple attempts for distinct design directions and stay within the lane concurrency limit.
+   Do not claim cross-family diversity from same-provider attempts.
 4. Give each candidate its own output location (a git worktree where possible, otherwise `/tmp/arena-<slug>/candidate-<n>/`), per the **separate-before-serializing-shared-state** principle.
 
 ## Phase B: Fan out
 
-Spawn all N runners at once, Claude runners as Agent calls in one message and GPT runners as background `codex exec` commands, per the model families reference. Give each the task, the path to the shared grounding, its own output path, and instructions to produce the artifact and a short rationale naming the alternatives it considered and what it rejected.
+Spawn the N runners using the shared delegation rules, in batches that fit the lane concurrency limit. Give each the task, the path to the shared grounding, its own output path, and instructions to produce the artifact and a short rationale naming the alternatives it considered and what it rejected.
 
 If a candidate produces no output, proceed with N-1 and note the dropout.
 
 ## Phase C: Cross-judge
 
-After all Phase B candidates complete, pick the judge per the model families reference: a GPT judge through read-only `codex exec` from a Claude parent, or Fable 5.1 in Claude-only mode. Spawn one read-only judge. It sees the rubric and the candidates by path label, scores each criterion, and recommends a base with rationale. It runs in parallel with your reading in Phase D. Don't spawn it while candidates are still writing.
+After all Phase B candidates complete, spawn one fresh, read-only Astra High judge under the shared delegation rules. It sees the rubric and the candidates by path label, scores each criterion, and recommends a base with rationale. It runs in parallel with your reading in Phase D. Don't spawn it while candidates are still writing.
 
 ## Phase D: Pick a base
 

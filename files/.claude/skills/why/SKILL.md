@@ -1,6 +1,6 @@
 ---
 name: why
-description: "Use for 'why does X work this way', 'why we picked Y', design rationale, regressions, postmortems, or data-backed thresholds. Queries each evidence category here (git history and GitHub PRs, the owner's lane records under ~/orchestrator, past agent sessions through recall) in parallel, then returns a cited read on decisions and tradeoffs. Use how for runtime behavior."
+description: "Use for 'why does X work this way', 'why we picked Y', design rationale, regressions, postmortems, or data-backed thresholds. Queries each evidence category here (git history and GitHub PRs, the owner's lane records under ~/orchestrator, past agent sessions through recall) within the lane concurrency limit, then returns a cited read on decisions and tradeoffs. Use how for runtime behavior."
 disable-model-invocation: true
 ---
 
@@ -8,7 +8,10 @@ disable-model-invocation: true
 
 Investigate the motivation and intent behind code. The companion `how` skill answers what the code does and how it works. `why` answers what forces led to its shape.
 
-Every spawn is an Agent tool call with `subagent_type: "general-purpose"`, so it can run `git`, `gh`, and the recall script. Investigators use `model: "sonnet"` at low effort. The synthesizer uses `model: "opus"` at high effort. Never use Haiku, and keep Fast off. Tell every spawn to read only: no file writes, commits, comments, or messages.
+Use `../arena/references/model-families.md` for delegation.
+Mechanical source collection uses Sol Low; investigators interpreting evidence and the synthesizer use Astra High.
+Each run may read git, forge records and recall output, but must not write files, commit, comment or send messages.
+Keep Fast off.
 
 ## Operating Posture
 
@@ -26,7 +29,7 @@ Before spawning investigators, build the seed context inline: file paths and lin
 
 ## Step 3. Spawn Parallel Investigators
 
-**Default to the full parallel investigation.** The goal is a complete coverage map, not a minimal one. Document the null, don't skip the search.
+**Cover every evidence category within the lane concurrency limit.** The goal is a complete coverage map, not a minimal one. Document the null, don't skip the search.
 
 ### Evidence categories
 
@@ -62,7 +65,8 @@ If your scope assessment suggests a single-commit trivial target where the PR de
 
 ## Step 4. Synthesize
 
-Spawn one synthesizer (`model: "opus"`, high effort). It gets:
+Spawn one fresh Astra High synthesizer under the shared delegation rules.
+It gets:
 1. The investigator findings, including any null results and any categories skipped with justification
 2. The code anchor
 3. The user's original question

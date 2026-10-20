@@ -21,7 +21,7 @@ When evidence refutes a hypothesis, revert what it motivated.
    Confirm the mechanism before you plan a fix.
 3. Plan the smallest fix the evidence justifies.
    If it crosses a function boundary, run `references/architect.md` first.
-   Hand clear-spec edits to a worker in its own worktree (`codex exec`, or an Opus subagent) with an exact scope.
+   Hand clear-spec edits to a worker in its own worktree using Sol High for routine work or Astra High for judgment with an exact scope.
 4. Verify on the same surface: the original repro now passes, and you save the "after".
    Inconclusive, or a pass on a different surface, is not a pass.
    Unit tests show branch behavior, not that the bug is gone.

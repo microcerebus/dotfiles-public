@@ -3,50 +3,66 @@
 Moved out of `files/AGENTS.md` on 2026-10-14 so it is read on demand instead of loaded into every thread.
 `~/AGENTS.md` keeps the defaults and points here; read this before choosing a model for a subagent, workflow stage, review or design work, or when Claude or Codex reports a usage limit.
 
-## Models
+## Default routing
 
-Glossary: "intelligence" = how hard a problem the model can handle unsupervised.
-"Taste" = UI/UX, code quality, API design, copy.
+New threads, conversations, workers, reviewers, coordinators and orchestrators use Codex by default.
+This follows the 20 October authorization to use Codex usage as much as possible.
+Running threads keep their model; these defaults do not authorize changing an active thread mid-task.
 
-| Model                 | Cost               | Intelligence | Taste |
-|-----------------------|--------------------|--------------|-------|
-| Fable 5.1             | high               | 10           | 10    |
-| Opus 5.5              | mid                | 8            | 8     |
-| Sonnet 5.5            | mid (token-hungry) | 6            | 7     |
-| GPT via codex CLI     | ~free (sub quota)  | 9            | 4     |
-| Haiku 5.5             | low                | reader trial | -     |
+| Work | Provider and model | Reasoning | Fast |
+|------|--------------------|-----------|------|
+| Judgment, coordination, orchestration, architecture, debugging, reviews and substantial changes | Codex `gpt-6-astra` | High | Off |
+| Routine implementation with explicit acceptance checks | Codex `gpt-6.1-sol` | High | Off |
+| Mechanical scanning, formatting and collection | Codex `gpt-6.1-sol` | Low | Off |
 
-- Haiku is for the reader trial below and nothing else: never judgment, reviews or anything user-facing.
-- These are defaults, not limits.
-  Standing permission to escalate: if a cheaper model's output misses the bar, redo the work with a smarter model without asking.
-  Judge the output, not the price tag.
-- Cost is a tie-breaker only; when the axes conflict for anything that ships, intelligence > taste > cost.
-- Use cheap models to gather information and try things; move the real work to the right model.
-- Bulk mechanical work (clear-spec implementation, log digging, giant docs/PDFs): shell out to GPT via `codex exec` (model: ~/.codex/config.toml).
-  Anything user-facing needs taste >= 7.
-- Reviews of plans and implementations: Fable 5.1 or Opus 5.5, optionally GPT via codex as an extra independent perspective.
-- Design work (UI/UX and visual design, design reviews, screen design docs, new UI components): Fable 5.1 with the Impeccable skills, by default.
-- Writing (rewrites, docs, prep pages, briefs, chat replies, anything a person reads): Opus 5.5, not Fable 5.1.
-  the owner, 18 Oct 2026: "Use opus 5.5 to rewrite, not fable please" and "opus 5.5 should handle all writing in general - maybe at a lower effort level if that's more optimal".
-  Start at a lower effort (medium or high) and escalate only if the result misses the bar.
-  Design work keeps Fable for layout and visuals; the words in it go to Opus.
-- Workflows cannot call GPT directly: have a Sonnet-on-low stage spawn `codex exec` and report results back.
-  Prefix any subagent/workflow label that runs a non-Claude model with the model name (e.g. `[gpt] parse logs`).
-  Use `schema` on the wrapper stage so the codex report comes back structured instead of as free text.
-  Parallel codex implementation wrappers need `isolation: 'worktree'` so their edits don't collide in a shared checkout.
-  Workflow token budgets count Claude tokens only - codex work is invisible to `budget.spent()`.
-  Codex calls can time out - treat a timeout as retryable once, then report it.
+Use T3's live `orchestrator_capabilities` catalog to confirm model availability.
+Delegate directly to the Codex provider; a Claude wrapper is not required.
+Use separate worktrees for concurrent implementation and fresh contexts for independent reviews.
+Keep reasoning at High or below on Codex and Fast off unless explicitly requested.
+A longer task needs more steps, not a higher effort setting.
+If routine work exposes harder judgment or misses acceptance checks, move the next committed unit to Astra High.
+If Astra alone is unavailable, try Sol High before falling back to Claude.
+A timeout gets one retry after inspecting partial results; it is not evidence of a quota limit.
+Never enable paid API access to bypass an exhausted allowance.
 
-## Opus 5.5 reasoning effort
+Claude is the fallback when Codex is usage-limited or cannot do the job.
+Record the concrete capability gap when using Claude without a quota limit.
+Keep the same acceptance checks, independent review and evidence requirements on either provider.
+Do not change app settings, scheduled tasks or live threads merely to make their stored selections match this document.
+
+## Approved specialist routing
+
+The eight audit recommendations were accepted on 20 October.
+They replace the older provider-specific defaults for new work.
+
+- User-facing work is judged by the artifact and its acceptance checks, not a provider taste score.
+- Design and design reviews use Astra High with the same design tools and visual checks; Fable is a capability fallback.
+- Writing uses Codex and unslop; Opus is a fallback when Codex cannot meet the writing bar.
+- The reader trial takes no new assignments; retain its measurements for the planned review.
+- Skill roles use Sol Low for mechanical collection, Sol High for routine implementation and Astra High for judgment.
+  Delegate directly without a Claude wrapper and respect lane concurrency limits.
+- Reviews use fresh Codex contexts by default.
+  Use Claude for an explicit task-level exception, demonstrated capability gap or confirmed Codex quota limit.
+  Independent contexts do not constitute cross-family evidence.
+- The exact OPINIONS provider paragraph in `pstack-audit/preference-wording-draft.md` was finalized and applied in this worktree.
+  VOICE and the adjacent tried-and-dropped list are unchanged.
+  Do not edit either live preference file as part of this routing unit.
+- The fallback watcher stays disabled until restoration and queued-message recovery have been redesigned and verified.
+  No automatic provider switching is enabled by these instructions.
+
+The shared skill adapter is `files/.claude/skills/arena/references/model-families.md`.
+It maps the roles to available native, T3 or CLI delegation without assuming a Claude parent.
+
+## Claude fallback reasoning effort
 
 Use **High** for routine coordination and clearly scoped implementation with explicit acceptance checks.
 Use **Extra High** (`xhigh`) for open-ended architecture, difficult root-cause debugging, and work with material unresolved uncertainty.
 Opus review, verification and judge stages use Extra High.
 For non-Opus judgment stages, retain the model-specific setting; use High when no more specific rule applies.
-A skill's explicit per-stage effort setting takes precedence over these general Opus role defaults; changing that stage requires a separate deliberate update.
+A skill's explicit per-stage effort applies only after the approved routing selects that provider; it does not create a Claude exception.
 Escalate a High task when its output misses the acceptance bar or exposes harder judgment; a long task alone is not a reason to increase effort.
 Keep mechanical collection at Low on its assigned reader or Codex model, and keep Fast off unless requested.
-The model-selection rules above still decide which provider/model performs reviews and design.
+These effort rules apply only after the default routing selects a Claude fallback.
 Independent review, reproduction, evidence and merge gates stay required at either effort.
 
 This guideline follows the [17 October matched replay](claude-process/opus-effort-replay-2026-10-17.md), which found equal aggregate blind scores with less elapsed time and fewer provider output tokens at High.
@@ -56,34 +72,18 @@ Do not interrupt uncommitted work or change existing threads merely to match a n
 
 ## T3 Code fallback routing
 
-New T3 Code chats default to Claude Opus 5.5 at xhigh effort with Fast off.
-Set High when launching or delegating a routine role, or at an explicit committed task boundary.
-The guideline does not make the app default role-dependent or authorize mid-task reconfiguration.
-Codex is the fallback only while Claude is usage-limited.
-When Claude reports a usage or quota limit, use the Codex fallback below without asking for permission.
-This fallback overrides the Claude-only review and workflow-wrapper rules above while Claude is unavailable, including for user-facing work.
-Keep the same quality standards.
+Commit work in progress before a provider or model switch, and never delete a dirty worktree.
+On a confirmed Codex usage limit, continue on Claude Opus 5.5 without asking, using the role-specific fallback effort above.
+If Codex cannot perform the task, explain the capability gap and use Claude for that task.
+Preserve the workspace, task and completed work, and inspect partial results before retrying an interrupted action.
+Use T3's catalog and `t3_thread_configure` with the intended provider, model, reasoning effort and standard service tier when a switch is needed.
+If a provider limit prevents the agent from running at all, T3 or the human must switch the thread before it can continue.
 
-| Work | Codex model | Reasoning | Speed |
-|------|-------------|-----------|-------|
-| Default replacement for Opus; architecture, debugging, reviews, substantial changes | `gpt-6-astra` | High | Standard |
-| Straightforward edits and routine implementation | `gpt-6.1-sol` | High | Standard |
-| Mechanical scanning, formatting, and collection | `gpt-6.1-sol` | Low | Standard |
-
-- Use T3's live `orchestrator_capabilities` catalog to confirm availability.
-  For the current thread, use `t3_thread_configure` with the Codex instance, the table's model, `reasoningEffort`, and `serviceTier: default` through the tool's option format.
-  For delegated work, use T3's Codex delegation directly without a Claude wrapper.
-- Keep Fast off by default because it increases usage.
-  Use Fast only when the owner explicitly requests it for time-sensitive work.
-  Keep reasoning at High or below.
-- On a confirmed Claude quota limit, do not cycle through other Claude models sharing the exhausted allowance.
-  Preserve the task, workspace, and completed work when switching.
-  Inspect partial results before retrying an interrupted action.
-- If Astra is unavailable specifically, try Sol at High for demanding work.
-  If the Codex allowance is also exhausted, report the limit instead of retrying in a loop or enabling paid API access.
-- Keep the fallback for the affected task unless the owner requests a switch back.
-  This table authorizes agent routing; it is not an app-level error handler.
-  If a provider limit prevents the agent from running at all, T3 or the owner must switch the thread before the agent can continue.
+On a Claude usage limit, return to an available Codex model from the default table without asking.
+Do not cycle through models sharing an exhausted provider allowance.
+If both providers are limited, report the limit instead of retrying in a loop or enabling paid API access.
+New tasks use Codex once it is available; do not interrupt an active fallback task merely to switch providers.
+Clear the browser fallback state as soon as Codex is available, independently of which provider finishes an active task.
 
 ### Codex quota fallback for browser work
 
@@ -159,7 +159,11 @@ A failed cleanup exits nonzero and must be resolved before another live attempt.
 Run `bash tests/claude_fallback_test.sh` for the SQLite decision fixtures, ordered mutation and retry cases, and token lifecycle tests.
 All mutation and token tests use local fixtures; none acquire real credentials or change a T3 thread.
 
-## Reader trial (Thu 15 Oct to Thu 22 Oct 2026, 16:00 SGT)
+## Reader trial record (Thu 15 Oct to Thu 22 Oct 2026, 16:00 SGT)
+
+The trial is closed to new assignments under the approved Sol Low default.
+Retain the measurements for its planned review.
+The following records the earlier trial instructions; do not launch readers from it.
 
 the owner's yes, 14 Oct 18:14: try Haiku 5.5 and Sonnet 5.5 as low-effort readers, lifting the Haiku ban for this trial only.
 Plan and measurement: `~/orchestrator/references/usage/reader-trial-2026-10-15.md`.

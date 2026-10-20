@@ -6,7 +6,8 @@ disable-model-invocation: true
 
 # Interrogate
 
-Spawn one reviewer per configured model to adversarially review code changes. The adversarial signal comes from model diversity, not assigned personas. The deliverable is a synthesized verdict. Do NOT auto-apply changes.
+Spawn independent reviewers to challenge code changes.
+Use fresh Astra High contexts by default; same-provider agreement is not cross-family evidence. The deliverable is a synthesized verdict. Do NOT auto-apply changes.
 
 ## Step 1, Scope
 
@@ -24,14 +25,13 @@ Before spawning reviewers, state the intent in one clear paragraph from the user
 
 ## Step 3, Spawn Reviewers
 
-Launch all reviewers at once, labeled Reviewer A, B, and so on. Pick the seats and the mode per [`../arena/references/model-families.md`](../arena/references/model-families.md).
+Launch independent reviewers within the lane concurrency limit, labeled Reviewer A, B, and so on.
+Pick the seats and the mode per [`../arena/references/model-families.md`](../arena/references/model-families.md).
 
-| Subagent | Two families | Claude only |
-|----------|--------------|-------------|
-| Reviewer A | Opus 5.5, Agent tool | Opus 5.5, Agent tool |
-| Reviewer B | `[gpt]` GPT, read-only `codex exec` | Fable 5.1, Agent tool |
-
-Claude reviewers get `subagent_type: "general-purpose"` and a prompt that says to read only and change nothing. A GPT reviewer gets the filled template written to a file and passed on stdin. In Claude-only mode the signal from model diversity is weaker, so say so in the Reviewers section of the output.
+Use two fresh Astra High reviewers by default, one at a time if the lane limit requires it.
+Both are read-only and receive the same intent, diff and rubric.
+Use another family only for an explicit task exception or the shared fallback conditions.
+Record each actual model and say when all reviewers share one provider.
 
 Read `references/reviewer-prompt.md` and fill in the same template for every reviewer with the stated intent, the diff or file contents, the rubric from `references/rubric.md`, and the code-quality lens from `references/code-quality-review.md`. Reviewers are judgment stages: high effort, never Haiku, Fast off.
 

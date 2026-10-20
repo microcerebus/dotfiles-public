@@ -54,6 +54,9 @@ existing foundation in this repo.
 
 ## Skill update procedure
 
+The [pstack adoption audit](pstack-audit/audit.md) records the installed, adapted, skipped and pending items, including changes beyond the pin.
+Use it instead of the historical install list when choosing the next adoption.
+
 Vendored skills live in files/.claude/skills/<name>/SKILL.md, fetched from the
 upstream repos (no-mistakes at its pinned tag, chrome-devtools-axi).
 To update: re-fetch the raw SKILL.md, diff it, security-read it (they instruct

@@ -1,6 +1,6 @@
 # Opus 5.5 High versus Extra High replay
 
-Measured on 17 October 2026 to inform the [ongoing effort guideline](../model-routing.md#opus-55-reasoning-effort).
+Measured on 17 October 2026 to inform the [ongoing effort guideline](../model-routing.md#claude-fallback-reasoning-effort).
 Three frozen prompts were each run once at High and once at Extra High on fresh Opus 5.5 tasks, with Fast off.
 Cases covered CI evidence triage, a historical diagnostic-privacy defect and its corrected producer.
 A fresh Codex Sol High scorer received randomly ordered anonymous answers without effort labels, timing or usage.

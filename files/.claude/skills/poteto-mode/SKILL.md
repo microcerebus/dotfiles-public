@@ -5,7 +5,7 @@ description: "pstack's way of working. Load it before starting any investigation
 
 # Poteto mode
 
-Lauren Tan's pstack way of working, adapted for Claude Code from cursor/plugins `pstack/skills/poteto-mode` (MIT, see LICENSE).
+Lauren Tan's pstack way of working, adapted for Codex and Claude from cursor/plugins `pstack/skills/poteto-mode` (MIT, see LICENSE).
 Pick one playbook, read it, and follow it.
 Load nothing else up front: each playbook names the sub-skills its steps need.
 
@@ -44,7 +44,10 @@ Skills without that flag (unslop, recall, show-me-your-work, chrome-devtools-axi
 ## Rules for every playbook
 
 - Start a todo list whose first items are the playbook's steps. A step you skip stays in the list as `skip: <reason>`.
-- Pick each subagent's model from `~/dotfiles/docs/model-routing.md`. Read-only lookups go to the `reader` subagent while its trial runs, explorers to Sonnet, judgment and reviews to Opus 5.5 or Fable 5.1, and clear-spec mechanical edits to `codex exec`. A worker that writes code gets its own worktree (Agent with `isolation: "worktree"`, T3 `delegate_task`, or `codex exec -C <worktree>`). You own each subagent's output: read it and write your own summary.
+- Pick each subagent's model from `~/dotfiles/docs/model-routing.md`: Astra High for judgment, Sol High for routine implementation and Sol Low for mechanical collection, with Fast off.
+  Follow `../arena/references/model-families.md` for delegation and fallback.
+  A worker that writes code gets its own worktree; respect lane concurrency limits.
+  Read each result and inspect the artifact before accepting it.
 - Before you ask the owner a "which approach" question, check whether running something would answer it (behavior, timing, layout, output). If it would, prototype it (`references/prototype.md`) and let the result decide. Ask only about product or taste calls no experiment can settle.
 - Name the principle behind each real decision, from the "Engineering principles (pstack)" section of `~/OPINIONS.md`.
 - Every claim carries its evidence or a label in the same sentence: measured, read in code, inferred, or guess.

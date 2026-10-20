@@ -105,8 +105,11 @@ Prefer the boring, widely-adopted, steadily-maintained option over the flashy fe
   The backend uses Effect wherever it fetches data, and Prettier formats the code.
 - Default to free tiers and services I already pay for.
   Starting a new paid plan is my call.
-- Adopted: CodeRabbit for PR review (over Greptile), Claude as the preferred AI in the editor.
-  In T3 Code, use Codex when Claude hits usage limits, following the fallback routing table in ~/dotfiles/docs/model-routing.md.
+- CodeRabbit remains the recorded PR-review preference, subject to the separate setup decision.
+  Use Codex by default for new conversations, coordination, design, writing, implementation and review, following docs/model-routing.md.
+  Use Astra High for judgment, Sol High for routine implementation and Sol Low for mechanical collection, with Fast off.
+  Judge user-facing output against its acceptance checks, and apply unslop to writing.
+  Use Claude for an explicit task-level exception, a demonstrated capability gap or a confirmed Codex usage limit.
   Tried and dropped, don't re-suggest: GitHub Copilot, Wakatime, Paseo, mosh/Moshi, Hex and OpenSuperWhisper (voice typing is Handy now), Codex cloud tasks (couldn't carry a real session), agenttrail (a 3D view of one repo; can't show T3 threads, who waits on me or context, so the agent board does that).
 - Claude Code installs natively, not as a brew cask (reversed 2026-10-07: the cask fell ~60 versions behind because brew skips self-updating casks).
 - Catppuccin for the dev toolchain (terminal, editor, shell), with JetBrains Mono Nerd Font; products I build get their own design system.

@@ -12,6 +12,7 @@ PRACTICES:
 - A change to a route, label, heading or status text updates the Feature Map in the same PR.
 - A throwaway script that drives or debugs the app becomes a subcommand of the repo's CLI (e.g. `jt`) with `--json`, `--dry-run` and a test, in the same PR.
 - Open design questions get a prototype, not a review of the abstract design.
-- Route models per `~/dotfiles/docs/model-routing.md`: read-only lookups to `reader`, clear-spec mechanical work to Codex, judgment on Opus 5.5 or Fable 5.1.
+- Route models per `~/dotfiles/docs/model-routing.md`: Codex Astra High for judgment, Sol High for routine implementation, Sol Low for mechanical collection, Fast off.
+  Claude is the fallback when Codex is limited or cannot do the job; use the guide's approved specialist routing.
 - Keep a decision log with `show-me-your-work`.
 STANDING: <standing-orders.md pasted verbatim>

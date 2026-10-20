@@ -6,6 +6,7 @@ that stops being true.
 
 Workflow north star: `docs/workflow-north-star.md` (target operating model and
 tool-adoption backlog; check it before adding workflow tooling).
+Model defaults: `docs/model-routing.md` (Codex-first for new work, Claude fallback, and approved specialist routing).
 
 ## Safety contract (non-negotiable)
 
@@ -76,10 +77,9 @@ tool-adoption backlog; check it before adding workflow tooling).
 
 ## Delegation
 
-- Use strong models for architecture, keybinding strategy, security review, and
-  final integration review. Use cheaper models/subagents for scanning, summaries,
-  config drafting, docs, and formatting. Delegated agents may not touch
-  `setup/`, `tests/`, secrets-adjacent files, or `AGENTS.md`.
+- Follow `docs/model-routing.md`: Codex Astra High for judgment and reviews, Sol High for routine implementation, and Sol Low for mechanical collection; Fast off.
+  Claude is the fallback when Codex is limited or cannot do the job.
+  Delegated agents may not touch `setup/`, `tests/`, secrets-adjacent files, or `AGENTS.md`.
 
 ## How to test
 

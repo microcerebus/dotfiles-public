@@ -406,7 +406,7 @@ in
   # Codex delegation (own authorship, inspired by Theo's Fable 5 workflow):
   # independent review and native computer-use verification via the codex CLI
   # (Homebrew cask, nix/host.nix). codex-review is slash-command only and is
-  # the cross-family reviewer for show-me-your-work. codex-implement was
+  # an independent reviewer for show-me-your-work. codex-implement was
   # dropped 2026-10-10: unused, and T3's delegate_task now hands bounded work
   # to Codex directly (AGENTS.md, T3 Code fallback routing).
   home.file.".claude/skills/codex-review".source = link "files/.claude/skills/codex-review";
@@ -426,14 +426,14 @@ in
   # security-read 2026-10-14: prompt-only markdown plus one append-only TSV
   # helper (show-me-your-work/scripts/log.sh), no network, no hooks. Edits
   # from upstream: Cursor paths (.cursor/skills -> .claude/skills, transcript
-  # location), Cursor Task/model lines -> Agent tool roles per CLAUDE.md model
-  # routing, the cross-family reviewer, correct and show-me-your-work (and
+  # location), Cursor Task/model lines -> Codex-first roles in model-routing.md,
+  # independent reviewers, correct and show-me-your-work (and
   # unslop above) model-invocable; why reads git/gh, ~/orchestrator lane
   # records and recall instead of Slack/Linear/Notion MCPs; reflect uses
   # recall and tasks-axi; ketchup renders with T3 html_render and leads with
   # "Needs the owner"; arena, architect, interrogate and swarm share
-  # arena/references/model-families.md (Codex via `codex exec`, Claude-only
-  # fallback with a Fable judge). The rest stay slash-command only, as
+  # arena/references/model-families.md (fresh Codex contexts with explicit
+  # capability/quota fallback or task-level provider exceptions). The rest stay slash-command only, as
   # upstream ships them. poteto-mode (added 2026-10-16, same pin) is the one
   # model-invocable entry: its body routes by task type to one playbook in
   # references/, and the playbooks run the slash-only skills by reading their
@@ -466,6 +466,37 @@ in
   home.file.".claude/skills/arena".source = link "files/.claude/skills/arena";
   home.file.".claude/skills/interrogate".source = link "files/.claude/skills/interrogate";
   home.file.".claude/skills/swarm".source = link "files/.claude/skills/swarm";
+  # Codex discovers the same canonical skills through its user skills root.
+  # Explicit-only skills carry agents/openai.yaml so their descriptions do
+  # not become always-loaded context; poteto-mode reads them on demand.
+  # No live links are changed until the normal reviewed activation.
+  home.file.".agents/skills/architect".source = link "files/.claude/skills/architect";
+  home.file.".agents/skills/arena".source = link "files/.claude/skills/arena";
+  home.file.".agents/skills/blast-radius".source = link "files/.claude/skills/blast-radius";
+  home.file.".agents/skills/codex-review".source = link "files/.claude/skills/codex-review";
+  home.file.".agents/skills/correct".source = link "files/.claude/skills/correct";
+  home.file.".agents/skills/create-verification-skill".source = link "files/.claude/skills/create-verification-skill";
+  home.file.".agents/skills/figure-it-out".source = link "files/.claude/skills/figure-it-out";
+  home.file.".agents/skills/how".source = link "files/.claude/skills/how";
+  home.file.".agents/skills/in-your-own-words".source = link "files/.claude/skills/in-your-own-words";
+  home.file.".agents/skills/interrogate".source = link "files/.claude/skills/interrogate";
+  home.file.".agents/skills/ketchup".source = link "files/.claude/skills/ketchup";
+  home.file.".agents/skills/maintain-verification-skill".source = link "files/.claude/skills/maintain-verification-skill";
+  home.file.".agents/skills/pause-safely".source = link "files/.claude/skills/pause-safely";
+  home.file.".agents/skills/poteto-mode".source = link "files/.claude/skills/poteto-mode";
+  home.file.".agents/skills/recall".source = link "files/.claude/skills/recall";
+  home.file.".agents/skills/reflect".source = link "files/.claude/skills/reflect";
+  home.file.".agents/skills/session-pickup".source = link "files/.claude/skills/session-pickup";
+  home.file.".agents/skills/sharpen".source = link "files/.claude/skills/sharpen";
+  home.file.".agents/skills/show-me-your-work".source = link "files/.claude/skills/show-me-your-work";
+  home.file.".agents/skills/standing-orders".source = link "files/.claude/skills/standing-orders";
+  home.file.".agents/skills/swarm".source = link "files/.claude/skills/swarm";
+  home.file.".agents/skills/tdd".source = link "files/.claude/skills/tdd";
+  home.file.".agents/skills/teach".source = link "files/.claude/skills/teach";
+  home.file.".agents/skills/technical-writing".source = link "files/.claude/skills/technical-writing";
+  home.file.".agents/skills/unslop".source = link "files/.claude/skills/unslop";
+  home.file.".agents/skills/visual-reply".source = link "files/.claude/skills/visual-reply";
+  home.file.".agents/skills/why".source = link "files/.claude/skills/why";
   # Status line (Catppuccin Mocha): ~/.claude/settings.json invokes this via
   # `bash`, so no execute bit is required. Edit files/.claude/statusline.sh,
   # not the symlink target.

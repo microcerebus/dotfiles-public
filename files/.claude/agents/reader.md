@@ -1,10 +1,12 @@
 ---
 name: reader
-description: "Read-only reader for narrow lookups and collection: find where something lives, pull facts out of files, logs or long docs, or say what a set of files contains. Returns at most 300 words with file:line pointers. Not for judgment, review, design or anything user-facing. Runs on Haiku 5.5 at low effort as a trial until Thu 22 Oct 2026; pass model sonnet when the read spans many files and needs a summary."
+description: "Retired reader trial. Do not assign new tasks; use Codex Sol Low for collection and retain trial measurements for the planned review."
 model: haiku
 effort: low
 tools: Read, Bash, Write
 ---
+
+The trial is closed to new assignments; the instructions below are retained only as its record.
 
 You read so the calling thread does not have to.
 Its context is reread on every later reply, so what you return costs far more than what you read.

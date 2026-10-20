@@ -71,6 +71,43 @@ class CheckSkillsTest(unittest.TestCase):
         self.assertEqual(code, 1, out)
         self.assertIn(needle, out)
 
+    def codex_link(self, name="good", source="good", policy=None):
+        with self.nix.open("a") as f:
+            f.write(f'  home.file.".agents/skills/{name}".source = link "files/.claude/skills/{source}";\n')
+        if policy is not None:
+            d = self.skills / source / "agents"
+            d.mkdir(exist_ok=True)
+            (d / "openai.yaml").write_text(policy)
+
+    def explicit_good(self):
+        p = self.skills / "good/SKILL.md"
+        p.write_text(p.read_text().replace("name: good", "name: good\ndisable-model-invocation: true"))
+
+    def test_codex_explicit_skill_requires_matching_policy(self):
+        self.explicit_good()
+        self.codex_link()
+        self.assert_fails("Codex invocation policy")
+
+    def test_codex_policy_string_is_not_a_boolean(self):
+        self.explicit_good()
+        self.codex_link(policy='policy:\n  allow_implicit_invocation: "false"\n')
+        self.assert_fails("Codex invocation policy")
+
+    def test_codex_cannot_silently_enable_explicit_skill(self):
+        self.explicit_good()
+        self.codex_link(policy='policy:\n  allow_implicit_invocation: true\n')
+        self.assert_fails("Codex invocation policy")
+
+    def test_codex_alias_must_resolve_to_same_named_skill(self):
+        self.codex_link(name="other")
+        self.assert_fails("Codex link")
+
+    def test_codex_explicit_skill_with_false_policy_passes(self):
+        self.explicit_good()
+        self.codex_link(policy='policy:\n  allow_implicit_invocation: false\n')
+        code, out = self.run_checker()
+        self.assertEqual(code, 0, out)
+
     def test_good_tree_passes(self):
         code, out = self.run_checker()
         self.assertEqual(code, 0, out)

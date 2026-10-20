@@ -61,9 +61,14 @@ At the end of the run, before handing back, check the log told the truth. Read t
 
 Correct the log, not the story. The audit never edits or removes a row, even an invented one. When a row records neither a real decision nor a real action, or its claim or evidence is wrong, add a row that supersedes it with what actually happened and a pointer that resolves. This audit does not check rows outside this run's stretches. If this run's own work shows one of them is wrong, supersede it like any wrong call.
 
-## Cross-model review of the trail
+## Independent review of the trail
 
-Before handing back, spawn a subagent on a different model family from the one that did the work. Self-review is not a substitute. From Claude, that is GPT through the `codex-review` skill when Codex has quota; when it does not, use Fable 5.1 through the Agent tool and say in the Attention line that the reviewer shared the model family. The subagent reads the audit trail and the run's transcript, then flags what the user should pay attention to. Not a redo of the work, a scan for what's suboptimal or risky. Pick the reviewer's model and effort per the Model routing and Reasoning effort sections of `~/.claude/CLAUDE.md` (a review is a judgment stage: high effort, Fast off).
+Before handing back, ask a fresh read-only Astra High reviewer to check the audit trail and the run's transcript.
+Follow `../arena/references/model-families.md` for delegation, concurrency and fallback.
+Self-review does not replace this independent pass; another family is optional only under the guide's task-exception or fallback conditions.
+The reviewer flags weak evidence, skipped checks and risky choices, without redoing or editing the work.
+Report the actual reviewer model and whether the run used one provider.
+
 
 - Decisions logged with weak or absent evidence.
 - Verification steps skipped or claimed without proof in the transcript.

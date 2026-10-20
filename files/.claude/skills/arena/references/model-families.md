@@ -1,60 +1,49 @@
-# Two model families
+# Independent model runs
 
-Arena, architect, interrogate, and swarm get their signal from model diversity.
-Here the two families are Claude, spawned with the Agent tool, and GPT, run through the `codex` CLI (the model is set in `~/.codex/config.toml`).
-Start the label of any seat that runs GPT with `[gpt]`.
+Read `~/dotfiles/docs/model-routing.md` before assigning roles.
+Codex is the default, including when the parent runs on Claude.
+Fresh contexts provide independent attempts and reviews; multiple Codex runs do not constitute cross-family evidence.
+Use Claude only for a demonstrated capability gap, a confirmed Codex usage limit, or an explicit task-level exception.
+A request for another model family is such an exception; record the actual models used.
 
-## Pick the mode
+## Assign roles
 
-1. **Two families.** This is the default while Codex has quota.
-   Claude seats run on Opus 5.5 (`model: "opus"`), and GPT seats run through `codex exec`.
-   A judge comes from the family the parent is not in: from a Claude parent that is a GPT judge, and from a Codex parent it is Fable 5.1.
-2. **Claude only.** Use it when Codex is out of quota or the `codex` CLI is missing.
-   Every runner, worker, or reviewer seat runs on Opus 5.5, and a judge runs on Fable 5.1 (`model: "fable"`).
-   Write "Claude only: every seat shared a model family" in the output, because agreement between same-family seats is weaker evidence than agreement across families.
+| Work | Default | Effort |
+|---|---|---|
+| Design, architecture, investigation synthesis, review and judging | `gpt-6-astra` | High |
+| Routine implementation with an explicit acceptance check | `gpt-6.1-sol` | High |
+| Mechanical collection, scanning and formatting | `gpt-6.1-sol` | Low |
 
-Codex is out when the thread or the lane's standing orders say so, or when a `codex exec` call fails with a usage or rate limit message.
-Don't spend a probe call when the thread already says Codex is out.
-Codex calls can time out: retry a timeout once, then treat that seat as a dropout.
-Never switch Codex to a paid API key to get around a limit.
+Keep Fast off.
+If Astra alone is unavailable, use Sol High before a provider fallback.
+Use independent Astra contexts for arena candidates, adversarial reviewers and the final judge unless the brief calls for a supported comparison.
+The judge never sees candidates while they are being written and never edits them.
+Keep labels tied to the role and actual model, not an assumed provider.
 
-## Run a GPT seat
+## Choose the available delegation tool
 
-Write the seat's full brief to a file first.
-The command line stays short, and the brief stays on disk for the synthesis note.
+Use T3's live `orchestrator_capabilities` catalog before choosing provider and model identifiers.
+For same-provider work, native subagents are suitable when they support the selected model.
+Use T3 `delegate_task` when they do not, for another provider, or for a writer needing `isolation: "worktree"`.
+Track each returned taskId and read the completed artifact, not only the summary.
+Start a new task for every independent review round, with the brief and prior findings included.
+Do not create top-level threads to represent subagents.
+Respect the lane's concurrency and pace limits; a playbook's suggested parallelism does not override them.
 
-A writing seat (an arena or architect runner, a swarm worker) gets its own worktree:
+If the host has no suitable delegation tool, run the Codex CLI with a self-contained brief supplied on stdin.
+Read the installed CLI help before constructing its options.
+Select the model and `model_reasoning_effort` explicitly, keep the standard service tier, and use read-only sandboxing for collection and review.
+A writing worker needs its own worktree and a scope that excludes unrelated changes.
+Do not create a second writable checkout for a read-only task.
+Read the output file and inspect any edits before accepting the result.
 
-```bash
-git worktree add -b arena/<slug>-gpt /tmp/arena-<slug>/gpt <base>
-codex exec -s workspace-write -C /tmp/arena-<slug>/gpt \
-  -o /tmp/arena-<slug>/gpt.last.md - < /tmp/arena-<slug>/brief-gpt.md
-```
+## Failures and fallback
 
-Tell it to leave its changes uncommitted, then read them with `git -C <worktree> status` and `git -C <worktree> diff`.
-The sandbox can write only inside the worktree, and a commit also writes to the main repository's `.git` directory.
-
-A read-only seat (a judge or a reviewer) runs against the repository without a worktree:
-
-```bash
-codex exec -s read-only -C <repo> -o <out>.md - < <brief>.md
-```
-
-Run each command with the Bash tool's `run_in_background: true`, so it runs alongside the Agent seats.
-The harness wakes you when it exits.
-The `-o` file holds Codex's last message, which is a self-report: judge the artifact in the worktree, not the summary.
-
-Prompt Codex short, plain, and self-contained.
-State the task, the paths to read, where to write, and what to report.
-Don't prompt it like a Claude agent, and don't paste this skill's instructions into the brief.
-
-## Run a Claude seat
-
-Use the Agent tool with `subagent_type: "general-purpose"`.
-Runners, workers, and reviewers use `model: "opus"`, and a Claude-only judge uses `model: "fable"`.
-Give a writing seat `isolation: "worktree"`, and tell a read-only seat to change nothing.
-Spawn every Claude seat in one message with `run_in_background: true`.
-
-Arena explicitly uses High for runners, reviewers and judges, and Low for mechanical swarm slices.
-This per-stage setting takes precedence over the general role defaults in `~/dotfiles/docs/model-routing.md`.
-Never use Haiku, and keep Fast off.
+Inspect partial results before retrying an interrupted action.
+Retry a timeout once; after that, report a dropped attempt rather than silently changing providers.
+A tool error or timeout is not proof of a usage limit.
+Never enable a paid API key to bypass an exhausted allowance.
+On a confirmed Codex limit, follow the routing guide's Claude fallback and browser-state rules.
+Commit work in progress before a provider switch and never delete a dirty worktree.
+When using Claude, select Opus and the role's fallback effort from the guide; do not treat Claude as a required judge while Codex can do the task.
+Report a single-provider run as such and keep the same evidence and acceptance checks.

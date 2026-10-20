@@ -50,6 +50,8 @@ SKILL_FILE = re.compile(r"^([a-z0-9-]+)/(references|scripts)/[\w./-]+$")
 LOCAL_PATH = re.compile(r"^(references|scripts)/[\w./-]+$")
 NIX_LINK = re.compile(r'home\.file\."\.claude/skills/([^"]+)"\.source\s*=\s*link\s+"files/\.claude/skills/([^"]+)"')
 
+CODEX_LINK = re.compile(r'home\.file\."\.agents/skills/([^"/]+)"\.source\s*=\s*link\s+"([^"\n]+)"')
+
 
 def frontmatter(text):
     lines = text.splitlines()
@@ -130,6 +132,34 @@ def nix_links(nix_file):
     return links
 
 
+def check_codex_links(nix_file, skills_dir):
+    """Keep Codex aliases and implicit invocation consistent with canonical skills."""
+    problems = []
+    for name, source in CODEX_LINK.findall(nix_file.read_text(encoding="utf-8")):
+        if source != f"files/.claude/skills/{name}":
+            problems.append(f"Codex link {name}: must point at its canonical same-named skill")
+            continue
+        skill_dir = skills_dir / name
+        try:
+            meta = frontmatter((skill_dir / "SKILL.md").read_text())
+            metadata = skill_dir / "agents/openai.yaml"
+            parsed = yaml.safe_load(metadata.read_text()) if metadata.exists() else {}
+            if not isinstance(parsed, dict):
+                raise ValueError("metadata must be a mapping")
+            policy = parsed.get("policy", {})
+            if not isinstance(policy, dict):
+                raise ValueError("policy must be a mapping")
+            actual = policy.get("allow_implicit_invocation", True)
+            expected = meta.get("disable-model-invocation") is not True
+            if not isinstance(actual, bool) or actual != expected:
+                raise ValueError(f"allow_implicit_invocation must be {str(expected).lower()}")
+        except (OSError, ValueError, yaml.YAMLError) as error:
+            problems.append(f"Codex invocation policy {name}: {error}")
+    for problem in problems:
+        print(f"FAIL {problem}")
+    return len(problems)
+
+
 def check_tree(skills_dir, links, nix_name, skills_dirs, global_names=None):
     """Check one skills tree; global_names is set for a repo-local tree.
 
@@ -176,6 +206,7 @@ def main(argv):
     links = nix_links(nix_file)
     skills_dirs = [d for d in (local_dir, skills_dir) if d]
     failed, listing, names = check_tree(skills_dir, links, nix_file.name, skills_dirs)
+    failed += check_codex_links(nix_file, skills_dir)
     for name in sorted(set(links) - names):
         print(f"FAIL {name}: {nix_file.name} links it, but {skills_dir.name}/{name} is not a directory")
         failed += 1

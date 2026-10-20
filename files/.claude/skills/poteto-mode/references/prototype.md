@@ -16,7 +16,7 @@ Reviews of abstract designs invent theoretical risks and edge cases that never h
    Add a variant nobody asked for when you see a better idea.
    For a visual or interaction decision, put the variants behind one switcher (buttons or a key), each one labeled.
    For a behavior or timing decision, write the smallest script that exercises the question.
-   For a new screen, have `arena/SKILL.md` build the variants in parallel across model families.
+   For a new screen, have `arena/SKILL.md` build the variants in independent contexts within the lane concurrency limit.
 4. Drive each variant with the repo's verification skill (`verify-<app>` or `control-<app>`).
    When there is none, a web prototype runs in the agent Chrome from `~/.claude/CLAUDE.md`, never Brave or a plain headless Chrome.
    Use a written Playwright script in a background tab for screen-free work; use `codex-computer-use` for interactive checks.

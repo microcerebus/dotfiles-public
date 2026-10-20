@@ -12,11 +12,11 @@ Work in this order: open questions, then prototypes, then the architect skill, s
 3. For shared code others will import, write the tutorial first (`references/write-docs.md`) and design back from the call sites it shows.
 4. Read `architect/SKILL.md` in full and follow it, with the prototype results and the tutorial in its Phase A grounding.
    It grounds the problem with how and why, sketches competing designs in parallel through arena, cross-judges them, then implements against the winning sketch.
-5. Seat two model families per `arena/references/model-families.md`: Claude seats on Opus 5.5, GPT seats through `codex exec`, and a judge from the family the parent is not in.
-   Fall back to Claude only when a `codex exec` call reports a usage limit, and say so in the output.
+5. Use independent Astra High candidates and a fresh read-only judge per `arena/references/model-families.md`.
+   Respect the lane concurrency limit and report the actual models and any provider fallback.
 6. Escape hatches in the sketch (`any`, forced casts, the same workaround at unrelated call sites) prove the design is wrong.
    Scrap the sketch and start over rather than patch it.
 7. If the design is still contested once it is built, run `interrogate/SKILL.md` before it ships.
 
 **Reply.**
-The open questions and what each prototype answered, what `architect` asks for, and which model families sat and whether Codex was out.
+The open questions and what each prototype answered, what `architect` asks for, and which models ran and what justified any fallback.
