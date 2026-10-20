@@ -26,6 +26,8 @@ These are common instructions for my agents across all scenarios.
   This includes sessions running inside T3 Code: default to Chrome, not T3 Code's built-in preview browser (the t3-code `preview_*` tools), unless the owner asks for the in-app preview.
 - Screen-free browser work, including reading pages, screenshots and WhatsApp Web, runs as a written Playwright script attached to the agent Chrome in background tabs through `scripts/agent-chrome-playwright`.
   Never bring those tabs to the front, resize the shared window or close somebody else's tabs.
+  Every agent use of the agent Chrome runs through `scripts/agent-chrome-playwright` or `scripts/agent-chrome-session --minutes N --what "..." -- <command>`, which notify the owner before (what, about how long) and when done; neither waits for an answer.
+  `scripts/agent-chrome-gate` on 9333 refuses undeclared clients and new browser contexts; a script that signs in its own users launches its own headless browser instead.
   Interactive checks that need the screen go through the codex-computer-use skill; agents other than Codex delegate the driving and keep the judgment.
   Every computer-use run must use `codex-computer-use --minutes N -- "prompt"`, which warns before taking the screen, offers a ten-minute deferral and notifies when done.
   An unanswered warning may proceed only after two minutes of Mac idle time; do not bypass the launcher.
@@ -33,6 +35,7 @@ These are common instructions for my agents across all scenarios.
   Exception: while Codex is out of quota, Claude agents drive Chrome themselves (see "Agent operations").
 - Review surfaces are T3 Code's built-ins, routed by the `visual-reply` skill: a page goes in the reply through `html_preview` then `html_render`, a decision through an `AskUserQuestion` card, feedback on a running UI through the preview panel's annotate tool, and anything else through a normal reply.
   A page too big for `html_render`, or one the owner returns to for days, is a pack in `~/packs/<name>/`, linked at `https://<MagicDNS host>/packs/<name>/`.
+  A pack is tailnet-only; for anyone else, `packs-share <pack>` lists what a public read-only copy would contain, and only `--yes <digest>` after the owner's yes in the chat publishes it (see the `visual-reply` skill).
   Anything served over HTTP for review gets this machine's Tailscale MagicDNS hostname, never `localhost`, `127.0.0.1` or a local file path.
   If MagicDNS access is unavailable, report and fix it before claiming the page is ready for phone review.
 - TypeScript: never use `any` unless it is truly necessary or you are specifically instructed to.

@@ -202,3 +202,19 @@ tool-adoption backlog; check it before adding workflow tooling).
   ssh-agent holds it (2026-10-11).
 - Hooks in a linked worktree get `GIT_DIR`, so anything a hook runs against another repo must first clear `git rev-parse --local-env-vars`.
   Mirror commands of an earlier version of the pre-push hook set `core.bare=true` in `~/dotfiles` (2026-10-16).
+- Packs are tailnet-only; never put the packs server behind Tailscale Funnel or any public proxy, because its notes API writes into agent sessions.
+  A public copy of a pack is `scripts/packs-share`: a static snapshot on the dedicated Vercel project `packs-share`, one preview deployment per share, under a random folder.
+  Its first deployment is a production placeholder that serves only a 404 page; otherwise Vercel makes a new project's first deployment production, on stable aliases.
+  Vercel's default Standard Protection puts a Vercel login in front of every generated deployment URL, so that project alone has Vercel Authentication and directory listing off; never turn either off on another project.
+  Setup therefore refuses an existing project of that name that it did not make.
+  `vercel remove` given a project name deletes every deployment in it, so packs-share only ever passes one `dpl_` id (2026-10-20).
+- Every agent use of the agent Chrome notifies the owner first (what, about how long) and when done (2026-10-20 17:08).
+  A job-tracker verifier attached Playwright to 9333 unannounced and called `browser.newContext()` per user; in headed Chrome each new context opens a new window on his screen.
+  `scripts/agent-chrome-gate` (launchd `com.myuser.agent-chrome-gate`) now owns 9333: only clients declared by `scripts/agent-chrome-session` get through, and their connections close when the session ends.
+  Nobody gets new browser contexts; new windows and bringing a tab to the front need a session declared `--foreground`.
+  It finds the client with `lsof` and its process ancestry and environment with `ps -E`.
+  Chrome itself listens on 9334, which nothing gates: never connect to 9334 (only the axi wrapper refuses it).
+  The gate guards against honest mistakes, not against a hostile process.
+  The gate cannot see popups (`target=_blank`, `window.open`) or a client driving a tab it did not open; `scripts/agent-chrome-playwright` closes its flows' popups.
+  The gate runs from the live checkout and restarts itself, once no connection is open, when its code changes.
+  Until 2026-11-20 it lets undeclared clients through after notifying on their behalf, so callers written before the gate keep working while they migrate.

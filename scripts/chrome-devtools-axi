@@ -23,11 +23,18 @@ const { existsSync } = require("node:fs");
 const { homedir } = require("node:os");
 const { join } = require("node:path");
 const { fallbackUntil, isAgent } = require("./codex-browser-fallback");
+const agentChromeSession = require("./agent-chrome-session");
 
 const AXI_BINARY = join(homedir(), "Library/pnpm/bin/chrome-devtools-axi");
 const FOREGROUND = "--foreground";
+// Agents reach the agent Chrome through scripts/agent-chrome-gate on 9333.
+// The identity check below also accepts a Chrome still on 9333 from the
+// launchd plist before the owner's rebuild that lands the gate; after it, only the
+// gate holds 9333 and that pattern matches no Chrome.
 const AGENT_CHROME_URL = "http://127.0.0.1:9333";
+const AGENT_CHROME_PORTS = ["9334", "9333"];
 const AGENT_CHROME_LABEL = "com.myuser.agent-chrome";
+const GATE_LABEL = "com.myuser.agent-chrome-gate";
 const AGENT_CHROME_BINARY = "/Applications/Google Chrome Beta.app/Contents/MacOS/Google Chrome Beta";
 const AGENT_CHROME_FLAGS = ["--disable-extensions", "--disable-sync"];
 const MAIN_CHROME_PORT = "9222";
@@ -59,6 +66,9 @@ function resolveEnv(env) {
   if (env.CHROME_DEVTOOLS_AXI_AUTO_CONNECT === "1" || targetsPort(env.CHROME_DEVTOOLS_AXI_BROWSER_URL ?? "", MAIN_CHROME_PORT)) {
     return { error: MAIN_CHROME_REFUSAL };
   }
+  if (targetsPort(env.CHROME_DEVTOOLS_AXI_BROWSER_URL ?? "", "9334")) {
+    return { error: `chrome-devtools-axi: refusing the ungated Chrome port 9334. Use the agent Chrome gate at ${AGENT_CHROME_URL} so the owner is notified.\n` };
+  }
   delete out.CHROME_DEVTOOLS_AXI_AUTO_CONNECT;
   const url = env.CHROME_DEVTOOLS_AXI_BROWSER_URL;
   // An explicit other URL, "" (axi launches a throwaway browser) or an own
@@ -84,7 +94,7 @@ function ensureAgentChrome(env, deps, io) {
     if (deps.probe(AGENT_CHROME_URL)) return env;
     deps.sleep(500);
   }
-  io.stderr.write(`chrome-devtools-axi: the agent Chrome did not come up on ${AGENT_CHROME_URL} within 15s. See ~/Library/Logs/agent-chrome.log, or restart it with \`launchctl kickstart -k gui/$(id -u)/${AGENT_CHROME_LABEL}\`.\n`);
+  io.stderr.write(`chrome-devtools-axi: the agent Chrome did not come up on ${AGENT_CHROME_URL} within 15s. See ~/Library/Logs/agent-chrome.log and ~/Library/Logs/agent-chrome-gate.log, or restart them with \`launchctl kickstart -k gui/$(id -u)/${AGENT_CHROME_LABEL}\` and \`launchctl kickstart -k gui/$(id -u)/${GATE_LABEL}\`.\n`);
   return null;
 }
 
@@ -134,12 +144,17 @@ const defaultDeps = {
   probe: (url) => spawnSync("/usr/bin/curl", ["-fsS", "-o", "/dev/null", "--max-time", "1", `${url}/json/version`],
     { stdio: "ignore" }).status === 0,
   agentInstalled: () => existsSync(join(homedir(), "Library/LaunchAgents", `${AGENT_CHROME_LABEL}.plist`)),
-  kickstart: () => spawnSync("/bin/launchctl", ["kickstart", `gui/${process.getuid()}/${AGENT_CHROME_LABEL}`], { stdio: "ignore" }),
+  // Chrome listens behind the gate, so both launchd agents must be up; the
+  // gate's exists only after the rebuild that adds it.
+  kickstart: (spawn = spawnSync) => {
+    for (const label of [AGENT_CHROME_LABEL, GATE_LABEL]) spawn("/bin/launchctl", ["kickstart", `gui/${process.getuid()}/${label}`], { stdio: "ignore" });
+  },
+  lease: (spec) => agentChromeSession.lease(spec),
+  endLease: (id) => agentChromeSession.endLease(id),
   sleep: (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms),
   // Browser processes of the agent Chrome (helpers carry --type=).
   browserCommandLines: () => {
-    const port = new URL(AGENT_CHROME_URL).port;
-    const out = spawnSync("/usr/bin/pgrep", ["-lf", `remote-debugging-port=${port}`], { encoding: "utf8" }).stdout ?? "";
+    const out = spawnSync("/usr/bin/pgrep", ["-lf", `remote-debugging-port=(${AGENT_CHROME_PORTS.join("|")})`], { encoding: "utf8" }).stdout ?? "";
     return out.split("\n").map((line) => line.replace(/^\d+ /, ""))
       .filter((line) => line.startsWith(`${AGENT_CHROME_BINARY} `) && !line.includes("--type="));
   },
@@ -179,11 +194,20 @@ function run(args, env, deps = defaultDeps, io = process) {
       return 1;
     }
   }
+  // the owner hears about the fallback once per bridge, not once per command: the
+  // bridge outlives each call, so the session is a lease the gate times out.
+  if (childEnv.CHROME_DEVTOOLS_AXI_BROWSER_URL === AGENT_CHROME_URL && (needsBrowser || args[0] === "stop")) {
+    const id = `axi-${(childEnv.CHROME_DEVTOOLS_AXI_SESSION ?? "default").replace(/[^A-Za-z0-9_-]/g, "_")}`;
+    if (args[0] === "stop") deps.endLease(id);
+    // Leave five minutes after the bridge's idle exit before the gate cuts it.
+    else deps.lease({ id, what: "chrome-devtools-axi fallback while Codex is out of quota", minutes: Number(childEnv.CHROME_DEVTOOLS_AXI_IDLE_TIMEOUT_MS) / 60000 + 5, foreground: args.includes(FOREGROUND) });
+    childEnv = { ...childEnv, [agentChromeSession.ENV]: id };
+  }
   const finalArgs = shared ? placeTabs(args, childEnv, deps.spawn) : args;
   const result = deps.spawn(AXI_BINARY, finalArgs, { env: childEnv, stdio: "inherit" });
   if (result.error) io.stderr.write(`chrome-devtools-axi: ${result.error.message}\n`);
   return result.status ?? 1;
 }
 
-module.exports = { run, resolveEnv, agentChromeFlagsError, AGENT_CHROME_URL, AGENT_CHROME_LABEL, AGENT_CHROME_FLAGS };
+module.exports = { run, resolveEnv, agentChromeFlagsError, defaultDeps, AGENT_CHROME_URL, AGENT_CHROME_LABEL, AGENT_CHROME_FLAGS };
 if (require.main === module) process.exitCode = run(process.argv.slice(2), process.env);

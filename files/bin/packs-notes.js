@@ -46,6 +46,8 @@
     .head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
     .title { font-weight: 700; font-size: 15px; }
     .x { background: transparent; color: var(--sub); padding: 8px 10px; min-width: 44px; }
+    .tools { display: flex; align-items: center; gap: 4px; flex: none; }
+    .link { background: transparent; color: var(--mauve); padding: 8px 10px; }
     .list { overflow-y: auto; min-height: 0; display: flex; flex-direction: column; gap: 10px; margin: 0 0 12px; }
     .empty { color: var(--sub); }
     .note { background: var(--mantle); border: 1px solid var(--s0); border-radius: 12px; padding: 10px 12px; min-width: 0; }
@@ -92,7 +94,8 @@
     <div class="bar" hidden><span>Tap what the note is about</span>
       <div class="row"><button class="whole">Whole page</button><button class="cancel-pick">Cancel</button></div></div>
     <section class="panel list-panel" hidden role="dialog" aria-label="Notes">
-      <div class="head"><span class="title">Notes for the agent</span><button class="x close" aria-label="Close">✕</button></div>
+      <div class="head"><span class="title">Notes for the agent</span>
+        <span class="tools"><button class="link share">Share</button><button class="x close" aria-label="Close">✕</button></span></div>
       <p class="error" hidden></p>
       <div class="list"></div>
       <div class="row"><button class="add">Add note</button><button class="primary send">Send</button></div>
@@ -125,6 +128,7 @@
     }
   })();
 
+  const SHARE_NOTE = "Make a public share link for this pack (packs-share). Show me the files first.";
   // Plain names for what was tapped, shown before its text in the compose sheet.
   const KINDS = { a: "Link", button: "Button", img: "Image", svg: "Image", h1: "Heading", h2: "Heading", h3: "Heading",
     h4: "Heading", h5: "Heading", h6: "Heading", li: "List item", td: "Table cell", th: "Table cell", pre: "Code",
@@ -330,17 +334,18 @@
     ui.fab.hidden = false;
   }
 
-  function compose(t) {
+  function compose(t, text = "") {
     target = t;
     stopPicking();
     ui.listPanel.hidden = ui.fab.hidden = true;
     const kind = KINDS[t.tag];
     ui.target.textContent = t.quote ? `${kind ? kind + ": " : ""}${clip(t.quote, 240)}` : "The whole page";
-    ui.text.value = "";
+    ui.text.value = text;
     showError(ui.compose, "");
     ui.compose.hidden = false;
     if (t.element) frame(t.element);
     ui.text.focus({ preventScroll: true });
+    ui.text.setSelectionRange(text.length, text.length);
   }
 
   function startPicking() {
@@ -393,6 +398,9 @@
   $(".close").onclick = closeAll;
   $(".add").onclick = startPicking;
   $(".whole").onclick = () => compose({ element: null, quote: "", tag: "" });
+  // Share asks the agent for a public read-only copy (scripts/packs-share) through an ordinary note. The page never
+  // publishes anything itself: the agent shows the owner the file list and waits for his yes in the chat.
+  $(".share").onclick = () => compose({ element: null, quote: "", tag: "" }, SHARE_NOTE);
   $(".cancel-pick").onclick = openList;
   for (const b of root.querySelectorAll(".cancel")) b.onclick = openList;
   $(".save").onclick = async () => {

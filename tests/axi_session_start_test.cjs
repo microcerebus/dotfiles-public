@@ -53,7 +53,7 @@ test("runs non-browser tools and names Codex without querying axi's browser adve
   assert.equal(lines.length, 4);
   assert.equal(lines[1], "- gh-axi: GitHub Status: issues: 0 open.");
   assert.match(lines[2], /^- tasks-axi: failed \(.*\); run `tasks-axi` to see it\.$/);
-  assert.equal(lines[3], "- Browser work: written Playwright scripts attached to the agent Chrome in background tabs for screen-free reading, screenshots and WhatsApp Web; codex-computer-use for interactive checks that take the screen.");
+  assert.equal(lines[3], "- Browser work: written Playwright scripts attached to the agent Chrome in background tabs for screen-free reading, screenshots and WhatsApp Web; codex-computer-use for interactive checks that take the screen. Every agent Chrome run goes through agent-chrome-playwright or agent-chrome-session with --minutes N --what \"...\", which notify the owner before and after.");
   assert.equal(fs.existsSync(path.join(bin, "browser-called")), false);
   assert.doesNotMatch(written, /Prefer this|chrome-devtools-axi/);
 });

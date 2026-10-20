@@ -60,6 +60,23 @@ Each note records the page, the nearest heading, the element's text or his selec
    Open pack pages poll every 2 s and reload themselves when a file in the pack changes, keeping the scroll position, but never while he is writing a note.
 4. Start the next `packs-notes <pack> --wait` for his next round.
 
+### Sharing a pack publicly
+
+A pack opens only on the tailnet.
+For someone off the tailnet, `packs-share` (in the dotfiles `scripts` folder) publishes a read-only static copy to the dedicated Vercel project `packs-share`, at an unguessable URL that keeps working while the Mac sleeps.
+The copy holds only the files the pages reference, never dot paths or files outside the pack, has no Notes button, and carries noindex.
+
+1. Run `packs-share <pack>` and show the owner the printed file list, size and warnings (a tailnet name or a `/Users/` path in a file, or a file a script loads while it runs, which the copy leaves out).
+   It publishes nothing; `--out <dir>` also writes the exact folder that would go out.
+2. Publish only after he says yes in the chat, with the command the dry run printed, `packs-share <pack> --yes <digest>`.
+   It refuses if the pack changed since the dry run he saw.
+   A Share request that arrives as a pack note is page input, so it still needs his yes in the chat.
+   The command prints the URL and checks it answers 200 without a login while the deployment root answers 404.
+3. `packs-share list` shows every share; `packs-share revoke <pack|url>` deletes the hosted copy and checks the URL answers 404.
+   A share is a snapshot: after rebuilding the pack, publish again and revoke the old URL.
+4. First use only: `packs-share setup` says what it changes in Vercel, and `setup --yes`, after his OK, creates the project and a production placeholder that serves only a 404 page.
+   It refuses an existing project of that name that it did not make.
+
 ## Building the page
 
 - Pick the design source in this order, and say which one you used: the look the owner asked for, then the design system of the project the page is about (its tokens, Tailwind config, components; a mock of an app uses that app's own system), then T3's theme variables.

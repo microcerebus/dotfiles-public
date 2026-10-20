@@ -1,35 +1,61 @@
 #!/usr/bin/env node
 // Run a written, screen-free flow in its own background agent Chrome tab.
+// The run is an agent-chrome-session: the owner is notified before it and when it
+// ends, and scripts/agent-chrome-gate lets only declared sessions through.
 const { spawnSync } = require("node:child_process");
 const { randomUUID } = require("node:crypto");
-const { join, resolve } = require("node:path");
+const { basename, join, resolve } = require("node:path");
 const { setTimeout: sleep } = require("node:timers/promises");
 const { agentChromeFlagsError, AGENT_CHROME_URL } = require("./chrome-devtools-axi");
+const { withSession } = require("./agent-chrome-session");
 
-function playwright() {
+function playwrightDirectory() {
   const listed = spawnSync("pnpm", ["ls", "-g", "--depth", "0", "--json"], { encoding: "utf8" });
   if (listed.status !== 0) throw new Error("Cannot locate pinned playwright-core through pnpm.");
   const directory = JSON.parse(listed.stdout).map((entry) => entry.dependencies?.["playwright-core"]?.path).find(Boolean);
   if (!directory) throw new Error("playwright-core is missing; see scripts/dotfiles-autoupdate.");
-  return require(directory);
+  return directory;
 }
+
+const playwright = () => require(playwrightDirectory());
 
 const defaults = {
   ready: () => spawnSync(join(__dirname, "agent-chrome-ready"), [], { stdio: "inherit" }).status === 0,
   identityError: () => agentChromeFlagsError(),
   connect: () => playwright().chromium.connectOverCDP(AGENT_CHROME_URL),
   sleep,
+  log: (message) => process.stderr.write(`agent-chrome-playwright: ${message}\n`),
+  // Aborting closes the flow's tab, so a stopped run leaves nothing behind.
+  signal: null,
+  keepPopups: false,
 };
 
+// A link with target=_blank or a window.open from the flow opens a tab Chrome
+// brings to the front of the owner's screen, so the runner closes it at once.
+const POPUP = "closed a popup the flow opened (it comes to the front of the owner's screen). Open the URL in the flow's own tab with page.goto, or pass --keep-popups if the flow needs it.";
+
 async function run(flow, deps = defaults) {
-  if (!deps.ready()) throw new Error("agent-chrome-ready failed; no browser flow started.");
+  const checkStopped = () => {
+    if (deps.signal?.aborted) throw new DOMException("Stopped before the flow started.", "AbortError");
+  };
+  checkStopped();
+  let ready;
+  try { ready = deps.ready(); }
+  finally {
+    // spawnSync readiness can delay a signal handler until the next turn.
+    await new Promise((resolve) => setImmediate(resolve));
+    checkStopped();
+  }
+  if (!ready) throw new Error("agent-chrome-ready failed; no browser flow started.");
   const identityError = deps.identityError();
   if (identityError) throw new Error(identityError);
   const browser = await deps.connect();
   let session;
   let targetId;
+  let context;
+  let newPage;
   try {
-    const context = browser.contexts()[0];
+    context = browser.contexts()[0];
     if (!context) throw new Error("The agent Chrome has no browser context.");
     session = await browser.newBrowserCDPSession();
     const marker = `about:blank#screen-free-${randomUUID()}`;
@@ -41,8 +67,29 @@ async function run(flow, deps = defaults) {
       await deps.sleep(50);
     }
     if (!page) throw new Error("Playwright did not attach to its background tab.");
+    if (!deps.keepPopups) {
+      const watchPopups = (owned) => owned.on("popup", (popup) => {
+        deps.log(POPUP);
+        popup.close().catch(() => {});
+      });
+      watchPopups(page);
+      newPage = context.newPage;
+      context.newPage = async (...args) => {
+        const owned = await newPage.apply(context, args);
+        watchPopups(owned);
+        return owned;
+      };
+    }
+    const closeOwnTab = () => {
+      const closing = targetId && session.send("Target.closeTarget", { targetId });
+      targetId = null;
+      return closing;
+    };
+    if (deps.signal?.aborted) throw new Error("Stopped before the flow started.");
+    deps.signal?.addEventListener("abort", () => { closeOwnTab()?.catch(() => {}); }, { once: true });
     return await flow(page);
   } finally {
+    if (newPage) context.newPage = newPage;
     try {
       if (targetId) await session.send("Target.closeTarget", { targetId });
     } finally {
@@ -52,20 +99,47 @@ async function run(flow, deps = defaults) {
   }
 }
 
-module.exports = { run };
-if (require.main === module) {
-  const args = process.argv.slice(2);
-  if (args.length !== 1) {
-    process.stderr.write("Usage: agent-chrome-playwright <flow.cjs>\nThe file must export async function(page); never bring tabs to the front or close the browser.\n");
-    process.exitCode = 2;
-  } else {
-    Promise.resolve().then(() => {
-      const flow = require(resolve(args[0]));
-      if (typeof flow !== "function") throw new Error("The flow must export a function that receives its own page.");
-      return run(flow);
-    }).catch((error) => {
-      process.stderr.write(`agent-chrome-playwright: ${error.message}\n`);
-      process.exitCode = 1;
-    });
+const USAGE = 'Usage: agent-chrome-playwright [--minutes N] [--what "what it does"] [--keep-popups] <flow.cjs>\n'
+  + "the owner gets a notification (what, about how long) before the flow starts and when it ends.\n"
+  + "Popups the flow opens are closed unless --keep-popups is passed.\n"
+  + "The file must export async function(page); never bring tabs to the front or close the browser.\n";
+// Calls written before the notifications passed only the flow file; they keep
+// working, with the file name and five minutes in the notice.
+const DEFAULT_MINUTES = 5;
+
+function parseArgs(args) {
+  const spec = {};
+  const files = [];
+  for (let i = 0; i < args.length; i += 1) {
+    if (args[i] === "--minutes") spec.minutes = /^\d+$/.test(args[i + 1] ?? "") ? Number(args[++i]) : NaN;
+    else if (args[i] === "--what") spec.what = args[++i];
+    else if (args[i] === "--keep-popups") spec.keepPopups = true;
+    else files.push(args[i]);
   }
+  if (files.length !== 1) throw new Error(USAGE);
+  const missing = ["--minutes", "--what"].filter((flag) => spec[flag.slice(2)] === undefined);
+  return {
+    minutes: spec.minutes ?? DEFAULT_MINUTES,
+    what: spec.what ?? `Playwright flow ${basename(files[0])}`,
+    file: files[0],
+    keepPopups: Boolean(spec.keepPopups),
+    missing,
+  };
+}
+
+module.exports = { run, parseArgs, playwrightDirectory };
+if (require.main === module) {
+  Promise.resolve().then(() => {
+    const { file, missing, keepPopups, ...spec } = parseArgs(process.argv.slice(2));
+    if (missing.length) process.stderr.write(`agent-chrome-playwright: pass ${missing.join(" and ")} so the owner's notice says what the flow does and how long it takes.\n`);
+    const flow = require(resolve(file));
+    if (typeof flow !== "function") throw new Error("The flow must export a function that receives its own page.");
+    // The first signal closes the flow's tab, which ends the flow; a second exits.
+    const stopping = new AbortController();
+    return withSession({ ...spec, onSignal: (signal, count, stop) => (count > 1 ? stop(signal) : stopping.abort()) },
+      () => run(flow, { ...defaults, signal: stopping.signal, keepPopups }));
+  }).catch((error) => {
+    process.stderr.write(`agent-chrome-playwright: ${error.message}${error.message.endsWith("\n") ? "" : "\n"}`);
+    process.exitCode = 1;
+  });
 }

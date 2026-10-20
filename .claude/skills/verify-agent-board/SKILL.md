@@ -73,7 +73,7 @@ Drivers, in this order:
    - `flows/look.mjs <url> <dir> <name> [<width>]`: loads one page of your run at 1440x900, or at the width given (390 is a phone, 844 tall at 3x with touch), saves a full-page screenshot and its text with the horizontal overflow measured, and fails unless the page answered 2xx.
      Like every flow, it refuses the live board on port 4790.
    A journey you would run twice belongs in a flow.
-   For screen-free checks against the signed-in agent Chrome, run a written flow through `agent-chrome-playwright` in its own background tab; see the codex-computer-use skill.
+   For screen-free checks against the signed-in agent Chrome, run a written flow through `agent-chrome-playwright --minutes N --what "..."` in its own background tab (it notifies the owner before and after); see the codex-computer-use skill.
 2. **Codex computer use** for interactive checks no flow covers yet, through the `codex-computer-use` skill and its screen-warning launcher, in the agent Chrome.
    You keep the judgment: pick the feature file, hand Codex its Driving bullets with literal values, then check what it saved.
 3. **chrome-devtools-axi, fallback only**: when no flow fits, Codex is out of quota, and `codex-browser-fallback status` exits 0.

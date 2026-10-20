@@ -1,0 +1,490 @@
+#!/usr/bin/env node
+// Owns 127.0.0.1:9333, the agent Chrome's DevTools address, and forwards to the
+// Chrome itself on 127.0.0.1:9334 (launchd agents in nix/user.nix).
+// the owner is told before any agent uses the agent Chrome, and again when it is
+// done (2026-10-20 17:08, after a job-tracker verifier used it with no notice
+// while he was working). scripts/agent-chrome-session sends those
+// notifications, so this gate refuses CDP from any process that helper did not
+// declare, and the refusal names the helper. Only the version probes
+// (/json/version, /json/protocol) pass undeclared, because readiness checks and
+// Playwright's first request use them; the tab list would show the owner's tabs.
+// The agent Chrome is one headed window on his screen. That verifier's
+// browser.newContext() calls each opened a new window there, and foreground
+// tabs raise the window over his work. So inside a declared session the gate
+// also refuses new browser contexts, new windows, tab activation, window
+// resizing and Browser.close, and turns new tabs into background tabs, unless
+// the session was declared with --foreground.
+// It reads the client's process and environment with lsof and ps; it never
+// logs them beyond the executable name.
+// Tests: tests/agent_chrome_gate_test.cjs.
+const { execFile } = require("node:child_process");
+const fs = require("node:fs");
+const http = require("node:http");
+const net = require("node:net");
+const { basename } = require("node:path");
+const { promisify } = require("node:util");
+const session = require("./agent-chrome-session");
+const execute = promisify(execFile);
+
+const LISTEN_PORT = 9333;
+const CHROME_PORT = 9334;
+const PROBES = new Set(["/json/version", "/json/protocol"]);
+const HELPER = "~/dotfiles/scripts/agent-chrome-session";
+// Migration window: until this date a client that skipped the helper is let
+// through and the owner is notified on its behalf, so callers written before the
+// gate keep working while they move to the helper. After it, they are refused.
+const GRACE_UNTIL = Date.parse("2026-11-20T00:00:00+08:00");
+
+function refusal(client) {
+  return `agent-chrome-gate: refused. the owner is told before any agent uses the agent Chrome, and this process did not tell him.
+Run the command through the helper, which sends the macOS notifications and then lets it through:
+  ${HELPER} --minutes N --what "what it does" -- <your command>
+For a written Playwright flow in a background tab: ~/dotfiles/scripts/agent-chrome-playwright --minutes N --what "..." flow.cjs
+Client: ${client}. Rules: ~/dotfiles/AGENTS.md (agent Chrome).
+`;
+}
+
+const SCREEN = "The agent Chrome is one window on the owner's screen, shared by every agent.";
+const REFUSALS = {
+  context: `agent-chrome-gate: refused Target.createBrowserContext. ${SCREEN} A new browser context opens a new window there (a job-tracker verifier did this on 2026-10-20). For isolated sign-ins, launch your own headless browser (chromium.launch({ headless: true })). For the agent Chrome's sign-ins, use a background tab in the default context: ~/dotfiles/scripts/agent-chrome-playwright.`,
+  window: `agent-chrome-gate: refused a new window. ${SCREEN} Open a background tab instead (Target.createTarget with background: true), or declare the session with --foreground if the owner has to see or click the page.`,
+  front: `agent-chrome-gate: refused bringing a tab to the front. ${SCREEN} Work in your background tab; declare the session with --foreground only if the owner has to see or click the page.`,
+  resize: `agent-chrome-gate: refused Browser.setWindowBounds. ${SCREEN} Size only your own tab with Emulation.setDeviceMetricsOverride (Playwright: page.setViewportSize).`,
+  close: `agent-chrome-gate: refused Browser.close. ${SCREEN} Disconnect instead (Playwright's browser.close() on a connectOverCDP browser only disconnects).`,
+  wrapped: "agent-chrome-gate: refused Target.sendMessageToTarget, the deprecated way to reach a tab, which the gate cannot read. Put sessionId on the command instead (flattened sessions, as Playwright and Puppeteer do).",
+};
+
+// What to do with one CDP command from a declared session.
+function policy(message, declaration) {
+  const foreground = Boolean(declaration.foreground);
+  const params = message.params ?? {};
+  switch (message.method) {
+    case "Target.createBrowserContext": return { refuse: REFUSALS.context };
+    case "Target.createTarget":
+      if (foreground) return {};
+      if (params.newWindow) return { refuse: REFUSALS.window };
+      return params.background === true ? {} : { rewrite: { ...message, params: { ...params, background: true } } };
+    case "Target.activateTarget":
+    case "Page.bringToFront":
+      return foreground ? {} : { refuse: REFUSALS.front };
+    case "Browser.setWindowBounds": return { refuse: REFUSALS.resize };
+    case "Browser.close": return { refuse: REFUSALS.close };
+    case "Target.sendMessageToTarget": return { refuse: REFUSALS.wrapped };
+    default: return {};
+  }
+}
+
+// WebSocket frames (RFC 6455). Returns null until the whole header is in.
+function frameHeader(buffer) {
+  if (buffer.length < 2) return null;
+  let length = buffer[1] & 0x7f;
+  let offset = 2;
+  if (length === 126) {
+    if (buffer.length < 4) return null;
+    length = buffer.readUInt16BE(2);
+    offset = 4;
+  } else if (length === 127) {
+    if (buffer.length < 10) return null;
+    length = Number(buffer.readBigUInt64BE(2));
+    offset = 10;
+  }
+  const masked = (buffer[1] & 0x80) !== 0;
+  const size = offset + (masked ? 4 : 0);
+  if (buffer.length < size) return null;
+  return {
+    fin: (buffer[0] & 0x80) !== 0,
+    rsv: buffer[0] & 0x70,
+    opcode: buffer[0] & 0x0f,
+    mask: masked ? buffer.subarray(offset, offset + 4) : null,
+    size,
+    length,
+  };
+}
+
+function unmask(payload, mask) {
+  if (!mask) return Buffer.from(payload);
+  const out = Buffer.alloc(payload.length);
+  for (let i = 0; i < payload.length; i += 1) out[i] = payload[i] ^ mask[i % 4];
+  return out;
+}
+
+function encodeFrame(text, mask) {
+  const payload = Buffer.from(text);
+  const length = payload.length;
+  const extended = length < 126 ? 0 : length < 65536 ? 2 : 8;
+  const header = Buffer.alloc(2 + extended + (mask ? 4 : 0));
+  header[0] = 0x81;
+  header[1] = (mask ? 0x80 : 0) | (extended === 0 ? length : extended === 2 ? 126 : 127);
+  if (extended === 2) header.writeUInt16BE(length, 2);
+  if (extended === 8) header.writeBigUInt64BE(BigInt(length), 2);
+  if (!mask) return Buffer.concat([header, payload]);
+  mask.copy(header, 2 + extended);
+  return Buffer.concat([header, unmask(payload, mask)]);
+}
+
+// Passes frames through as bytes arrive. Single-frame text messages up to
+// INSPECT_LIMIT are held whole and handed to onText, which returns the bytes
+// to send instead. Fragmented and larger frames pass untouched: this is a
+// guardrail against copied patterns, not a sandbox.
+const INSPECT_LIMIT = 1 << 20;
+class FrameStream {
+  constructor(write, onText = null) {
+    this.write = write;
+    this.onText = onText;
+    this.header = Buffer.alloc(0);
+    this.remaining = 0;
+    this.held = null;
+    this.waiting = [];
+  }
+
+  // Bytes to send between frames, such as an error reply.
+  inject(bytes) {
+    if (this.remaining === 0 && this.header.length === 0 && !this.held) this.write(bytes);
+    else this.waiting.push(bytes);
+  }
+
+  boundary() {
+    for (const bytes of this.waiting.splice(0)) this.write(bytes);
+  }
+
+  push(chunk) {
+    let i = 0;
+    while (i < chunk.length) {
+      if (this.remaining > 0) {
+        const piece = chunk.subarray(i, i + this.remaining);
+        i += piece.length;
+        this.remaining -= piece.length;
+        if (this.held) this.held.parts.push(piece);
+        else this.write(piece);
+        if (this.remaining === 0) this.end();
+        continue;
+      }
+      this.header = Buffer.concat([this.header, chunk.subarray(i, i + 1)]);
+      i += 1;
+      const header = frameHeader(this.header);
+      if (!header) continue;
+      const bytes = this.header;
+      this.header = Buffer.alloc(0);
+      this.remaining = header.length;
+      if (this.onText && header.fin && header.opcode === 1 && header.rsv === 0 && header.length <= INSPECT_LIMIT) {
+        this.held = { header, bytes, parts: [] };
+      } else {
+        this.write(bytes);
+      }
+      if (this.remaining === 0) this.end();
+    }
+  }
+
+  end() {
+    if (this.held) {
+      const { header, bytes, parts } = this.held;
+      this.held = null;
+      const payload = Buffer.concat(parts);
+      const replacement = this.onText(unmask(payload, header.mask).toString("utf8"), header.mask);
+      this.write(replacement ?? Buffer.concat([bytes, payload]));
+    }
+    this.boundary();
+  }
+}
+
+// Client side of a CDP WebSocket: apply the policy to each command.
+function filterCommand(text, mask, declaration, reply, log) {
+  let message;
+  try { message = JSON.parse(text); } catch { return null; }
+  if (!message || typeof message.method !== "string") return null;
+  const decision = policy(message, declaration.current());
+  if (decision.rewrite) return encodeFrame(JSON.stringify(decision.rewrite), mask);
+  if (!decision.refuse) return null;
+  log(`refused ${message.method} for "${declaration.what}"`);
+  const answer = { id: message.id, error: { code: -32000, message: decision.refuse } };
+  if (message.sessionId) answer.sessionId = message.sessionId;
+  reply(encodeFrame(JSON.stringify(answer), null));
+  return Buffer.alloc(0);
+}
+
+// --- Who is connecting -----------------------------------------------------
+
+// lsof and ps run once per connection; a hung one must not hold the client.
+const PROBE = { timeout: 3000, maxBuffer: 16 << 20 };
+
+async function clientPid(port, run = execute) {
+  let stdout;
+  try { ({ stdout } = await run("/usr/sbin/lsof", ["-b", "-w", "-nP", `-iTCP@127.0.0.1:${port}`, "-sTCP:ESTABLISHED", "-Fpn"], PROBE)); }
+  catch (error) { stdout = error.stdout ?? ""; }
+  let pid = null;
+  for (const line of stdout.split("\n")) {
+    if (line.startsWith("p")) pid = Number(line.slice(1));
+    else if (line.startsWith(`n127.0.0.1:${port}->`) && pid !== process.pid) return pid;
+  }
+  return null;
+}
+
+// The client and the processes above it: pid, environment tokens, executable
+// name and, for the client, the script it runs. Three ps calls whatever the
+// depth: the process table for the ancestry, the chain's environments (ps -E
+// appends them as KEY=value words), and the client's arguments without them,
+// so an environment value never becomes its name.
+async function chain(pid, run = execute) {
+  const table = new Map();
+  try {
+    const { stdout } = await run("/bin/ps", ["-A", "-o", "pid=,ppid=,comm="], PROBE);
+    for (const line of stdout.split("\n")) {
+      const found = /^\s*(\d+)\s+(\d+)\s(.*)$/.exec(line);
+      if (found) table.set(Number(found[1]), { ppid: Number(found[2]), comm: found[3].trim() });
+    }
+  } catch { return []; }
+  const pids = [];
+  for (let current = pid; current > 1 && table.has(current) && pids.length < 32; current = table.get(current).ppid) pids.push(current);
+  if (pids.length === 0) return [];
+  const environments = new Map();
+  try {
+    const { stdout } = await run("/bin/ps", ["-E", "-ww", "-o", "pid=,command=", "-p", pids.join(",")], PROBE);
+    for (const line of stdout.split("\n")) {
+      const found = /^\s*(\d+)\s(.*)$/.exec(line);
+      if (found) environments.set(Number(found[1]), found[2]);
+    }
+  } catch { /* no tokens: only the declaring pid can match */ }
+  let script;
+  try {
+    const { stdout } = await run("/bin/ps", ["-ww", "-o", "args=", "-p", String(pid)], PROBE);
+    script = stdout.trim().split(/\s+/).slice(1).find((word) => /\.[cm]?[jt]s$/.test(word));
+  } catch { /* name without the script */ }
+  return pids.map((current, index) => ({
+    pid: current,
+    tokens: [...(environments.get(current) ?? "").matchAll(new RegExp(`(?:^|\\s)${session.ENV}=(\\S+)`, "g"))].map((found) => found[1]),
+    command: basename(table.get(current).comm),
+    script: index === 0 && script ? basename(script) : undefined,
+  }));
+}
+
+// Adopted declarations stand only for the migration window.
+function usable(declaration, now, graceUntil) {
+  return session.isLive(declaration, now) && !(declaration.adopted && now >= graceUntil);
+}
+
+function match(processes, entries, now = Date.now(), graceUntil = GRACE_UNTIL) {
+  for (const { pid, tokens } of processes) {
+    for (const { file, declaration } of entries) {
+      if (!usable(declaration, now, graceUntil)) continue;
+      if (declaration.pid === pid || tokens.includes(declaration.id)) return { file, declaration };
+    }
+  }
+  return null;
+}
+
+// A connection's view of its declaration. The policy reads the latest copy;
+// live() is false once the session has ended, and the gate then closes the
+// connection, so a client left running after its helper died loses Chrome.
+function reader(found, graceUntil = GRACE_UNTIL) {
+  let latest = found.declaration;
+  const read = () => { try { return JSON.parse(fs.readFileSync(found.file, "utf8")); } catch { return null; } };
+  return {
+    what: latest.what,
+    current: () => {
+      latest = read() ?? latest;
+      return latest;
+    },
+    live: (now = Date.now()) => {
+      const declaration = read();
+      return Boolean(declaration) && usable(declaration, now, graceUntil);
+    },
+  };
+}
+
+async function identify(socket, deps = {}) {
+  const pid = await clientPid(socket.remotePort, deps.run);
+  if (!pid) return { client: "an unknown process (not this user's, or already gone)" };
+  const processes = await chain(pid, deps.run);
+  const graceUntil = deps.graceUntil ?? GRACE_UNTIL;
+  const found = match(processes, session.declarations(deps.dir ?? session.stateDir()), Date.now(), graceUntil);
+  const client = `${processes[0]?.command ?? "unknown"} (pid ${pid})`;
+  const name = [processes[0]?.command, processes[0]?.script].filter(Boolean).join(" ") || "an unknown process";
+  return found ? { client, pid, name, declaration: reader(found, graceUntil) } : { client, pid, name };
+}
+
+// --- The server --------------------------------------------------------------
+
+function deny(socket, body) {
+  socket.end(`HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: ${Buffer.byteLength(body)}\r\nConnection: close\r\n\r\n${body}`);
+}
+
+function createGate({ chromePort = CHROME_PORT, identify: find = identify, adopt = session.adopt, graceUntil = GRACE_UNTIL, now = Date.now, log = () => {} } = {}) {
+  // One notice per undeclared process, however many connections it opens at once.
+  const adopting = new Map();
+  const who = async (socket) => {
+    const found = await Promise.resolve().then(() => find(socket, { graceUntil })).catch(() => ({ client: "an unknown process (could not read it)" }));
+    if (found.declaration || !found.pid || now() >= graceUntil) return found;
+    if (!adopting.has(found.pid)) {
+      const adopted = Promise.resolve().then(() => adopt({ pid: found.pid, what: found.name }))
+        .catch((error) => { log(`could not declare ${found.client} on its behalf: ${error.message}`); return null; });
+      adopting.set(found.pid, adopted.finally(() => adopting.delete(found.pid)));
+      log(`let ${found.client} through without a declaration (migration window); told the owner`);
+    }
+    const adopted = await adopting.get(found.pid);
+    return adopted ? { ...found, declaration: reader(adopted, graceUntil) } : found;
+  };
+  // Open CDP WebSockets, each with its declaration, so they close when it ends.
+  const connections = new Set();
+  let idle = null;
+  let identifying = 0;
+  const checkIdle = () => {
+    if (connections.size === 0 && identifying === 0 && idle) idle();
+  };
+  const server = http.createServer(async (req, res) => {
+    identifying += 1;
+    try {
+      const path = (req.url ?? "").split("?")[0].replace(/\/$/, "");
+      if (!(req.method === "GET" && PROBES.has(path))) {
+        const { client, declaration } = await who(req.socket);
+        if (!declaration) {
+          log(`refused HTTP ${path} from ${client}`);
+          res.writeHead(403, { "Content-Type": "text/plain; charset=utf-8" }).end(refusal(client));
+          return;
+        }
+        if (/^\/json\/(new|activate)\b/.test(path) && !declaration.current().foreground) {
+          res.writeHead(403, { "Content-Type": "text/plain; charset=utf-8" }).end(`${REFUSALS.front}\n`);
+          return;
+        }
+      }
+      const upstream = http.request({ host: "127.0.0.1", port: chromePort, method: req.method, path: req.url, headers: req.headers }, (answer) => {
+        res.writeHead(answer.statusCode ?? 502, answer.headers);
+        answer.pipe(res);
+      });
+      upstream.on("error", () => { if (!res.headersSent) res.writeHead(502).end("agent-chrome-gate: the agent Chrome is not answering on its DevTools port.\n"); else res.destroy(); });
+      req.pipe(upstream);
+    } finally {
+      identifying -= 1;
+      checkIdle();
+    }
+  });
+
+  server.on("upgrade", async (req, client, head) => {
+    identifying += 1;
+    try {
+      // The client may hang up while lsof and ps run; then nothing opens upstream.
+      // Reading it meanwhile is what surfaces the hang-up; the bytes are kept.
+      let gone = false;
+      const early = [];
+      const hold = (chunk) => early.push(chunk);
+      client.on("data", hold);
+      client.once("end", () => { gone = true; });
+      client.once("close", () => { gone = true; });
+      client.on("error", () => client.destroy());
+      const { client: name, declaration } = await who(client);
+      client.off("data", hold);
+      if (gone || client.destroyed) {
+        client.destroy();
+        return;
+      }
+      if (!declaration) {
+        log(`refused WebSocket from ${name}`);
+        deny(client, refusal(name));
+        return;
+      }
+      const upstream = net.connect(chromePort, "127.0.0.1");
+      // CDP is many small request-reply frames; Nagle would delay each one.
+      client.setNoDelay(true);
+      upstream.setNoDelay(true);
+      const connection = { declaration, close: () => { client.destroy(); upstream.destroy(); } };
+      connections.add(connection);
+      const close = () => {
+        connection.close();
+        if (connections.delete(connection)) checkIdle();
+      };
+      upstream.on("error", close);
+      client.on("close", close);
+      // A hang-up on either side ends the other, after what is already in flight.
+      client.on("end", () => upstream.end());
+      upstream.on("end", () => client.end());
+      upstream.on("close", () => client.end(close));
+      const toClient = new FrameStream((bytes) => client.write(bytes));
+      const toChrome = new FrameStream((bytes) => upstream.write(bytes), (text, mask) => {
+        if (!declaration.live()) {
+          log(`closed a connection from ${name}: its session "${declaration.what}" has ended`);
+          close();
+          return Buffer.alloc(0);
+        }
+        return filterCommand(text, mask, declaration, (bytes) => toClient.inject(bytes), log);
+      });
+      // Chrome's 101 response comes before its frames.
+      let opening = Buffer.alloc(0);
+      upstream.on("data", (chunk) => {
+        if (!opening) return toClient.push(chunk);
+        opening = Buffer.concat([opening, chunk]);
+        const end = opening.indexOf("\r\n\r\n");
+        if (end < 0) return undefined;
+        client.write(opening.subarray(0, end + 4));
+        const rest = opening.subarray(end + 4);
+        opening = null;
+        if (rest.length) toClient.push(rest);
+        return undefined;
+      });
+      // No compression: the gate reads commands as plain text frames.
+      const lines = [`${req.method} ${req.url} HTTP/1.1`];
+      for (let i = 0; i < req.rawHeaders.length; i += 2) {
+        if (req.rawHeaders[i].toLowerCase() !== "sec-websocket-extensions") lines.push(`${req.rawHeaders[i]}: ${req.rawHeaders[i + 1]}`);
+      }
+      upstream.write(`${lines.join("\r\n")}\r\n\r\n`);
+      for (const chunk of [head, ...early]) if (chunk.length) toChrome.push(chunk);
+      client.on("data", (chunk) => toChrome.push(chunk));
+    } finally {
+      identifying -= 1;
+      checkIdle();
+    }
+  });
+
+  // Close connections whose session ended while they sat idle. The gate runs
+  // this with each sweep; a command on an ended session closes it at once.
+  server.closeEnded = () => {
+    for (const connection of connections) {
+      if (connection.declaration.live()) continue;
+      log(`closed a connection: its session "${connection.declaration.what}" has ended`);
+      connection.close();
+      connections.delete(connection);
+    }
+    checkIdle();
+  };
+  // Wait for CDP sockets and identification/adoption work already in flight.
+  server.whenIdle = (callback) => {
+    idle = () => { idle = null; callback(); };
+    checkIdle();
+  };
+  return server;
+}
+
+// The launchd agent runs this file from the live ~/dotfiles checkout, which the
+// hourly sync fast-forwards. When the gate or the helper it reads changes, the
+// gate exits once no CDP connection is open, and launchd (KeepAlive) starts
+// the new code. Calls back on the first change.
+function onCodeChange(files, callback, interval = 60000) {
+  let fired = false;
+  const listener = (now, before) => {
+    if (fired || now.mtimeMs === before.mtimeMs) return;
+    fired = true;
+    for (const file of files) fs.unwatchFile(file, listener);
+    callback();
+  };
+  for (const file of files) fs.watchFile(file, { interval, persistent: false }, listener);
+}
+
+module.exports = { LISTEN_PORT, CHROME_PORT, GRACE_UNTIL, policy, frameHeader, encodeFrame, unmask, FrameStream, filterCommand, clientPid, chain, match, reader, identify, createGate, onCodeChange, refusal, REFUSALS };
+if (require.main === module) {
+  const port = Number(process.env.AGENT_CHROME_GATE_PORT || LISTEN_PORT);
+  const chromePort = Number(process.env.AGENT_CHROME_GATE_CHROME_PORT || CHROME_PORT);
+  const log = (message) => process.stderr.write(`${new Date().toISOString()} agent-chrome-gate: ${message}\n`);
+  // Test hook only: tests/agent_chrome_replay_test.cjs runs a gate past the window.
+  const graceUntil = Number(process.env.AGENT_CHROME_GATE_TEST_GRACE_UNTIL || GRACE_UNTIL);
+  const server = createGate({ chromePort, graceUntil, log });
+  server.on("error", (error) => { log(error.message); process.exit(1); });
+  server.listen(port, "127.0.0.1", () => log(`listening on 127.0.0.1:${port}, Chrome on ${chromePort}`));
+  const sweep = () => session.sweep(undefined, graceUntil).catch((error) => log(`sweep failed: ${error.message}`)).then(() => server.closeEnded());
+  // Test hook only: the replay test sweeps faster than the five seconds here.
+  setInterval(sweep, Number(process.env.AGENT_CHROME_GATE_TEST_SWEEP_MS || 5000));
+  onCodeChange([__filename, require.resolve("./agent-chrome-session")], () => {
+    log("its code changed; restarting once no connection is open");
+    server.whenIdle(() => {
+      server.close(() => process.exit(0));
+      setTimeout(() => process.exit(0), 5000);
+    });
+  }, Number(process.env.AGENT_CHROME_GATE_TEST_WATCH_MS || 60000));
+}

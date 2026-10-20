@@ -13,6 +13,8 @@ Every response says Cache-Control: no-cache, so a phone revalidates and never sh
 Paths with a dot-segment (.git, .env) are 404, judged on the decoded path that is served, so %2e, %2f and %5c cannot
 hide one, and directory listings leave dot entries out. Binds loopback only; tailnet devices reach it through tailscale serve.
 Run by a Home Manager launchd agent (see nix/user.nix); logs go to ~/Library/Logs. Test: tests/packs_server_test.py.
+Packs stay on the tailnet: this server is never published to the internet. A public read-only copy of one pack is a
+static snapshot on another host, made by scripts/packs-share, with no notes script and no path back to this server.
 
 Notes (Lavish's annotate-and-send, kept when Lavish went on 20 Oct 2026): every HTML page gets a <script> for
 files/bin/packs-notes.js, a button that lets the owner tap an element or select text, write a note, and send a batch to the

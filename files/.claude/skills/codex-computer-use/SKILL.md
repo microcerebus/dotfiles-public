@@ -12,9 +12,14 @@ Codex's desktop computer use covers native macOS surfaces (Xcode, simulators, ar
 
 Reading pages, taking browser screenshots and reading WhatsApp Web do not need the screen.
 Use a written Playwright script attached to Google Chrome Beta on 127.0.0.1:9333, in its own background tab.
-Run it with `agent-chrome-playwright <flow.cjs>`.
+Run it with `agent-chrome-playwright --minutes N --what "what it does" <flow.cjs>`.
+the owner gets a macOS notification with that description and duration before the flow starts and another when it ends.
+Any other script that needs the agent Chrome runs as `agent-chrome-session --minutes N --what "..." -- <command>`; `agent-chrome-gate` on 9333 refuses clients the helper did not declare, closes their connections when the session ends, refuses new browser contexts for everyone, and refuses new windows and bringing tabs to the front unless the session was declared `--foreground`.
+A script that signs in its own users does not need the agent Chrome: it launches its own headless browser.
 The helper checks readiness and the actual Chrome application and flags, creates a background target, and passes only that page to the script.
 It closes its target and disconnects when the script finishes; it never quits the shared Chrome.
+It also closes any popup the flow opens (a `target=_blank` link or `window.open`), because Chrome brings a popup to the front of the owner's screen and the gate cannot stop that; open URLs in the flow's own tab with `page.goto` instead, or pass `--keep-popups` when the flow truly needs one.
+Never navigate or drive a tab the script did not open, such as `context.pages()[0]`: that is the owner's or another agent's tab.
 Do not call `bringToFront`, change the shared window, browse other tabs or close the shared browser.
 Use per-page viewport sizing when a screenshot needs a phone layout.
 Existing headless Playwright fixture tests stay independent of signed-in account work.
@@ -72,7 +77,7 @@ Screen-free reading, screenshots and WhatsApp Web use the Playwright route above
 It reached for chrome-devtools-axi until told not to, and could not act in Chrome Beta until the app was brought to the front (coordinator 24, 2026-10-17), so the brief says both.
 
 1. Make sure the agent Chrome is up.
-   Its launchd agent `com.myuser.agent-chrome` is the only way Google Chrome Beta is ever started: it adds `--disable-extensions --disable-sync` and port 9333.
+   Its launchd agent `com.myuser.agent-chrome` is the only way Google Chrome Beta is ever started: it adds `--disable-extensions --disable-sync` and the DevTools port, which agents reach only through `agent-chrome-gate` on 9333.
    Never start it any other way (`open -a`, `tell application ... to activate` or the binary): Chrome Beta would open its default profile without those flags, and the synced extensions load.
    The `codex-computer-use` launcher runs `agent-chrome-ready` before showing the warning and stops if readiness fails.
    That check kickstarts the agent, waits up to 15 seconds for 9333 to answer, and points at `~/Library/Logs/agent-chrome.log` if it never does.

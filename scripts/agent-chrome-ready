@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Makes sure the agent Chrome (Google Chrome Beta, its own profile on
 # 127.0.0.1:9333) is up before a Codex browser check, and stops if it is not.
+# Agents reach it through scripts/agent-chrome-gate on 9333; Chrome itself
+# listens on 9334. Both are launchd agents in nix/user.nix, so both are kickstarted.
 # Its launchd agent com.myuser.agent-chrome (nix/user.nix) is the only way Chrome
 # Beta is ever started: it adds --disable-extensions --disable-sync and the port.
 # Started any other way (Finder, AppleScript, the binary), Chrome Beta opens its
@@ -28,6 +30,8 @@ kickstart() {
     sh -c "$AGENT_CHROME_READY_TEST_KICKSTART"
   else
     launchctl kickstart "gui/$(id -u)/com.myuser.agent-chrome"
+    # The gate's agent exists only after the rebuild that adds it.
+    launchctl kickstart "gui/$(id -u)/com.myuser.agent-chrome-gate" 2>/dev/null || true
   fi
 }
 
@@ -36,5 +40,5 @@ kickstart() {
 curl -sf -m 2 "$url" >/dev/null && exit 0
 kickstart
 curl -sf -m 2 --retry 15 --retry-delay 1 --retry-max-time 15 --retry-connrefused "$url" >/dev/null && exit 0
-echo "the agent Chrome is not up on 127.0.0.1:$port after 15s; see ~/Library/Logs/agent-chrome.log" >&2
+echo "the agent Chrome is not up on 127.0.0.1:$port after 15s; see ~/Library/Logs/agent-chrome.log and ~/Library/Logs/agent-chrome-gate.log" >&2
 exit 1

@@ -17,7 +17,7 @@ const OWN_TAB = `${NO_OWN_TAB}  3,"https://example.com/mine?a=1,2",true\n`;
 const PAGE = "https://test-machine.example.ts.net/packs/review/";
 
 function harness({ up = [true], installed = true, browser = [FLAGGED], pages = NO_OWN_TAB, until = null } = {}) {
-  const calls = { spawn: [], probe: 0, kickstart: 0, stderr: "" };
+  const calls = { spawn: [], probe: 0, kickstart: 0, stderr: "", leases: [], ended: [] };
   const deps = {
     fallbackUntil: () => until,
     spawn: (command, args, options) => {
@@ -28,6 +28,8 @@ function harness({ up = [true], installed = true, browser = [FLAGGED], pages = N
     agentInstalled: () => installed,
     kickstart: () => { calls.kickstart += 1; },
     sleep: () => {},
+    lease: (spec) => { calls.leases.push(spec); },
+    endLease: (id) => { calls.ended.push(id); },
     browserCommandLines: () => { calls.browserChecks = (calls.browserChecks ?? 0) + 1; return browser; },
   };
   const io = { stderr: { write: (s) => { calls.stderr += s; } } };
@@ -40,6 +42,54 @@ test("routes to the agent Chrome by default", () => {
   assert.equal(calls.spawn[0].env.CHROME_DEVTOOLS_AXI_BROWSER_URL, AGENT_CHROME_URL);
   assert.equal(calls.spawn[0].env.CHROME_DEVTOOLS_AXI_AUTO_CONNECT, undefined);
   assert.equal(calls.kickstart, 0);
+});
+
+test("the agent Chrome bridge runs under one notified lease that stop ends", () => {
+  const env = { CHROME_DEVTOOLS_AXI_SESSION: "claude-1234abcd" };
+  const { calls, deps, io } = harness();
+  assert.equal(run(["open", "https://example.com"], env, deps, io), 0);
+  assert.deepEqual(calls.leases.map(({ id, minutes, foreground }) => ({ id, minutes, foreground })), [{ id: "axi-claude-1234abcd", minutes: 35, foreground: false }]);
+  assert.ok(calls.spawn.every((call) => call.env.AGENT_CHROME_SESSION === "axi-claude-1234abcd"));
+  assert.equal(run(["newpage", PAGE, "--foreground"], env, deps, io), 0);
+  assert.equal(calls.leases[1].foreground, true);
+  assert.equal(run(["stop"], env, deps, io), 0);
+  assert.deepEqual(calls.ended, ["axi-claude-1234abcd"]);
+});
+
+test("the axi lease outlasts the configured bridge idle timeout by five minutes", () => {
+  for (const idle of [1000, 60000, 45 * 60000, 180 * 60000]) {
+    const { calls, deps, io } = harness();
+    assert.equal(run(["snapshot"], { CHROME_DEVTOOLS_AXI_IDLE_TIMEOUT_MS: String(idle) }, deps, io), 0);
+    assert.equal(calls.leases[0].minutes * 60000, idle + 5 * 60000);
+    let declaration;
+    const session = require("../scripts/agent-chrome-session");
+    const fs = require("node:fs");
+    const dir = fs.mkdtempSync(join(require("node:os").tmpdir(), "axi-lease-"));
+    try {
+      declaration = session.lease(calls.leases[0], { dir: () => dir, now: () => 1000, notify: () => {}, log: () => {} });
+      assert.equal(declaration.until, 1000 + idle + 5 * 60000);
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  }
+});
+
+test("the ungated Chrome port is refused with the gate URL before any browser work", () => {
+  for (const url of ["http://127.0.0.1:9334", "ws://localhost:9334/devtools/browser/fixture"]) {
+    const { calls, deps, io } = harness();
+    assert.equal(run(["snapshot"], { CHROME_DEVTOOLS_AXI_BROWSER_URL: url }, deps, io), 2);
+    assert.equal(calls.spawn.length, 0);
+    assert.equal(calls.probe, 0);
+    assert.deepEqual(calls.leases, []);
+    assert.match(calls.stderr, /9334/);
+    assert.ok(calls.stderr.includes(AGENT_CHROME_URL));
+  }
+});
+
+test("a throwaway or other browser takes no agent Chrome lease", () => {
+  for (const [options, env] of [[{ installed: false, up: [false] }, {}], [{}, { CHROME_DEVTOOLS_AXI_BROWSER_URL: "http://127.0.0.1:9555" }]]) {
+    const { calls, deps, io } = harness(options);
+    run(["snapshot"], env, deps, io);
+    assert.deepEqual(calls.leases, []);
+  }
 });
 
 test("refuses autoConnect to the owner's own Chrome and names the opt-in", () => {
@@ -69,6 +119,10 @@ test("starts the agent Chrome through launchd when it is down", () => {
   assert.equal(run(["open", "https://example.com"], { CHROME_DEVTOOLS_AXI_BROWSER_URL: AGENT_CHROME_URL }, deps, io), 0);
   assert.equal(calls.kickstart, 1);
   assert.equal(calls.spawn[0].env.CHROME_DEVTOOLS_AXI_BROWSER_URL, AGENT_CHROME_URL);
+  // Chrome listens behind the gate, so the kickstart starts both launchd agents.
+  const started = [];
+  require("../scripts/chrome-devtools-axi").defaultDeps.kickstart((file, args) => started.push([file, args[1].replace(/^gui\/\d+\//, "")]));
+  assert.deepEqual(started, [["/bin/launchctl", "com.myuser.agent-chrome"], ["/bin/launchctl", "com.myuser.agent-chrome-gate"]]);
 });
 
 test("fails loudly when the agent Chrome never comes up", () => {
@@ -199,8 +253,11 @@ test("open navigates the session's own tab in place", () => {
 
 test("the launchd agent and session env match the wrapper", () => {
   const nix = readFileSync(join(__dirname, "../nix/user.nix"), "utf8");
-  const port = new URL(AGENT_CHROME_URL).port;
-  assert.match(nix, new RegExp(`"--remote-debugging-port=${port}"`));
+  // Agents use the gate's port; Chrome itself listens behind it.
+  const gate = require("../scripts/agent-chrome-gate");
+  assert.equal(Number(new URL(AGENT_CHROME_URL).port), gate.LISTEN_PORT);
+  assert.match(nix, new RegExp(`"--remote-debugging-port=${gate.CHROME_PORT}"`));
+  assert.match(nix, /Label = "com\.myuser\.agent-chrome-gate";\n\s+ProgramArguments = \[ "\$\{pkgs\.nodejs_22\}\/bin\/node" "\$\{config\.home\.homeDirectory\}\/dotfiles\/scripts\/agent-chrome-gate" \];/);
   assert.match(nix, new RegExp(`Label = "${AGENT_CHROME_LABEL.replace(/\./g, "\\.")}";`));
   assert.match(nix, new RegExp(`CHROME_DEVTOOLS_AXI_BROWSER_URL = "${AGENT_CHROME_URL}";`));
   assert.deepEqual(AGENT_CHROME_FLAGS, ["--disable-extensions", "--disable-sync"]);

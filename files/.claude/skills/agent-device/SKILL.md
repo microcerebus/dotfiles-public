@@ -60,7 +60,7 @@ If `device_list` says agent device access is off, report that as a step for the 
 ## Boundaries
 
 - Never open or drive Brave.
-  Screen-free web work goes through written Playwright scripts in background agent Chrome tabs; interactive checks go through codex-computer-use.
+  Screen-free web work goes through written Playwright scripts in background agent Chrome tabs (`agent-chrome-playwright --minutes N --what "..."`, which notifies the owner); interactive checks go through codex-computer-use.
   The chrome-devtools-axi fallback requires `codex-browser-fallback status` to be active.
 - Personal apps (WhatsApp, Telegram, Dashlane, Mail, Messages, anything holding money or credentials) only when the brief names the app and the action.
   Never read message contents into chat or type secrets.

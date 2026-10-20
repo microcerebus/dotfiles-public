@@ -106,13 +106,16 @@ It detects `CLAUDECODE=1`, `CLAUDE_CODE_SESSION_ID`, `CODEX_THREAD_ID`, `CODEX_S
 The live Claude Agent SDK shell confirmed `CLAUDECODE=1`; the live Codex shell confirmed its thread, session and CI signals without printing identifiers.
 During a fallback the wrapper prints its expiry and retains its Chrome identity, extension, sync and window guards.
 Outside the fallback, use written Playwright scripts attached to the agent Chrome in background tabs for screen-free work, including reading pages, screenshots and WhatsApp Web.
-Run these through `scripts/agent-chrome-playwright`.
+Run these through `scripts/agent-chrome-playwright --minutes N --what "..."`, or any other command through `scripts/agent-chrome-session`; both notify the owner before and after, and `scripts/agent-chrome-gate` refuses everything else.
 Interactive checks go through `codex-computer-use`; Codex itself uses built-in computer use, not axi.
 Do not unset the harness signals or call the pnpm binary directly to bypass the wrapper.
 Non-agent scripted maintenance callers remain supported; repeatable browser verification stays in written Playwright flows.
 
-Run `node --test tests/chrome_devtools_axi_test.cjs tests/codex_browser_fallback_test.cjs tests/axi_session_start_test.cjs`.
+Run `node --test tests/chrome_devtools_axi_test.cjs tests/codex_browser_fallback_test.cjs tests/axi_session_start_test.cjs tests/agent_chrome_session_test.cjs tests/agent_chrome_gate_test.cjs tests/agent_chrome_replay_test.cjs`.
+The replay test drives a throwaway headless Chromium on a spare port, never the agent Chrome.
 These checks stub the upstream executable and never drive a browser.
+After bumping chrome-devtools-axi or chrome-devtools-mcp, also check that the axi bridge reconnects after the gate closes an expired lease.
+That live check requires an active confirmed Codex quota fallback; otherwise leave it pending.
 
 ### Fallback watcher trial
 

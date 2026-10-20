@@ -582,8 +582,9 @@ in
   };
 
   # Agent Chrome: Google Chrome Beta (never Brave) with its own profile, which
-  # Codex drives through built-in computer use. The quota fallback uses
-  # chrome-devtools-axi on 127.0.0.1:9333. Chrome 136+ refuses a debug port on the default
+  # Codex drives through built-in computer use. Its DevTools port is 9334;
+  # agents reach it only through the agent-chrome-gate below on 127.0.0.1:9333.
+  # Chrome 136+ refuses a debug port on the default
   # profile, so the separate --user-data-dir is what makes this work. Beta is a
   # separate app: a second copy of Google Chrome would share its app identity,
   # and macOS would route Chrome links into whichever copy started first
@@ -606,7 +607,7 @@ in
       ProgramArguments = [
         "/Applications/Google Chrome Beta.app/Contents/MacOS/Google Chrome Beta"
         "--user-data-dir=${config.home.homeDirectory}/Library/Application Support/AgentChrome"
-        "--remote-debugging-port=9333"
+        "--remote-debugging-port=9334"
         "--disable-extensions"
         "--disable-sync"
         "--no-first-run"
@@ -617,6 +618,25 @@ in
       ProcessType = "Interactive";
       StandardOutPath = "${config.home.homeDirectory}/Library/Logs/agent-chrome.log";
       StandardErrorPath = "${config.home.homeDirectory}/Library/Logs/agent-chrome.log";
+    };
+  };
+
+  # Agent Chrome gate (scripts/agent-chrome-gate): owns 127.0.0.1:9333 and
+  # forwards to the agent Chrome on 9334. the owner is told before any agent uses
+  # the agent Chrome and again when it is done (2026-10-20, after a verifier
+  # used it unannounced and its new browser contexts opened windows on his
+  # screen). It lets through only clients that scripts/agent-chrome-session
+  # declared (it sends the notices), refuses new contexts, windows, focus and
+  # resizing, and says done for sessions that die without saying so.
+  launchd.agents.agent-chrome-gate = {
+    enable = true;
+    config = {
+      Label = "com.myuser.agent-chrome-gate";
+      ProgramArguments = [ "${pkgs.nodejs_22}/bin/node" "${config.home.homeDirectory}/dotfiles/scripts/agent-chrome-gate" ];
+      RunAtLoad = true;
+      KeepAlive = true;
+      StandardOutPath = "${config.home.homeDirectory}/Library/Logs/agent-chrome-gate.log";
+      StandardErrorPath = "${config.home.homeDirectory}/Library/Logs/agent-chrome-gate.log";
     };
   };
 

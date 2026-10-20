@@ -1,0 +1,893 @@
+#!/usr/bin/env -S python3 -I
+"""packs-share - publish a read-only copy of one pack (~/packs/<name>/) at a public, unguessable URL.
+
+Packs open only on the tailnet (files/bin/packs-server.py). A share is a static snapshot on Vercel, so it keeps
+working while the Mac sleeps, and nothing on the Mac is exposed: not the packs server, not its notes API, no tailscale
+funnel. The snapshot holds only the files the pack's pages reference, starting from index.html and following src,
+href, srcset, CSS url() and @import, SVG href, and JS static imports, and never a dot path, a file outside the pack, or
+a link inside the pack that lands on a dot path. Files a script loads while it runs (fetch, workers, computed imports)
+are not followed; the dry run warns about them. It has no notes script. Every page gets a robots noindex meta tag and
+a no-referrer one, any referrer meta of its own is dropped, and the host adds X-Robots-Tag: noindex and
+Referrer-Policy: no-referrer to every response, so the URL does not reach search engines or other sites' logs.
+
+Host: one dedicated Vercel project (default packs-share) that `packs-share setup --yes` creates, with Vercel
+Authentication, directory listing, public build logs and source, and the preview toolbar off on that project only.
+Setup refuses a project of that name that it did not make. Its first deployment is a production placeholder that
+serves only a 404 page, so the project's stable production URLs show nothing and every share after it is a preview
+deployment. Each share is its own preview deployment with the pack under a random 128-bit folder: the deployment root
+is a 404, so the deployment URL alone, or the CLI's per-user alias that follows the newest deployment, shows nothing.
+Revoking deletes the deployment, after which its URL answers 404.
+
+  packs-share <pack>               list exactly the files that would go out, their total size and a digest of them;
+                                   publishes nothing
+  packs-share <pack> --out DIR     the same, and write the exact snapshot folder to DIR to inspect
+  packs-share <pack> --yes DIGEST  publish, if the files still match the digest the dry run printed; check the URL
+                                   answers without a login, and record the share
+  packs-share list                 every recorded share: date, pack, URL
+  packs-share revoke <pack|url>    delete the hosted copy (every share of the pack) and check the URL stops serving
+  packs-share setup [--yes]        say what setup does, and with --yes create and configure the Vercel project
+
+A pack named list, revoke or setup cannot be shared; rename it.
+State (the shares and the project's ids) lives in ~/.local/state/packs-share, folder 0700 and files 0600.
+Test: tests/packs_share_test.py, with the Vercel CLI stubbed.
+"""
+import argparse
+import contextlib
+import fcntl
+import hashlib
+import html.parser
+import json
+import os
+import posixpath
+import re
+import secrets
+import shutil
+import signal
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+
+ROOT = os.environ.get("PACKS_ROOT", os.path.expanduser("~/packs"))
+STATE = os.environ.get("PACKS_SHARE_STATE", os.path.expanduser("~/.local/state/packs-share"))
+VERCEL = os.environ.get("PACKS_SHARE_VERCEL", "vercel")
+PROJECT = os.environ.get("PACKS_SHARE_PROJECT", "packs-share")
+PACK_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*")
+DEPLOYMENT_ID = re.compile(r"dpl_[A-Za-z0-9]+")
+# Vercel's Hobby plan takes up to 100 MB of source per deployment; a pack that big is not meant to be shared.
+MAX_BYTES = 50 * 1024 * 1024
+# URL schemes and other references that are not files in the pack.
+EXTERNAL = re.compile(r"^(?:[A-Za-z][A-Za-z0-9+.-]*:|//|#)")
+CSS_REFS = re.compile(r"""url\(\s*(['"]?)([^'")]*)\1\s*\)|@import\s+(['"])([^'"]+)\3""", re.I)
+HTML_ATTRS = {"src", "href", "poster", "data", "xlink:href"}
+SRCSET_ATTRS = {"srcset", "imagesrcset"}
+# Static module loads, resolved against the script that holds them: import/export ... from '...', import '...',
+# import('...') and new URL('...', import.meta.url).
+JS_IMPORTS = re.compile(r"""\b(?:import|export)\s*(?:[\w$*{}\s,]+?\s*\bfrom\s*)?(['"])([^'"\n]+)\1"""
+                        r"""|\bimport\s*\(\s*(['"])([^'"\n]+)\3\s*\)"""
+                        r"""|\bnew\s+URL\s*\(\s*(['"])([^'"\n]+)\5\s*,\s*import\.meta\.url""")
+# fetch('...') resolves against the page, so it is followed only in a page's own inline scripts.
+JS_FETCH = re.compile(r"""\bfetch\s*\(\s*(['"])([^'"\n]+)\1\s*[,)]""")
+JS_RUNTIME = re.compile(r"\bfetch\s*\(|\bXMLHttpRequest\b|\bimport\s*\(|\bnew\s+(?:Shared)?Worker\s*\("
+                        r"|\bimportScripts\s*\(")
+# Path parts the Vercel CLI never uploads (its built-in ignore list, at any depth); dot names are left out anyway.
+VERCEL_SKIPS = {"node_modules", "__pycache__", "venv", "CVS", "npm-debug.log", "config.gypi"}
+RESERVED = {"list", "revoke", "setup"}
+HTML_EXTS, SVG_EXTS, CSS_EXTS, JS_EXTS = (".html", ".htm"), (".svg",), (".css",), (".js", ".mjs")
+TEXT_EXTS = HTML_EXTS + SVG_EXTS + CSS_EXTS + JS_EXTS + (".json", ".txt", ".md", ".csv", ".xml")
+# Comments, scripts and styles are blanked out before looking for the head, so a <head> inside them is not the place.
+NOT_MARKUP = re.compile(rb"<!--.*?-->|<script\b.*?</script\s*>|<style\b.*?</style\s*>", re.I | re.S)
+# Where the meta tags go: after <head>, else after <html>, else after the doctype, so a page never drops to quirks mode.
+HEADS = [re.compile(rb"<head\b[^>]*>", re.I), re.compile(rb"<html\b[^>]*>", re.I), re.compile(rb"<!doctype[^>]*>", re.I)]
+# A page's own referrer meta would override the injected one and the header, so it is dropped.
+REFERRER_META = re.compile(rb"""<meta\b[^>]*\bname\s*=\s*["']?referrer\b[^>]*>""", re.I)
+META = (b'\n<meta name="robots" content="noindex, nofollow">'
+        b'\n<meta name="referrer" content="no-referrer">\n')
+# Text that hints at private detail, checked in every text file that goes out. A warning, not a refusal: the pack may
+# mention them on purpose, but he should see it before he says --yes.
+TELLS = {"this Mac's tailnet name (.ts.net)": re.compile(rb"[a-z0-9-]+\.[a-z0-9-]+\.ts\.net", re.I),
+         "a local file path (/Users/)": re.compile(rb"/Users/[A-Za-z0-9._-]+")}
+HEADERS = [{"key": "X-Robots-Tag", "value": "noindex, nofollow"},
+           {"key": "Referrer-Policy", "value": "no-referrer"},
+           {"key": "X-Content-Type-Options", "value": "nosniff"}]
+HOST_CONFIG = {"headers": [{"source": "/(.*)", "headers": HEADERS}]}
+# The production placeholder: nothing but a 404 page, so the project's stable production URLs show nothing.
+NOT_FOUND = (b'<!doctype html>\n<meta name="robots" content="noindex, nofollow">\n<title>Not found</title>\n'
+             b'<p>Not found.</p>\n')
+
+
+class Refused(Exception):
+    """A reason to stop, printed as packs-share: <reason> with exit status 2."""
+
+
+# ---- the snapshot ----------------------------------------------------------------------------------------------------
+
+def ext(path):
+    return posixpath.splitext(path)[1].lower()
+
+
+class Refs(html.parser.HTMLParser):
+    """The references in one HTML or SVG page: attribute values, srcset candidates, CSS in <style> and style="", and
+    module imports and fetch() paths in inline scripts. warn gets what the share cannot follow."""
+
+    def __init__(self, page, warn):
+        super().__init__(convert_charrefs=True)
+        self.page, self.warn = page, warn
+        self.refs, self.raw, self.text = [], None, []
+
+    def handle_starttag(self, tag, attrs):
+        self.raw, self.text = (tag if tag in ("style", "script") else None), []
+        for name, value in attrs:
+            if not value:
+                continue
+            if name in HTML_ATTRS:
+                self.refs.append(value)
+            elif name in SRCSET_ATTRS:
+                self.refs.extend(part.split()[0] for part in value.split(",") if part.split())
+            elif name == "style":
+                self.refs.extend(css_refs(value))
+            elif name == "referrerpolicy" and value.strip().lower() != "no-referrer":
+                self.warn(f"{self.page}: a <{tag}> sets referrerpolicy={value}, so it can send the share URL "
+                          "to the site it loads from")
+        if tag == "base":
+            self.warn(f"{self.page} sets <base>, which the share does not follow; its links may break")
+
+    def handle_startendtag(self, tag, attrs):
+        self.handle_starttag(tag, attrs)
+        self.raw = None
+
+    def handle_endtag(self, tag):
+        if self.raw == "style":
+            self.refs.extend(css_refs("".join(self.text)))
+        elif self.raw == "script":
+            self.refs.extend(script_refs("".join(self.text), f"{self.page} (inline script)", self.warn, page=True))
+        self.raw, self.text = None, []
+
+    def handle_data(self, data):
+        if self.raw:
+            self.text.append(data)
+
+
+def css_refs(text):
+    return [m.group(2) or m.group(4) for m in CSS_REFS.finditer(text) if (m.group(2) or m.group(4)).strip()]
+
+
+def script_refs(text, where, warn, page=False):
+    """The files a script loads by a fixed path. Imports resolve against the script itself, so they are followed
+    everywhere; fetch() resolves against the page, so it is followed only in a page's inline scripts. Anything else
+    it loads while it runs is a warning."""
+    refs, spans = [], []
+    for m in JS_IMPORTS.finditer(text):
+        spans.append(m.span())
+        spec = m.group(2) or m.group(4) or m.group(6)
+        if m.group(6) is None and not EXTERNAL.match(spec) and not spec.startswith(("./", "../", "/")):
+            warn(f"{where} imports {spec!r}, a package name the share cannot follow")
+        else:
+            refs.append(spec)
+    if page:
+        for m in JS_FETCH.finditer(text):
+            spans.append(m.span())
+            refs.append(m.group(2))
+    rest = list(text)
+    for a, b in spans:
+        rest[a:b] = " " * (b - a)
+    if JS_RUNTIME.search("".join(rest)):
+        warn(f"{where} loads files while it runs (fetch, XMLHttpRequest, a worker or a computed import), which the "
+             'share does not follow; name each such file in a page, e.g. <link rel="prefetch" href="data.json">, '
+             "so it goes out")
+    return refs
+
+
+def refs_of(path, data, warn):
+    kind = ext(path)
+    if kind in HTML_EXTS + SVG_EXTS:
+        parser = Refs(path, warn)
+        parser.feed(data.decode("utf-8", "replace"))
+        parser.close()
+        return parser.refs
+    if kind in CSS_EXTS:
+        return css_refs(data.decode("utf-8", "replace"))
+    if kind in JS_EXTS:
+        return script_refs(data.decode("utf-8", "replace"), path, warn)
+    return []
+
+
+def resolve(pack_dir, page, ref, warn):
+    """The pack-relative file a reference in page names, or None after warning why it stays out. None without a
+    warning for links that are not files (other sites, data: URLs, #anchors)."""
+    ref = ref.strip()
+    if not ref or EXTERNAL.match(ref):
+        return None
+    path = urllib.parse.unquote(ref.split("#", 1)[0].split("?", 1)[0])
+    if not path:
+        return None
+    if "\x00" in path:
+        warn(f"{page}: {ref!r} has a NUL character, left out")
+        return None
+    if path.startswith("/"):
+        warn(f"{page}: {ref} starts at the site root, so the share leaves it out")
+        return None
+    rel = posixpath.normpath(posixpath.join(posixpath.dirname(page), path))
+    parts = rel.split("/")
+    if rel == ".." or parts[0] == "..":
+        warn(f"{page}: {ref} is outside the pack, left out")
+        return None
+    if any(p.startswith(".") for p in parts) and rel != ".":
+        warn(f"{page}: {ref} is a dot path, left out")
+        return None
+    full = os.path.join(pack_dir, *([] if rel == "." else parts))
+    if os.path.isdir(full):
+        rel = "index.html" if rel == "." else rel + "/index.html"
+        full = os.path.join(full, "index.html")
+    skipped = next((p for p in rel.split("/") if p in VERCEL_SKIPS), None)
+    if skipped:
+        warn(f"{page}: {ref} is under {skipped}, which Vercel never uploads, left out")
+        return None
+    real = os.path.realpath(full)
+    if os.path.commonpath([real, pack_dir]) != pack_dir:
+        warn(f"{page}: {ref} links outside the pack, left out")
+        return None
+    # A link inside the pack (logo.png -> .env, assets -> .git) must not ship what a dot path holds.
+    if real != pack_dir and any(p.startswith(".") for p in os.path.relpath(real, pack_dir).split(os.sep)):
+        warn(f"{page}: {ref} links to a dot path, left out")
+        return None
+    if not os.path.isfile(real):
+        warn(f"{page}: {ref} is missing, left out")
+        return None
+    if os.stat(real).st_nlink > 1:
+        # A hard link's other names may be outside the pack, or dot files; the share cannot tell.
+        warn(f"{page}: {ref} has other hard links, which may be outside the pack, left out")
+        return None
+    return rel
+
+
+def collect(pack):
+    """The files the pack's pages reference, as {pack-relative path: bytes}, and the warnings, in the order found."""
+    if not PACK_NAME.fullmatch(pack):
+        raise Refused(f"{pack!r} is not a pack name")
+    if pack in RESERVED:
+        raise Refused(f"a pack named {pack} cannot be shared, since packs-share {pack} is a command; rename it")
+    pack_dir = os.path.realpath(os.path.join(ROOT, pack))
+    if not os.path.isfile(os.path.join(pack_dir, "index.html")):
+        raise Refused(f"no pack named {pack!r} with an index.html in {ROOT}")
+    files, warnings = {}, []
+
+    def warn(w):
+        if w not in warnings:
+            warnings.append(w)
+
+    if resolve(pack_dir, "index.html", "index.html", warn) != "index.html":
+        raise Refused(f"{pack}/index.html: " + "; ".join(warnings))
+    queue = ["index.html"]
+    while queue:
+        rel = queue.pop(0)
+        if rel in files:
+            continue
+        with open(os.path.join(pack_dir, *rel.split("/")), "rb") as f:
+            files[rel] = f.read()
+        for ref in refs_of(rel, files[rel], warn):
+            found = resolve(pack_dir, rel, ref, warn)
+            if found and found not in files:
+                queue.append(found)
+    for rel, data in files.items():
+        if ext(rel) in TEXT_EXTS:
+            warnings.extend(f"{rel} mentions {what}" for what, tell in TELLS.items() if tell.search(data))
+    return files, warnings
+
+
+def with_meta(data):
+    """The page with the noindex and no-referrer metas at the top of its head and its own referrer metas dropped, and
+    how many it dropped. Comments, scripts and styles are left as they are."""
+    masked = NOT_MARKUP.sub(lambda m: b" " * len(m.group()), data)
+    dropped = list(REFERRER_META.finditer(masked))
+    for m in reversed(dropped):
+        data, masked = data[:m.start()] + data[m.end():], masked[:m.start()] + masked[m.end():]
+    for head in HEADS:
+        m = head.search(masked)
+        if m:
+            return data[:m.end()] + META + data[m.end():], len(dropped)
+    return META.lstrip() + data, len(dropped)
+
+
+class Metas(html.parser.HTMLParser):
+    """The (name, content) of every meta tag a browser would see, with character references decoded."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.metas = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "meta":
+            attrs = dict(attrs)
+            self.metas.append(((attrs.get("name") or "").strip().lower(), (attrs.get("content") or "").strip()))
+
+    handle_startendtag = handle_starttag
+
+
+def metas_hold(data):
+    """True when a browser reading the page sees the injected noindex meta and no referrer meta but the injected one.
+    Referrer meta tags are also counted in the raw bytes, scripts, styles and comments included: inside <svg> or
+    <math> a browser parses <style> and <script> as markup, so a meta there that html.parser reads as text is live."""
+    text = data.decode("utf-8", "replace")
+    parser = Metas()
+    parser.feed(text)
+    parser.close()
+    raw = [m for m in re.finditer(r"<meta\b[^>]*>", text, re.I)
+           if REFERRER_META.fullmatch(html.unescape(m.group()).encode("utf-8", "replace"))]
+    return (("robots", "noindex, nofollow") in parser.metas
+            and [m for m in parser.metas if m[0] == "referrer"] == [("referrer", "no-referrer")]
+            and len(raw) == 1)
+
+
+def digest(files):
+    """A short hash of the file list and contents, so --yes publishes only what the dry run showed."""
+    h = hashlib.sha256()
+    for rel in sorted(files):
+        h.update(rel.encode() + b"\0" + hashlib.sha256(files[rel]).digest())
+    return h.hexdigest()[:16]
+
+
+def snapshot(pack, out):
+    """Writes the snapshot folder: the pack's files under a random folder, plus the host config. Returns the folder
+    name, the files and the warnings. out must not exist yet, or be an empty folder."""
+    files, warnings = collect(pack)
+    total = sum(len(d) for d in files.values())
+    if total > MAX_BYTES:
+        raise Refused(f"{pack} comes to {size(total)}, over the {size(MAX_BYTES)} share limit")
+    folded = {}
+    for rel in files:
+        if rel.lower() in folded:
+            raise Refused(f"{folded[rel.lower()]} and {rel} differ only in case, which this Mac's disk cannot hold "
+                          "apart; use one spelling in the pack")
+        folded[rel.lower()] = rel
+    if os.path.exists(out) and (not os.path.isdir(out) or os.listdir(out)):
+        raise Refused(f"{out} is not an empty folder")
+    token = secrets.token_hex(16)
+    for rel, data in files.items():
+        dest = os.path.join(out, token, *rel.split("/"))
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        if ext(rel) in HTML_EXTS:
+            data, dropped = with_meta(data)
+            if not metas_hold(data):
+                raise Refused(f"{rel}: the noindex and no-referrer metas did not end up as the page's only robots "
+                              "and referrer tags (a <head> inside an attribute, an encoded referrer meta, or one inside <svg> or <math>?); "
+                              "simplify the page's head")
+            if dropped:
+                warnings.append(f"{rel} sets its own referrer policy; the share drops it")
+        with open(dest, "wb") as f:
+            f.write(data)
+    with open(os.path.join(out, "vercel.json"), "w") as f:
+        json.dump(HOST_CONFIG, f, indent=1)
+    return token, files, warnings
+
+
+def size(n):
+    return f"{n} B" if n < 1024 else f"{n / 1024:.1f} KB" if n < 1024 * 1024 else f"{n / 1024 / 1024:.1f} MB"
+
+
+def print_plan(pack, files, warnings):
+    total = sum(len(d) for d in files.values())
+    print(f"{pack}: {len(files)} file{'s' if len(files) != 1 else ''}, {size(total)}, would go out:")
+    width = max(len(rel) for rel in files)
+    for rel in sorted(files):
+        print(f"  {rel:<{width}}  {size(len(files[rel])):>9}")
+    print("plus vercel.json, the host config (noindex and no-referrer headers); it is not part of the page")
+    print("Every page gets a robots noindex meta tag. No notes button, no notes script.")
+    print("Images, PDFs and other files go out byte for byte, with any metadata in them (photo location, PDF author).")
+    if warnings:
+        print("check before sharing:")
+        for w in warnings:
+            print(f"  {w}")
+
+
+# ---- state -----------------------------------------------------------------------------------------------------------
+
+@contextlib.contextmanager
+def state(write=False):
+    """Yields {"project": {...}, "shares": [...]} under an exclusive lock, saved on exit when write is set. Folder 0700
+    and files 0600, tightened when opened in case something made them wider."""
+    os.makedirs(STATE, mode=0o700, exist_ok=True)
+    os.chmod(STATE, 0o700)
+    path = os.path.join(STATE, "shares.json")
+    with open(os.open(path + ".lock", os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600), "a") as lock:
+        os.fchmod(lock.fileno(), 0o600)
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        with contextlib.suppress(FileNotFoundError):
+            os.chmod(path, 0o600)
+        try:
+            with open(path) as f:
+                data = json.load(f)
+        except FileNotFoundError:
+            data = {}
+        except ValueError as error:
+            raise Refused(f"{path} is not valid JSON ({error}); fix or move it")
+        if not isinstance(data, dict):
+            raise Refused(f"{path} is not a packs-share state file; fix or move it")
+        data.setdefault("project", None)
+        data.setdefault("shares", [])
+        # One {"since": ms, "child": pid} per deploy whose deployment is not yet recorded or removed.
+        data.setdefault("pending", [])
+        yield data
+        if write:
+            tmp = f"{path}.{os.getpid()}.tmp"
+            with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as f:
+                os.fchmod(f.fileno(), 0o600)
+                json.dump(data, f, indent=1)
+            os.replace(tmp, path)
+
+
+@contextlib.contextmanager
+def one_run():
+    """Holds the run lock, so only one publish, revoke or setup talks to the host at a time: a run's clean-up then
+    never mistakes another run's new share for a stray. The lock goes when the process dies, however it dies."""
+    os.makedirs(STATE, mode=0o700, exist_ok=True)
+    with open(os.open(os.path.join(STATE, "run.lock"), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600), "a") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise Refused("another packs-share publish, revoke or setup is running; try again when it finishes")
+        yield
+
+
+def alive(pid):
+    if not isinstance(pid, int) or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        pass
+    return True
+
+
+# ---- the host --------------------------------------------------------------------------------------------------------
+
+def vercel(*args, scope=None, started=None):
+    """Runs the Vercel CLI and returns its stdout; raises Refused with its stderr when it fails. `started` is called
+    with the CLI's pid once it runs."""
+    command = [VERCEL, *args, "--non-interactive", "--no-color"] + (["--scope", scope] if scope else [])
+    try:
+        # From the private state folder, so no vercel.json or .vercel link in the caller's folder steers it. In its
+        # own process group, because the CLI hands the work to a native child process: a timeout or an interrupt
+        # stops the whole group, or the child would go on uploading after the clean-up looked for its deployment.
+        os.makedirs(STATE, mode=0o700, exist_ok=True)
+        child = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL,
+                                 text=True, cwd=STATE, process_group=0)
+    except OSError as error:
+        raise Refused(f"vercel {args[0]}: {error}")
+    try:
+        if started:
+            started(child.pid)
+        stdout, stderr = child.communicate(timeout=float(os.environ.get("PACKS_SHARE_TIMEOUT", "600")))
+    except BaseException as error:
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(child.pid, signal.SIGKILL)
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            child.communicate(timeout=10)
+        if isinstance(error, subprocess.TimeoutExpired):
+            raise Refused(f"vercel {args[0]} took longer than {error.timeout:g} seconds, so packs-share stopped it")
+        raise
+    if child.returncode != 0:
+        tail = "\n".join((stderr or stdout).strip().splitlines()[-5:])
+        raise Refused(f"vercel {' '.join(args[:2])} failed:\n{tail}")
+    return stdout
+
+
+def json_in(text):
+    """The first JSON object in a CLI's stdout, which may print progress lines around it."""
+    decoder = json.JSONDecoder()
+    start = text.find("{")
+    while start >= 0:
+        try:
+            found = decoder.raw_decode(text, start)[0]
+            if isinstance(found, dict):
+                return found
+        except ValueError:
+            pass
+        start = text.find("{", start + 1)
+    return None
+
+
+def project_info(name_or_id, scope=None):
+    info = json_in(vercel("api", f"/v9/projects/{name_or_id}", "--raw", scope=scope))
+    if not info or not info.get("id"):
+        raise Refused(f"vercel did not describe project {name_or_id}")
+    return info
+
+
+def exposure_problems(info):
+    """Why a deployment of this project would not be public, or would show more than one share."""
+    problems = []
+    if info.get("ssoProtection"):
+        problems.append("Vercel Authentication is on, so visitors would get a Vercel login")
+    if info.get("passwordProtection"):
+        problems.append("password protection is on")
+    if info.get("directoryListing"):
+        problems.append("directory listing is on, so the deployment root would list the share's folder")
+    if info.get("publicSource"):
+        problems.append("build logs and source are public, so /_src on a deployment would name the share's folder")
+    if info.get("enablePreviewFeedback"):
+        problems.append("the preview toolbar is on")
+    if info.get("link"):
+        problems.append("the project is linked to a Git repository")
+    return problems
+
+
+def deploy(site, project, *target):
+    """Deploys the folder to the project and returns (deployment id, deployment URL, target). If the deploy fails or
+    its answer cannot be read, removes every deployment the project gained meanwhile that no record names, so no public
+    copy is left without a record to revoke it by."""
+    started = int(time.time() * 1000) - 5000
+    # Written before the upload starts and cleared only once the deployment is recorded or removed, so a run killed
+    # mid-deploy leaves a mark the next run sweeps.
+    with state(write=True) as data:
+        data["pending"].append({"since": started})
+
+    def note_child(pid):
+        with state(write=True) as data:
+            for mark in data["pending"]:
+                if mark["since"] == started:
+                    mark["child"] = pid
+
+    try:
+        out = vercel("deploy", site, "--project", project["id"], *target, "--yes", "--json", scope=project["scope"],
+                     started=note_child)
+    except Refused as error:
+        raise Refused(f"{error}\n{clean_up(project, started)}")
+    answer = json_in(out) or {}
+    # With --non-interactive the CLI wraps the deployment: {"status": "ok", "deployment": {"id", "url", ...}, ...}.
+    found = answer["deployment"] if isinstance(answer.get("deployment"), dict) else answer
+    dep_id, dep_url = str(found.get("id") or ""), str(found.get("url") or "")
+    if answer.get("status", "ok") == "ok" and DEPLOYMENT_ID.fullmatch(dep_id) and dep_url:
+        return dep_id, https(dep_url).rstrip("/"), found.get("target")
+    raise Refused("vercel deploy did not report a deployment id and URL.\n" + clean_up(project, started)
+                  + "\nIts answer:\n" + out.strip()[-2000:])
+
+
+def clean_up(project, since):
+    """Removes the project's deployments created since `since` (ms) that neither the placeholder nor a share record
+    names, and says what it did. The host's own list, filtered by project id, is the source, never the CLI's output.
+    Once nothing stray is left, the pending marks go too."""
+    try:
+        listing = json_in(vercel("api", f"/v7/deployments?projectId={project['id']}&since={since}&limit=100", "--raw",
+                                 scope=project["scope"]))
+        if not isinstance(listing, dict) or not isinstance(listing.get("deployments"), list):
+            raise Refused("its answer has no deployments list")
+    except Refused as error:
+        return f"Could not list the project's new deployments ({error}); check `vercel ls {project['name']}`."
+    with state() as data:
+        known = {project.get("production")} | {s.get("deployment") for s in data["shares"]}
+    removed, left = [], []
+    for d in listing["deployments"]:
+        dep_id = str(d.get("uid") or d.get("id") or "") if isinstance(d, dict) else ""
+        # The query's project filter is checked again here: nothing from another project is ever removed.
+        if not DEPLOYMENT_ID.fullmatch(dep_id) or dep_id in known or d.get("projectId") != project["id"]:
+            continue
+        try:
+            vercel("remove", dep_id, "--yes", scope=project["scope"])
+            removed.append(dep_id)
+        except Refused:
+            left.append(dep_id)
+    if not left:
+        settle()
+    return ((f"Removed the stray deployment {', '.join(removed)}. " if removed else "")
+            + (f"Could not remove {', '.join(left)}; remove it with vercel remove <id>." if left else "")
+            or "The project has no stray deployment.")
+
+
+def settle(data=None):
+    """Clears the pending marks, inside the caller's state write when it passes one. Only the run holding one_run()
+    deploys, so every mark is this run's or a dead run's that its clean-up has just covered."""
+    if data is not None:
+        data["pending"] = []
+        return
+    with state(write=True) as data:
+        data["pending"] = []
+
+
+def sweep(project):
+    """Finishes the clean-up of an earlier run that was killed mid-deploy: removes what it may have left on the host
+    that no record names. Refuses while that run's vercel process still runs, since it could still be uploading."""
+    with state() as data:
+        pending = list(data["pending"])
+    if not pending:
+        return
+    running = [m["child"] for m in pending if alive(m.get("child"))]
+    if running:
+        raise Refused(f"a vercel deploy from an earlier packs-share run is still running (pid {running[0]}); wait for "
+                      f"it to finish or stop it, then run again. If `ps -p {running[0]}` shows something else, "
+                      f"empty the pending list in {os.path.join(STATE, 'shares.json')}")
+    said = clean_up(project, min(int(m.get("since") or 0) for m in pending))
+    with state() as data:
+        if data["pending"]:
+            raise Refused(f"an earlier publish was cut off mid-deploy, and its clean-up did not finish: {said}")
+    print(f"An earlier publish was cut off mid-deploy. {said}")
+
+
+def fetch(url):
+    """(status, headers, body) for a plain GET with no cookies or credentials."""
+    request = urllib.request.Request(url, headers={"User-Agent": "packs-share"})
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            return response.status, response.headers, response.read()
+    except urllib.error.HTTPError as error:
+        return error.code, error.headers, error.read()
+    except (urllib.error.URLError, OSError) as error:
+        return None, {}, str(error).encode()
+
+
+def https(url):
+    return url if re.match(r"^https?://", url) else "https://" + url
+
+
+# ---- commands --------------------------------------------------------------------------------------------------------
+
+def ready_project():
+    """The recorded project, once setup has finished, checked to serve shares publicly and nothing else."""
+    with state() as data:
+        project = data["project"]
+    if not project:
+        raise Refused("no Vercel project yet; run packs-share setup to see what it does, then setup --yes")
+    if not project.get("production"):
+        raise Refused(f"setup of project {project['name']} did not finish; run packs-share setup --yes again")
+    return project
+
+
+def share(args):
+    if args.yes is None:
+        out = args.out or tempfile.mkdtemp(prefix="packs-share-")
+        try:
+            _, files, warnings = snapshot(args.pack, out)
+        finally:
+            if not args.out:
+                shutil.rmtree(out, ignore_errors=True)
+        print_plan(args.pack, files, warnings)
+        if args.out:
+            print(f"Snapshot folder, exactly as it would be uploaded: {args.out}")
+        print(f"Dry run: nothing was published. To publish these files: packs-share {args.pack} --yes {digest(files)}")
+        return 0
+    if not args.yes:
+        raise Refused(f"--yes takes the digest the dry run prints: run packs-share {args.pack}, show the file list, "
+                      f"then packs-share {args.pack} --yes <digest>")
+    with one_run():
+        return publish(args)
+
+
+def publish(args):
+    project = ready_project()
+    sweep(project)
+    stage = tempfile.mkdtemp(prefix="packs-share-")
+    try:
+        site = os.path.join(stage, "site")
+        token, files, warnings = snapshot(args.pack, site)
+        if digest(files) != args.yes:
+            raise Refused(f"{args.pack} is not what the dry run showed (digest {digest(files)}, not {args.yes}); "
+                          "run the dry run again and show the new file list")
+        problems = exposure_problems(project_info(project["id"], project["scope"]))
+        if problems:
+            raise Refused(f"project {project['name']}: " + "; ".join(problems) + ". packs-share setup --yes fixes it")
+        print_plan(args.pack, files, warnings)
+        dep_id, root, target = deploy(site, project, "--target", "preview")
+    finally:
+        shutil.rmtree(stage, ignore_errors=True)
+    if target == "production":
+        # The production placeholder from setup should make every later deployment a preview; never leave a share
+        # on the project's stable production URLs.
+        try:
+            vercel("remove", dep_id, "--yes", scope=project["scope"])
+            fate, removed = "removed it", True
+        except Refused as error:
+            fate, removed = f"could not remove it ({error}); remove {dep_id} by hand", False
+        # Removing a production deployment takes the stable production URLs with it, so setup must deploy the
+        # placeholder again before the next share.
+        with state(write=True) as data:
+            if data["project"]:
+                data["project"]["production"] = None
+            if removed:
+                settle(data)
+        raise Refused(f"Vercel made the share a production deployment, so {fate}. Run packs-share setup --yes to "
+                      "put the production placeholder back before sharing again")
+    url = f"{root}/{token}/"
+    record = {"pack": args.pack, "url": url, "deployment": dep_id, "created": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+              "files": len(files), "bytes": sum(len(d) for d in files.values())}
+    with state(write=True) as data:
+        data["shares"].append(record)
+        settle(data)
+    status, headers, _ = fetch(url)
+    root_status = fetch(root + "/")[0]
+    print(f"published {args.pack}: {url}")
+    ok = status == 200 and root_status == 404
+    print(f"check: the share answers {status} without a login, the deployment root answers {root_status}"
+          + ("" if ok else " (expected 200 and 404)"))
+    if status == 200 and "noindex" not in (headers.get("X-Robots-Tag") or ""):
+        print("check: the X-Robots-Tag header is missing; the pages still carry the noindex meta tag")
+    print(f"Revoke with: packs-share revoke {args.pack}")
+    return 0 if ok else 1
+
+
+def list_shares(_args):
+    with state() as data:
+        shares = data["shares"]
+    if not shares:
+        print("no shares")
+        return 0
+    for s in sorted(shares, key=lambda s: s["created"]):
+        print(f"{s['created'][:16].replace('T', ' ')}  {s['pack']}  {s['url']}")
+    return 0
+
+
+def gone(url, tries=15, in_a_row=3):
+    """True once the URL answers 404 or 410 that many times in a row. For a few seconds after a removal, one Vercel edge
+    can answer 404 while the next still serves the copy."""
+    streak = 0
+    for attempt in range(tries):
+        streak = streak + 1 if fetch(url)[0] in (404, 410) else 0
+        if streak >= in_a_row:
+            return True
+        if attempt < tries - 1:
+            time.sleep(float(os.environ.get("PACKS_SHARE_RETRY", "2")))
+    return False
+
+
+def revoke(args):
+    with one_run():
+        return revoke_share(args)
+
+
+def revoke_share(args):
+    target = args.target.rstrip("/")
+    with state() as data:
+        project = data["project"]
+        picked = [s for s in data["shares"]
+                  if target in (s.get("pack"), s.get("url", "").rstrip("/"), s.get("url", "").rsplit("/", 2)[0])]
+    if not picked:
+        raise Refused(f"no recorded share matches {args.target!r}; packs-share list shows them")
+    if project:
+        sweep(project)
+    failed = 0
+    for s in picked:
+        dep_id = s.get("deployment") or ""
+        if not DEPLOYMENT_ID.fullmatch(dep_id) or dep_id == (project or {}).get("production"):
+            # Never hand `vercel remove` anything but one share's deployment id: given a project name it removes them
+            # all, and the production placeholder keeps the project's stable URLs empty.
+            raise Refused(f"the record for {s.get('url')} has no valid share deployment id")
+        try:
+            vercel("remove", s["deployment"], "--yes", scope=project["scope"] if project else None)
+        except Refused as error:
+            # Already deleted on the host (by hand, or a revoke cut short): the record goes once the URL is gone.
+            if not gone(s["url"], tries=3):
+                print(f"packs-share: {error}", file=sys.stderr)
+                failed += 1
+                continue
+        if not gone(s["url"]):
+            print(f"packs-share: removed {s['url']} on the host, but it still answers; run revoke again",
+                  file=sys.stderr)
+            failed += 1
+            continue
+        with state(write=True) as data:
+            data["shares"] = [x for x in data["shares"] if x["deployment"] != s["deployment"]]
+        print(f"revoked {s['pack']}: {s['url']} now answers 404")
+    return 1 if failed else 0
+
+
+def setup(args):
+    plan = (f"Setup creates a new Vercel project {PROJECT} in the CLI's current scope, and refuses if a project of "
+            "that name exists that packs-share did not make. On that project only it turns off Vercel Authentication "
+            "(so share links open without a login), directory listing, public build logs and source, and the "
+            "preview toolbar. Then it deploys a production placeholder that serves only a 404 page, so the "
+            "project's stable production URLs show nothing and every share is a preview deployment. Nothing else "
+            "in the account changes.")
+    if not args.yes:
+        print(plan)
+        print("To run it: packs-share setup --yes")
+        return 0
+    with one_run():
+        return set_up()
+
+
+def set_up():
+    with state() as data:
+        project = data["project"]
+    if project and project["name"] != PROJECT:
+        raise Refused(f"packs-share is set up with project {project['name']}; set PACKS_SHARE_PROJECT to that name")
+    stage = tempfile.mkdtemp(prefix="packs-share-")
+    try:
+        if not project:
+            # Created through the API, which answers 409 for a name already taken (the CLI's `project create`
+            # ignores that and exits 0): opening up someone else's project would make its deployments public.
+            body = os.path.join(stage, "create.json")
+            with open(body, "w") as f:
+                json.dump({"name": PROJECT}, f)
+            try:
+                made = json_in(vercel("api", "/v11/projects", "-X", "POST", "--input", body, "--raw")) or {}
+            except Refused as error:
+                raise Refused(f"could not create a new Vercel project {PROJECT}; if one of that name already exists, "
+                              f"set PACKS_SHARE_PROJECT to a new name.\n{error}")
+            if not made.get("id") or made.get("name") != PROJECT:
+                raise Refused(f"vercel did not describe the new project {PROJECT}")
+            project = {"name": PROJECT, "id": made["id"], "scope": made.get("accountId")}
+            with state(write=True) as data:
+                data["project"] = project
+        sweep(project)
+        info = project_info(project["id"], project["scope"])
+        if info.get("link"):
+            raise Refused(f"project {PROJECT} is linked to a Git repository; pick another name with "
+                          "PACKS_SHARE_PROJECT")
+        body = os.path.join(stage, "settings.json")
+        with open(body, "w") as f:
+            json.dump({"ssoProtection": None, "directoryListing": False, "publicSource": False,
+                       "enablePreviewFeedback": False, "enableProductionFeedback": False}, f)
+        vercel("api", f"/v9/projects/{project['id']}", "-X", "PATCH", "--input", body, "--raw",
+               scope=project["scope"])
+        problems = exposure_problems(project_info(project["id"], project["scope"]))
+        if problems:
+            raise Refused(f"project {PROJECT} after setup: " + "; ".join(problems))
+        if not project.get("production"):
+            site = os.path.join(stage, "placeholder")
+            os.makedirs(site)
+            with open(os.path.join(site, "404.html"), "wb") as f:
+                f.write(NOT_FOUND)
+            with open(os.path.join(site, "vercel.json"), "w") as f:
+                json.dump(HOST_CONFIG, f, indent=1)
+            dep_id, root, target = deploy(site, project, "--prod")
+            root_status = fetch(root + "/")[0]
+            if target != "production" or root_status != 404:
+                with contextlib.suppress(Refused):
+                    vercel("remove", dep_id, "--yes", scope=project["scope"])
+                    settle()
+                raise Refused(f"the placeholder went out as {target!r} and answers {root_status}, not production and "
+                              "404, so setup removed it; run setup --yes again")
+            project["production"] = dep_id
+            with state(write=True) as data:
+                data["project"] = project
+                settle(data)
+    finally:
+        shutil.rmtree(stage, ignore_errors=True)
+    print(f"project {PROJECT} is ready: no login wall, no directory listing, no public source, no toolbar, and "
+          "production serves only a 404 page")
+    return 0
+
+
+def main(argv):
+    if argv[:1] in (["list"], ["revoke"], ["setup"]):
+        command = argv[0]
+        parser = argparse.ArgumentParser(prog=f"packs-share {command}")
+        if command == "revoke":
+            parser.add_argument("target", metavar="pack|url")
+        if command == "setup":
+            parser.add_argument("--yes", action="store_true", help="create and configure the project")
+        args = parser.parse_args(argv[1:])
+        run = {"list": list_shares, "revoke": revoke, "setup": setup}[command]
+    else:
+        parser = argparse.ArgumentParser(
+            prog="packs-share", formatter_class=argparse.RawDescriptionHelpFormatter,
+            description=__doc__.split("\n\n", 1)[0],
+            epilog="other commands: packs-share list | revoke <pack|url> | setup [--yes]\n"
+                   "A pack named list, revoke or setup cannot be shared.")
+        parser.add_argument("pack")
+        parser.add_argument("--out", help="also write the snapshot folder here (a dry run only)")
+        parser.add_argument("--yes", nargs="?", const="", metavar="DIGEST",
+                            help="publish, if the files still match the digest the dry run printed")
+        args = parser.parse_args(argv)
+        if args.out and args.yes is not None:
+            parser.error("--out is for a dry run; drop it to publish")
+        run = share
+    def stop(signum, _frame):
+        raise SystemExit(128 + signum)
+
+    # A kill unwinds like Ctrl-C, so a running vercel's process group is stopped too (vercel() does that).
+    for signum in (signal.SIGTERM, signal.SIGHUP):
+        signal.signal(signum, stop)
+    try:
+        return run(args)
+    except Refused as error:
+        print(f"packs-share: {error}", file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

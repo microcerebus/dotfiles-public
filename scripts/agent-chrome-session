@@ -1,0 +1,289 @@
+#!/usr/bin/env node
+// The one way an agent uses the agent Chrome (Google Chrome Beta on 127.0.0.1:9333).
+// It tells the owner first with a macOS notification (what, about how long) and again
+// when the run ends, whether it passes, fails or is stopped. It never waits for an
+// answer and never stops the run.
+// On 2026-10-20 at 17:08 a job-tracker verifier ran its own Playwright script
+// against the agent Chrome with no notice while he was working, and its new
+// browser contexts opened windows on his screen.
+// So scripts/agent-chrome-gate owns port 9333 and refuses CDP from any process
+// this helper did not declare, with an error that names this helper.
+// A declaration is a file in ~/.local/state/agent-chrome/sessions/. The gate
+// matches a client when it, or a process above it, is the declaring process or
+// carries AGENT_CHROME_SESSION=<id> in its environment.
+// Leases are for long-lived clients such as the chrome-devtools-axi bridge: no
+// owning process, live until they expire, and the gate's sweep says done.
+// Tests: tests/agent_chrome_session_test.cjs.
+const { execFile, spawn, spawnSync } = require("node:child_process");
+const { randomUUID } = require("node:crypto");
+const fs = require("node:fs");
+const { homedir } = require("node:os");
+const { join } = require("node:path");
+
+const ENV = "AGENT_CHROME_SESSION";
+const TITLE = "Agent Chrome";
+const USAGE = 'Usage: agent-chrome-session --minutes N --what "what it does" [--foreground] -- <command> [args...]\n'
+  + "It notifies the owner before the command touches the agent Chrome and again when it ends.\n";
+
+function stateDir(home = process.env.AGENT_CHROME_STATE_HOME || homedir()) {
+  return join(home, ".local/state/agent-chrome/sessions");
+}
+
+function checkSpec({ what, minutes }, { lease = false } = {}) {
+  if (lease) {
+    if (!Number.isFinite(minutes) || minutes <= 0) throw new Error("A lease must have a positive finite duration.");
+  } else if (!Number.isInteger(minutes) || minutes < 1 || minutes > 120) throw new Error("--minutes must be a whole number from 1 to 120.");
+  if (typeof what !== "string" || !what.trim() || what.length > 120) throw new Error("--what must say in under 120 characters what the run does (no personal data).");
+}
+
+function parseArgs(args) {
+  const spec = { foreground: false };
+  let i = 0;
+  for (; i < args.length && args[i] !== "--"; i += 1) {
+    if (args[i] === "--minutes") spec.minutes = /^\d+$/.test(args[i + 1] ?? "") ? Number(args[++i]) : NaN;
+    else if (args[i] === "--what") spec.what = args[++i];
+    else if (args[i] === "--foreground") spec.foreground = true;
+    else throw new Error(`Unknown option ${args[i]}.\n${USAGE}`);
+  }
+  const command = args.slice(i + 1);
+  if (args[i] !== "--" || command.length === 0) throw new Error(USAGE);
+  try { checkSpec(spec); } catch (error) { throw new Error(`${error.message}\n${USAGE}`); }
+  return { ...spec, command };
+}
+
+// A declaring process is always this user's, so a pid now owned by another
+// user (EPERM) has been reused and counts as gone. Reuse by this user's own
+// processes is not checked: the file goes when the run ends, or within one
+// sweep of a SIGKILL, and macOS hands out pids in order.
+function alive(pid) {
+  try { process.kill(pid, 0); return true; }
+  catch { return false; }
+}
+
+function isLive(declaration, now = Date.now()) {
+  if (declaration.pid !== undefined && !alive(declaration.pid)) return false;
+  return declaration.until === undefined || now < declaration.until;
+}
+
+function read(file) {
+  try { return JSON.parse(fs.readFileSync(file, "utf8")); } catch { return null; }
+}
+
+function declarations(dir = stateDir()) {
+  let names;
+  try { names = fs.readdirSync(dir); } catch { return []; }
+  return names.filter((name) => name.endsWith(".json")).map((name) => ({ file: join(dir, name), declaration: read(join(dir, name)) }))
+    .filter((entry) => entry.declaration?.id);
+}
+
+function write(dir, declaration) {
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const file = join(dir, `${declaration.id}.json`);
+  const temporary = `${file}.${process.pid}.tmp`;
+  fs.writeFileSync(temporary, JSON.stringify(declaration), { mode: 0o600 });
+  fs.renameSync(temporary, file);
+  return file;
+}
+
+// Only one process may end a declaration, so the done notice goes out once.
+function claim(file) {
+  try { fs.renameSync(file, `${file}.ending`); return `${file}.ending`; } catch { return null; }
+}
+
+function minutesSince(started, now = Date.now()) {
+  const minutes = Math.round((now - started) / 60000);
+  return minutes < 1 ? "under a minute" : `${minutes} min`;
+}
+
+function startMessage({ what, minutes, foreground }) {
+  return `${what}. About ${minutes} min${foreground ? ", in a foreground tab you may need to click" : ", background tabs only"}.`;
+}
+
+function doneMessage({ what, started }, outcome, now = Date.now()) {
+  return `${what}: ${outcome} after ${minutesSince(started, now)}. Done with the agent Chrome.`;
+}
+
+const NOTIFY = ["-e", "on run argv", "-e", "display notification (item 1 of argv) with title (item 2 of argv)", "-e", "end run"];
+
+// Test hook only: tests set AGENT_CHROME_SESSION_TEST_NOTIFY_LOG so a run
+// writes its notices to that file instead of the owner's screen.
+const TEST_LOG = process.env.AGENT_CHROME_SESSION_TEST_NOTIFY_LOG;
+
+function osascriptNotify(message) {
+  if (TEST_LOG) return Promise.resolve(fs.appendFileSync(TEST_LOG, `${message}\n`));
+  return new Promise((resolve, reject) => {
+    execFile("/usr/bin/osascript", [...NOTIFY, message, TITLE], { timeout: 5000 }, (error) => (error ? reject(error) : resolve()));
+  });
+}
+
+const defaults = {
+  dir: () => stateDir(),
+  notify: osascriptNotify,
+  log: (message) => process.stderr.write(`agent-chrome-session: ${message}\n`),
+  now: () => Date.now(),
+};
+
+async function tell(deps, message) {
+  try { await deps.notify(message); }
+  catch (error) { deps.log(`the notification failed (${error.message}); the run goes on.`); }
+}
+
+// The declaration that already covers this process, so nested helpers stay quiet.
+function current(env = process.env, dir = stateDir()) {
+  const id = env[ENV];
+  if (!id) return null;
+  const declaration = read(join(dir, `${id}.json`));
+  return declaration && isLive(declaration) ? declaration : null;
+}
+
+const SIGNALS = { SIGINT: 2, SIGTERM: 15, SIGHUP: 1 };
+
+// Declare a session owned by this process, tell the owner, run fn(env), tell him it ended.
+// A signal ends the run through spec.onSignal(signal, count, stop) (the CLI
+// forwards it to its child); without one, or when onSignal calls stop, the run
+// is reported stopped and the process exits.
+async function withSession(spec, fn, deps = defaults) {
+  checkSpec(spec);
+  const dir = deps.dir();
+  if (current(process.env, dir)) return fn(process.env);
+  const declaration = { id: randomUUID(), what: spec.what.trim(), minutes: spec.minutes, foreground: Boolean(spec.foreground), pid: process.pid, started: deps.now() };
+  const file = write(dir, declaration);
+  let outcome = "stopped";
+  const finish = async () => {
+    const owned = claim(file);
+    if (!owned) return;
+    await tell(deps, doneMessage(declaration, outcome, deps.now()));
+    fs.rmSync(owned, { force: true });
+  };
+  let signals = 0;
+  const stop = (signal) => finish().finally(() => process.exit(128 + SIGNALS[signal]));
+  const handlers = Object.keys(SIGNALS).map((signal) => {
+    const handler = () => {
+      signals += 1;
+      if (spec.onSignal) spec.onSignal(signal, signals, stop);
+      else stop(signal);
+    };
+    process.on(signal, handler);
+    return [signal, handler];
+  });
+  try {
+    await tell(deps, startMessage(declaration));
+    const result = await fn({ ...process.env, [ENV]: declaration.id });
+    outcome = spec.outcome ? spec.outcome(result) : "finished";
+    return result;
+  } catch (error) {
+    outcome = signals || error.name === "AbortError" ? "stopped" : "failed";
+    throw error;
+  } finally {
+    for (const [signal, handler] of handlers) process.off(signal, handler);
+    await finish();
+  }
+}
+
+// A lease for a client that outlives each command, such as the axi bridge.
+// Synchronous, because the axi wrapper is. Renewing a live lease is silent; a
+// new one tells the owner, after saying done for an expired one of the same id.
+function lease({ id, what, minutes, foreground = false }, deps = syncDefaults) {
+  checkSpec({ what, minutes }, { lease: true });
+  const dir = deps.dir();
+  const file = join(dir, `${id}.json`);
+  const existing = read(file);
+  const now = deps.now();
+  const fresh = !(existing && isLive(existing, now));
+  if (fresh && existing) endSync(file, existing, "finished", deps);
+  const declaration = { id, what, minutes, foreground, started: fresh ? now : existing.started, until: now + minutes * 60000 };
+  write(dir, declaration);
+  if (fresh) tellSync(deps, startMessage(declaration));
+  return declaration;
+}
+
+function endLease(id, deps = syncDefaults) {
+  const file = join(deps.dir(), `${id}.json`);
+  const declaration = read(file);
+  if (declaration) endSync(file, declaration, "finished", deps);
+}
+
+function endSync(file, declaration, outcome, deps) {
+  const owned = claim(file);
+  if (!owned) return;
+  tellSync(deps, doneMessage(declaration, outcome, Math.min(deps.now(), declaration.until ?? Infinity)));
+  fs.rmSync(owned, { force: true });
+}
+
+function tellSync(deps, message) {
+  try { deps.notify(message); }
+  catch (error) { deps.log(`the notification failed (${error.message}); the run goes on.`); }
+}
+
+const syncDefaults = {
+  ...defaults,
+  notify: (message) => {
+    if (TEST_LOG) return fs.appendFileSync(TEST_LOG, `${message}\n`);
+    const result = spawnSync("/usr/bin/osascript", [...NOTIFY, message, TITLE], { timeout: 5000 });
+    if (result.status !== 0) throw new Error(result.error?.message ?? `osascript exited ${result.status}`);
+  },
+};
+
+// A declaration the gate writes for a client that skipped this helper, during
+// the migration window (scripts/agent-chrome-gate GRACE_UNTIL). the owner still
+// hears about it first; how long is unknown, and the sweep says done when the
+// client exits.
+async function adopt({ pid, what }, deps = defaults) {
+  const dir = deps.dir();
+  const id = `adopted-${pid}`;
+  const existing = read(join(dir, `${id}.json`));
+  if (existing && isLive(existing, deps.now())) return { file: join(dir, `${id}.json`), declaration: existing };
+  const declaration = { id, what, pid, adopted: true, foreground: false, started: deps.now() };
+  const file = write(dir, declaration);
+  await tell(deps, `${what} is using the agent Chrome without agent-chrome-session, so how long is unknown.`);
+  return { file, declaration };
+}
+
+// Say done for declarations whose process died without saying so (SIGKILL) and
+// for expired leases and adoptions. The gate runs this every few seconds.
+async function sweep(deps = defaults, graceUntil = Infinity) {
+  const now = deps.now();
+  for (const { file, declaration } of declarations(deps.dir())) {
+    if (isLive(declaration, now) && !(declaration.adopted && now >= graceUntil)) continue;
+    const owned = claim(file);
+    if (!owned) continue;
+    const outcome = declaration.pid === undefined || declaration.adopted ? "finished" : "stopped without saying so";
+    await tell(deps, doneMessage(declaration, outcome, Math.min(now, declaration.until ?? Infinity, declaration.adopted ? graceUntil : Infinity)));
+    fs.rmSync(owned, { force: true });
+  }
+}
+
+async function main(args, deps = defaults) {
+  const spec = parseArgs(args);
+  const [command, ...rest] = spec.command;
+  let child;
+  let pending;
+  const code = await withSession({
+    ...spec,
+    // A signal during the start notice means the command never starts; a
+    // second one kills a child that ignored the first.
+    onSignal: (signal, count, stop) => {
+      if (!child && count > 1) stop(signal);
+      else if (!child) pending = signal;
+      else child.kill(count > 1 ? "SIGKILL" : signal);
+    },
+    outcome: (status) => (status === 0 ? "finished" : status > 128 ? "stopped" : `failed (exit ${status})`),
+  }, (env) => new Promise((resolve) => {
+    if (pending) {
+      resolve(128 + SIGNALS[pending]);
+      return;
+    }
+    child = spawn(command, rest, { stdio: "inherit", env });
+    child.once("error", (error) => { deps.log(error.message); resolve(127); });
+    child.once("close", (status, signal) => resolve(status ?? 128 + (signal === "SIGKILL" ? 9 : signal === "SIGINT" ? 2 : 15)));
+  }), deps);
+  return code;
+}
+
+module.exports = { ENV, stateDir, parseArgs, isLive, declarations, current, withSession, lease, endLease, adopt, sweep, startMessage, doneMessage, main };
+if (require.main === module) {
+  main(process.argv.slice(2)).then((code) => { process.exitCode = code; }, (error) => {
+    process.stderr.write(`agent-chrome-session: ${error.message}${error.message.endsWith("\n") ? "" : "\n"}`);
+    process.exitCode = 2;
+  });
+}
