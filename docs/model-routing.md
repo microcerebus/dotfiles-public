@@ -26,6 +26,10 @@ Glossary: "intelligence" = how hard a problem the model can handle unsupervised.
   Anything user-facing needs taste >= 7.
 - Reviews of plans and implementations: Fable 5.1 or Opus 5.5, optionally GPT via codex as an extra independent perspective.
 - Design work (UI/UX and visual design, design reviews, screen design docs, new UI components): Fable 5.1 with the Impeccable skills, by default.
+- Writing (rewrites, docs, prep pages, briefs, chat replies, anything a person reads): Opus 5.5, not Fable 5.1.
+  the owner, 18 Oct 2026: "Use opus 5.5 to rewrite, not fable please" and "opus 5.5 should handle all writing in general - maybe at a lower effort level if that's more optimal".
+  Start at a lower effort (medium or high) and escalate only if the result misses the bar.
+  Design work keeps Fable for layout and visuals; the words in it go to Opus.
 - Workflows cannot call GPT directly: have a Sonnet-on-low stage spawn `codex exec` and report results back.
   Prefix any subagent/workflow label that runs a non-Claude model with the model name (e.g. `[gpt] parse logs`).
   Use `schema` on the wrapper stage so the codex report comes back structured instead of as free text.
