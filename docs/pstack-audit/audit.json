@@ -274,7 +274,7 @@
       "item": "in-your-own-words",
       "status": "adapted",
       "evidence": "nix/user.nix skill declarations; files/.claude/skills/in-your-own-words/SKILL.md",
-      "reason": "Installed slash-only; automatic routing remains held.",
+      "reason": "Explicit-only leaf; batch 2 prepares the approved goal-restatement route through poteto-mode.",
       "codex": "Not pending."
     },
     {
@@ -290,7 +290,7 @@
       "item": "ketchup",
       "status": "adapted",
       "evidence": "nix/user.nix skill declarations; files/.claude/skills/ketchup/SKILL.md",
-      "reason": "Local T3 rendering and action-first summary exist, but automatic routing is deliberately held.",
+      "reason": "Local T3 rendering and action-first summary remain. Batch 2 prepares the approved catch-up route; rollout is tracked separately.",
       "codex": "Not pending."
     },
     {
@@ -338,7 +338,7 @@
       "item": "poteto-mode",
       "status": "adapted",
       "evidence": "nix/user.nix skill declarations; files/.claude/skills/poteto-mode/SKILL.md",
-      "reason": "The local router and 13 playbooks replace the old read-from-GitHub instruction; approved Codex roles are prepared and scratch invocation is proven.",
+      "reason": "Local router has 13 adapted playbooks plus three batch 2 routes. Batch 1 Codex roles are upstream; batch 2 is local, and activation remains separate.",
       "codex": "Not pending."
     },
     {
@@ -936,17 +936,17 @@
     {
       "group": "pstack support",
       "item": "Claude Code package",
-      "status": "pending",
-      "evidence": "harness/pstack/claude-code/; pstack/docs/harness/claude-code.md at upstream head",
-      "reason": "New generated package supersedes the old Cursor-only packaging claim; its non-Claude model mapping inherits the session model and is not a Codex adapter.",
-      "codex": "No: requires an explicit replacement decision, security read and preservation of local patches."
+      "status": "skipped",
+      "evidence": "docs/pstack-audit/batch-2-sources.md; frozen upstream Claude package 0.15.29",
+      "reason": "Keep the local set: direct replacement loses Codex routing, discovery, local patches and ownership boundaries, and adds executable dependency/bootstrap and PR tooling.",
+      "codex": "Not pending."
     },
     {
       "group": "pstack support",
       "item": "Codex skill discovery",
       "status": "pending",
-      "evidence": "nix/user.nix links pstack under .claude/skills; no poteto-mode link found under .agents/skills or .codex/skills; docs/pstack-audit/codex-discovery-proof.md",
-      "reason": "The worktree declares 27 canonical aliases and invocation policies; fresh scratch discovery and router invocation pass. Live registration awaits push approval and activation.",
+      "evidence": "nix/user.nix; docs/pstack-audit/codex-discovery-proof.md; docs/pstack-audit/batch-2-route-proof.md",
+      "reason": "Batch 1 declares 27 canonical aliases and invocation policies; fresh scratch discovery and router invocation pass. It is pushed unchanged; live registration awaits activation. Batch 2 adds grilling locally.",
       "codex": "Availability and policy blockers are resolved; local proof does not authorize rollout or prove every workflow."
     },
     {
@@ -954,32 +954,32 @@
       "item": "Codex role migration for installed skills",
       "status": "pending",
       "evidence": "poteto-mode/SKILL.md; how/SKILL.md; why/SKILL.md; reflect/SKILL.md; arena/references/model-families.md; docs/pstack-audit/codex-discovery-proof.md",
-      "reason": "The shared adapter and installed role instructions now use Codex; all eight policy decisions are resolved. Push approval and activation remain.",
+      "reason": "The shared adapter and installed role instructions now use Codex; all eight policy decisions are resolved. Batch 1 is pushed unchanged; activation remains.",
       "codex": "Availability and policy blockers are resolved; local proof does not authorize rollout or prove every workflow."
     },
     {
       "group": "pstack operation",
       "item": "ketchup automatic route",
       "status": "pending",
-      "evidence": "docs/workflow-north-star.md; docs/agent-team.md",
-      "reason": "Held unrouted by workflow-north-star.md.",
-      "codex": "No: needs route approval or schedule/run evidence, not a model quota."
+      "evidence": "poteto-mode/SKILL.md and references/; docs/pstack-audit/batch-2-route-proof.md",
+      "reason": "Approved route prepared locally with fresh Codex invocation proof. Batch 2 push approval and activation remain outstanding.",
+      "codex": "Local routing and invocation are proven; rollout still requires push approval and activation."
     },
     {
       "group": "pstack operation",
       "item": "in-your-own-words automatic route",
       "status": "pending",
-      "evidence": "docs/workflow-north-star.md; docs/agent-team.md",
-      "reason": "Held unrouted by workflow-north-star.md.",
-      "codex": "No: needs route approval or schedule/run evidence, not a model quota."
+      "evidence": "poteto-mode/SKILL.md and references/; docs/pstack-audit/batch-2-route-proof.md",
+      "reason": "Approved route prepared locally with fresh Codex invocation proof. Batch 2 push approval and activation remain outstanding.",
+      "codex": "Local routing and invocation are proven; rollout still requires push approval and activation."
     },
     {
       "group": "pstack operation",
       "item": "grilling automatic route",
       "status": "pending",
-      "evidence": "docs/workflow-north-star.md; docs/agent-team.md",
-      "reason": "Held unrouted by workflow-north-star.md.",
-      "codex": "No: needs route approval or schedule/run evidence, not a model quota."
+      "evidence": "poteto-mode/SKILL.md and references/; docs/pstack-audit/batch-2-route-proof.md",
+      "reason": "Approved route prepared locally with fresh Codex invocation proof. Batch 2 push approval and activation remain outstanding.",
+      "codex": "Local routing and invocation are proven; rollout still requires push approval and activation."
     },
     {
       "group": "pstack operation",
@@ -1130,7 +1130,7 @@
       "item": "grilling",
       "status": "adopted",
       "evidence": "files/.claude/skills/grilling/SKILL.md; nix/user.nix",
-      "reason": "Installed slash-only for interview or plan questions; automatic routing is held.",
+      "reason": "Explicit-only leaf; batch 2 adds the Codex alias and approved questioning route through poteto-mode.",
       "codex": "Not pending."
     },
     {
@@ -1184,10 +1184,10 @@
     {
       "group": "Other audited source",
       "item": "cc-plugin-you-should-know",
-      "status": "pending",
-      "evidence": "review.html section 5",
-      "reason": "Historical keep verdict only; current account/plugin enablement was not verified.",
-      "codex": "No: requires migration, fresh external evidence or an explicit choice, not quota."
+      "status": "adopted",
+      "evidence": "docs/pstack-audit/batch-2-sources.md; filtered local enabledPlugins and runtime-state reads",
+      "reason": "Built-in plugin is enabled locally, with historical runtime records. Current account entitlement and fresh notice delivery were not verified.",
+      "codex": "Not pending."
     },
     {
       "group": "Other audited source",
@@ -1298,7 +1298,7 @@
       "item": "VOICE and OPINIONS",
       "status": "adapted",
       "evidence": "files/VOICE.md; files/OPINIONS.md",
-      "reason": "Local writing and engineering principles; provider-preference change awaits approval.",
+      "reason": "The exact approved provider-preference paragraph landed with batch 1; VOICE and the adjacent preference list are unchanged.",
       "codex": "Not pending."
     },
     {
@@ -1345,9 +1345,9 @@
       "group": "Other audited source",
       "item": "Wheelhouse",
       "status": "pending",
-      "evidence": "docs/workflow-north-star.md",
-      "reason": "Held for a missing upstream license in the last audit; a fresh license/security review is needed before reconsideration.",
-      "codex": "No: requires migration, fresh external evidence or an explicit choice, not quota."
+      "evidence": "docs/pstack-audit/batch-2-sources.md; original repository HTTP 404; frozen public copy",
+      "reason": "Original source is unavailable. The discovered copy has no verified successor provenance or license; targeted security read also found broad write authority and unpinned dependencies.",
+      "codex": "No: an accessible authoritative source, verified provenance and a license are external blockers; security review remains before adoption."
     },
     {
       "group": "Other audited source",
@@ -1370,7 +1370,7 @@
       "item": "Agent-agnostic workflows",
       "status": "pending",
       "evidence": "docs/workflow-north-star.md; arena/references/model-families.md; docs/pstack-audit/codex-discovery-proof.md",
-      "reason": "The adapter supports native, T3 and CLI delegation, with fresh Codex discovery and explanation proof. Push approval, activation and broader playbook execution remain.",
+      "reason": "The adapter supports native, T3 and CLI delegation, with fresh Codex discovery and explanation proof. Batch 1 is pushed unchanged; activation and broader playbook execution remain.",
       "codex": "Availability and policy blockers are resolved; local proof does not authorize rollout or prove every workflow."
     },
     {
@@ -1769,16 +1769,16 @@
       "group": "Other audited source",
       "item": "Guide Part 3",
       "status": "pending",
-      "evidence": "poteto-other-articles.md Searched for, not found",
-      "reason": "The old survey found no published Part 3; this audit inspected the repository guide but did not establish a later standalone article.",
-      "codex": "No: needs fresh publication evidence, not model availability."
+      "evidence": "docs/pstack-audit/batch-2-sources.md; dated author/title searches and attempted Part 2 read",
+      "reason": "No author publication was verified. Direct X reading failed; search absence is not proof of non-publication.",
+      "codex": "No: an accessible author publication or authoritative link is needed to resolve this evidence blocker."
     },
     {
       "group": "Other audited source",
       "item": "Cross-family audit operation",
       "status": "pending",
       "evidence": "arena/references/model-families.md; show-me-your-work/SKILL.md; docs/pstack-audit/codex-discovery-proof.md",
-      "reason": "Fresh Codex contexts are approved as the default, with explicit or capability/quota exceptions for Claude. Routing is prepared locally; push approval, activation and a complete arena/audit run remain.",
+      "reason": "Fresh Codex contexts are approved as the default, with explicit or capability/quota exceptions for Claude. Batch 1 routing is pushed unchanged; activation and a complete arena/audit run remain.",
       "codex": "Availability and policy blockers are resolved; local proof does not authorize rollout or prove every workflow."
     }
   ],

@@ -3,28 +3,32 @@
 This table assigns all 42 entries that were pending in the audited snapshot.
 The proposed order is a batch number, not permission to bypass a dependency.
 "None" means local preparation or read-only verification can start; deploying every dotfiles change still needs push approval and the normal activation path.
-The current worker owns only batch 1 in dotfiles.
+The current worker owns the seven batch 2 entries; the table retains the original 42-entry inventory.
 Orchestrator 36 owns the schedule rows and deduplicates existing tasks.
 Job-tracker coordinator 36 owns all seven order 71 rows and the later TypeScript refresh.
 Levers 5, 2 and 7 stay held until 22 October at 16:00 SGT and are outside this unit.
 the owner finalized the exact OPINIONS paragraph in `preference-wording-draft.md`; it is applied locally, with VOICE unchanged.
-Batch 1 routing and discovery are prepared locally; push approval and activation remain outstanding.
+The orchestrator confirmed batch 1 pushed unchanged; activation remains outstanding.
+Batch 2 prepares the three automatic routes locally and records their fresh Codex proof.
+It closes the package comparison by retaining the local set and confirms built-in plugin enablement.
+Wheelhouse and Guide Part 3 remain pending on the named external evidence blockers below.
+Batch 2 push approval and activation remain separate.
 
 | Entry | Owning lane | Blocked by | Proposed order |
 |---|---|---|---|
 | pstack skill: create-formal-verification-skill | dotfiles | none | 4. Review and adapt the generator, then prove one bounded project case. |
 | pstack skill: maintain-formal-verification-skill | dotfiles | none | 5. Follow the first project proof with a source-drift check. |
-| pstack support: Claude Code package | dotfiles | none | 2. Compare packaging; keep the local set unless replacement preserves its behavior. |
+| pstack support: Claude Code package | dotfiles | none | 2. Closed: retain the local set; the replacement loses local patches and adds executable tooling. See batch-2-sources.md. |
 | pstack support: Codex skill discovery | dotfiles | none | 1. Migrate routing and prove discovery and fresh-context execution locally. |
 | pstack support: Codex role migration for installed skills | dotfiles | none | 1. Migrate routing and prove discovery and fresh-context execution locally. |
-| pstack operation: ketchup automatic route | dotfiles | none | 2. Add the approved route and verify a realistic trigger. |
-| pstack operation: in-your-own-words automatic route | dotfiles | none | 2. Add the approved route and verify a realistic trigger. |
-| pstack operation: grilling automatic route | dotfiles | none | 2. Add the approved route and verify a realistic trigger. |
+| pstack operation: ketchup automatic route | dotfiles | push approval and activation | 2. Prepared with a fresh Codex catch-up trigger; see batch-2-route-proof.md. |
+| pstack operation: in-your-own-words automatic route | dotfiles | push approval and activation | 2. Prepared with a fresh Codex goal-restatement trigger; see batch-2-route-proof.md. |
+| pstack operation: grilling automatic route | dotfiles | push approval and activation | 2. Prepared with a fresh Codex questioning trigger and explicit-only alias; see batch-2-route-proof.md. |
 | pstack operation: Daily reflect retro | schedules | none | 6. Orchestrator 36 checks existing schedules and evidence before changing any task. |
 | pstack operation: Daily verification upkeep | schedules | none | 6. Orchestrator 36 checks existing schedules and evidence before changing any task. |
 | Other audited source: ig-collection-extract | dotfiles | none | 6. Inspect the unmanaged skill and prepare a managed migration without overwriting the live copy. |
-| Other audited source: cc-plugin-you-should-know | external sources | none | 2. Verify current enablement, license or publication; close with evidence or a named blocker. |
-| Other audited source: Wheelhouse | external sources | none | 2. Verify current enablement, license or publication; close with evidence or a named blocker. |
+| Other audited source: cc-plugin-you-should-know | external sources | none | 2. Closed: enabled in local settings, with historical runtime records; current notice delivery is unverified. See batch-2-sources.md. |
+| Other audited source: Wheelhouse | external sources | authoritative source, provenance and license | 2. Investigated: original source returns 404; discovered copy has no verified successor provenance or license. See batch-2-sources.md. |
 | Other audited source: Agent-agnostic workflows | dotfiles | none | 1. Migrate routing and prove discovery and fresh-context execution locally. |
 | Review article/video: 1. Async timer lint guard | job-tracker | none | Existing coordinator 36 work: issue 108 proceeds through the selected separate helper-fix PR. |
 | Review article/video: 2. Two-strike hosted walkthrough rule | job-tracker | none | In force under order 71; coordinator 36 owns application. |
@@ -52,5 +56,5 @@ Batch 1 routing and discovery are prepared locally; push approval and activation
 | Upstream delta: principle-test-behavior-not-implementation | dotfiles | none | 3. Review the upstream delta against the local adaptation; retain deliberate skips. |
 | Upstream delta: principle-type-system-discipline | dotfiles | none | 3. Review the upstream delta against the local adaptation; retain deliberate skips. |
 | Upstream delta: Documentation and package metadata | dotfiles | none | 3. Review the upstream delta against the local adaptation; retain deliberate skips. |
-| Other audited source: Guide Part 3 | external sources | none | 2. Verify current enablement, license or publication; close with evidence or a named blocker. |
+| Other audited source: Guide Part 3 | external sources | accessible author publication or authoritative link | 2. Investigated: current searches did not establish publication and direct X reading failed. See batch-2-sources.md. |
 | Other audited source: Cross-family audit operation | dotfiles | none | 1. Migrate routing and prove discovery and fresh-context execution locally. |

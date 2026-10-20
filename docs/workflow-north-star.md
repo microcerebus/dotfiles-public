@@ -40,7 +40,7 @@ existing foundation in this repo.
 | Treehouse (worktree pool) | flake-built from pinned v2.0.0 (vendorHash in user.nix); firstmate crewmate dependency | have (rebuild) |
 | Good Night Have Fun (long loops w/ token+iteration+condition caps) | npm CLI `gnhf` (or pnpm dlx on demand), drives claude/codex; 2.9k stars, MIT | partial (/loop today) |
 | First Mate (orchestrator) | Opted in 2026-07-05 despite youth (849 stars, 63 open issues). Not a binary - a cloned directory you launch a harness inside; ships a herdr backend (`bin/backends/herdr.sh`) so it drives herdr rather than competing with it. Plain clone outside nix store (like nvim config); needs treehouse | adopt (human clones + first launch) |
-| Wheelhouse (IssueOps command center) | GitHub-Actions template repo, nothing local. BLOCKED: no license (8 stars, 84 open issues) - fails dependency criteria; ask upstream for MIT like his other repos | blocked (no license) |
+| Wheelhouse (IssueOps command center) | Original source now returns 404. A discovered public copy has no verified successor provenance or license; targeted security findings are in pstack-audit/batch-2-sources.md. Nothing installed. | blocked (source, provenance and license) |
 | Axi CLIs | gh covers GitHub; screen-free browser work uses written Playwright scripts in background agent Chrome tabs and interactive checks use codex-computer-use; the fallback-only chrome-devtools-axi skill runs as the pnpm global behind `scripts/chrome-devtools-axi`, which points it at the agent Chrome (launchd agent, 127.0.0.1:9333) and refuses the owner's own Chrome without an opt-in. Its server, chrome-devtools-mcp, is pinned in nix/user.nix instead of `npx ...@latest`. Brave stays installed for personal use only | have (rebuild) |
 
 ## Adoption principles already locked in
@@ -68,8 +68,11 @@ pstack skills are pinned to cursor/plugins 1e5c90a4 (pstack 0.15.24, 2026-10-14)
 poteto-mode is the entry point (2026-10-16).
 The only other model-invocable pstack skills are unslop, correct and show-me-your-work, which are vendored from pstack and opened up here as a local edit (listed in nix/user.nix).
 Its body routes the task to one playbook in `poteto-mode/references/`, and each playbook runs the slash-only skills it needs (how, why, teach, architect, arena, figure-it-out, technical-writing, tdd, blast-radius, codex-review, interrogate) by reading their SKILL.md.
-in-your-own-words, ketchup and grilling are held unrouted until the owner OKs a route for them.
-Keep it that way: a new pstack skill stays slash-only and gets a route from a playbook, so the always-loaded skill list does not grow.
+The approved batch 2 routes map catch-up requests to ketchup, requests to restate goals to in-your-own-words, and requests for questioning or interview drills to grilling.
+They precede the general review and explanation routes; ordinary plan reviews still use review.
+The leaf skills stay explicit-only in both harnesses, with Codex aliases and invocation metadata; poteto-mode reads them through its three local playbooks.
+These routes are prepared in the worktree and require the normal push and activation before live use.
+A new pstack skill stays slash-only and gets a route from a playbook, so the always-loaded skill list does not grow.
 `python3 -I scripts/check-skills` checks every skill's frontmatter (as YAML), LICENSE, links and `home.file` line.
 `.githooks/pre-push` runs the pushed commit's checker against an exported copy of that commit before the public mirror leak gate on pushes to `main`.
 Skill validation fails closed, including when the checker or PyYAML is missing; `PUBLIC_SYNC_SKIP=1` skips only the leak gate.
@@ -83,7 +86,8 @@ Rewrite any new Cursor-only line the same way: `Task` becomes Agent tool roles f
 unslop follows upstream since 0.15.24 but keeps its model-invocable "Must always apply." frontmatter.
 gnhf was evaluated and skipped for now (/loop covers most of it).
 Treehouse and firstmate came off hold 2026-07-05 (owner's call; firstmate's herdr backend resolves the overlap concern).
-Wheelhouse is blocked until upstream adds a license.
+Wheelhouse needs an accessible authoritative source, verified provenance and a license before adoption can be reconsidered.
+The batch 2 source check also records permissions and dependency-pinning concerns for a later security review.
 The kun skill (kunchenguid/kun, installed 2026-10-07 with the skills CLI into ~/.agents/skills, outside this repo) was removed 2026-10-10 on the owner's call.
 Every use downloaded and ran an unpinned script from kun@main, and it was never used.
 Don't reinstall it.

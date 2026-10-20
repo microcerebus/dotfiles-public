@@ -32,18 +32,18 @@ SOURCES = [
 INTRO = [
     'The core pstack workflow is present, but not every item is adopted or operational.',
     'The old Later list is stale: the explanation and multi-model skills, reflect and poteto-mode are installed; the TypeScript project skill is merged.',
-    'Batch 1 prepares Codex roles and 27 skill aliases locally; fresh scratch sessions prove discovery and router invocation. Live rollout remains pending.',
-    'Upstream is now 0.15.29, compared with the dotfiles pin at 0.15.24; the two new formal-verification skills and Claude Code package have not been adopted.',
+    'Batch 1 is pushed unchanged with 27 Codex aliases; activation remains pending. Batch 2 prepares three automatic routes and a 28th alias locally.',
+    'The audited upstream is 0.15.29, compared with the dotfiles pin at 0.15.24. Keep the local skill set after comparing the Claude package; formal-verification adoption remains pending.',
 ]
 DECISION = [
-    'The eight routing decisions and exact OPINIONS paragraph are approved. Batch 1 is prepared locally, with no push or activation authorization.',
-    'The orchestrator owns later batch assignment; upstream changes still need comparison with local patches before implementation.',
+    'Batch 1 is pushed; the owner owns its rebuild. Batch 2 routes are prepared and checked locally, with push approval and activation still outstanding.',
+    'Batch 2 retains the local Claude skill set and confirms built-in plugin enablement. Wheelhouse source/license and Guide Part 3 publication evidence remain blocked.',
     'The job-tracker coordinator owns order 71: the two-strike rule is in force, the async guard is active work, the size cap follows it, and the four larger rows start after 22 October at 16:00 SGT.',
-    'No live skill registration, dependency, plugin, schedule or provider setting was installed or enabled by this audit or batch 1.',
+    'This batch changes no live skill links, dependency, plugin, schedule or provider setting. The orchestrator owns later batches and rollout.',
 ]
 LIMITS = [
     'Checked on 20 October 2026 at 19:01 SGT using local files and read-only GitHub calls; the head is frozen in audit.json.',
-    'Batch 1 updates record local preparation and orchestrator corrections; codex-discovery-proof.md separates scratch verification from live rollout.',
+    'Batch 1 landing was confirmed by the orchestrator. Batch 2 source evidence and exact route prompts are in batch-2-sources.md and batch-2-route-proof.md; scratch results do not claim live rollout.',
     'Adopted means an inspected installation, declaration or explicitly retained practice; adapted means an inspected local equivalent.',
     'Neither status claims that every workflow has run successfully on Codex; pending means a named blocker, missing proof or unselected update remains.',
     'Pending update rows are separate from the adoption status of the pinned item, so an adapted skill can also have an unselected upstream change.',
@@ -124,7 +124,7 @@ def page():
 <div class="scroll" tabindex="0" aria-label="Scrollable adoption record"><table><caption>Evidence, current adoption and remaining blockers for each item.</caption><thead><tr><th scope="col">Item</th><th scope="col">Status</th><th scope="col">Current state or blocker</th><th scope="col">Does Codex unblock it?</th><th scope="col">Evidence</th></tr></thead><tbody>''' + body + '''</tbody></table><p id="empty">No items match. Clear the filters to see the full record.</p></div>
 <details><summary>Eight approved routing resolutions</summary><ol>''' + conflicts + '''</ol></details>
 <details><summary>Scope and limits of the evidence</summary>''' + ''.join(f'<p>{esc(x)}</p>' for x in LIMITS) + '''</details>
-<details><summary>Source links and downloadable record</summary><ul>''' + sources + '''<li><a href="codex-discovery-proof.md">Batch 1 discovery proof</a></li><li><a href="pending-ownership.md">Original 42 pending entries and owners</a></li><li><a href="audit.md">Complete Markdown table</a></li><li><a href="audit.json">Evidence inventory and pinned upstream revisions</a></li></ul><p>Local evidence: the original install list and catalog, workflow-north-star.md, nix/user.nix, installed skill files, the supplied code-review report, current standing order 71 and read-only forge checks.</p></details>
+<details><summary>Source links and downloadable record</summary><ul>''' + sources + '''<li><a href="codex-discovery-proof.md">Batch 1 discovery proof</a></li><li><a href="batch-2-route-proof.md">Batch 2 route proof</a></li><li><a href="batch-2-sources.md">Batch 2 package and external sources</a></li><li><a href="pending-ownership.md">Original 42 pending entries and owners</a></li><li><a href="audit.md">Complete Markdown table</a></li><li><a href="audit.json">Evidence inventory and pinned upstream revisions</a></li></ul><p>Local evidence: the original install list and catalog, workflow-north-star.md, nix/user.nix, installed skill files, the supplied code-review report, current standing order 71 and read-only forge checks.</p></details>
 <footer>Catppuccin Mocha with JetBrains Mono. Tailnet pack; no external assets or analytics.</footer>
 </main><script>
 const rows=[...document.querySelectorAll('tbody tr')];

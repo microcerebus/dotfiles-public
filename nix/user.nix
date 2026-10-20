@@ -437,7 +437,8 @@ in
   # upstream ships them. poteto-mode (added 2026-10-16, same pin) is the one
   # model-invocable entry: its body routes by task type to one playbook in
   # references/, and the playbooks run the slash-only skills by reading their
-  # SKILL.md. 13 playbooks kept or merged from upstream's 24; Cursor's PR
+  # SKILL.md. 13 playbooks kept or merged from upstream's 24, plus three
+  # local routes for catch-up, goal restatement and grilling; Cursor's PR
   # machinery (babysit, shipping, autopilot-*, orchestrate, opening-a-pr,
   # bugbot-triage, watch-pr and orch scripts) and the playbooks that are
   # skills here (session-pickup, pause-safely) were dropped. check-plan.py
@@ -477,6 +478,7 @@ in
   home.file.".agents/skills/correct".source = link "files/.claude/skills/correct";
   home.file.".agents/skills/create-verification-skill".source = link "files/.claude/skills/create-verification-skill";
   home.file.".agents/skills/figure-it-out".source = link "files/.claude/skills/figure-it-out";
+  home.file.".agents/skills/grilling".source = link "files/.claude/skills/grilling";
   home.file.".agents/skills/how".source = link "files/.claude/skills/how";
   home.file.".agents/skills/in-your-own-words".source = link "files/.claude/skills/in-your-own-words";
   home.file.".agents/skills/interrogate".source = link "files/.claude/skills/interrogate";
