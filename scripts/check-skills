@@ -36,9 +36,9 @@ NO_LICENSE = {
     "codex-computer-use": "own authorship",
     "codex-review": "own authorship",
     "grilling": "mattpocock/skills ships no per-skill LICENSE",
-    "lavish": "vendored SKILL.md from the pnpm package",
     "no-mistakes": "vendored from the pinned no-mistakes tag",
     "verify-agent-board": "own authorship",
+    "visual-reply": "own authorship",
 }
 MD_LINK = re.compile(r"\]\(([^)\s]+)\)")
 TICKED = re.compile(r"`([^`\s]+)`")

@@ -1,6 +1,6 @@
 ---
 name: agent-device
-description: "Drive native macOS apps and iOS Simulators through the pinned agent-device CLI (callstack/agent-device): open an app, read its accessibility tree as @refs, press, fill, type, scroll, take window screenshots, and verify the result. Use whenever a task needs a desktop app, a menu bar extra, or a simulator: testing a native flow, inspecting a running app, capturing evidence, or checking UI state beyond the browser. For web pages use chrome-devtools-axi instead."
+description: "Drive native macOS apps and iOS Simulators through the pinned agent-device CLI (callstack/agent-device): open an app, read its accessibility tree as @refs, press, fill, type, scroll, take window screenshots, and verify the result. Use whenever a task needs a desktop app, a menu bar extra, or a simulator: testing a native flow, inspecting a running app, capturing evidence, or checking UI state beyond the browser. For screen-free web work use written Playwright scripts in background agent Chrome tabs; use codex-computer-use for interactive checks. chrome-devtools-axi is only a confirmed Codex quota fallback."
 ---
 
 # agent-device
@@ -60,7 +60,8 @@ If `device_list` says agent device access is off, report that as a step for the 
 ## Boundaries
 
 - Never open or drive Brave.
-  Web pages go through chrome-devtools-axi in Google Chrome.
+  Screen-free web work goes through written Playwright scripts in background agent Chrome tabs; interactive checks go through codex-computer-use.
+  The chrome-devtools-axi fallback requires `codex-browser-fallback status` to be active.
 - Personal apps (WhatsApp, Telegram, Dashlane, Mail, Messages, anything holding money or credentials) only when the brief names the app and the action.
   Never read message contents into chat or type secrets.
 - Never change System Settings privacy panes or approve permission prompts on the owner's behalf.

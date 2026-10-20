@@ -19,12 +19,13 @@ Reviews of abstract designs invent theoretical risks and edge cases that never h
    For a new screen, have `arena/SKILL.md` build the variants in parallel across model families.
 4. Drive each variant with the repo's verification skill (`verify-<app>` or `control-<app>`).
    When there is none, a web prototype runs in the agent Chrome from `~/.claude/CLAUDE.md`, never Brave or a plain headless Chrome.
-   Codex drives it through `codex-computer-use`; while Codex is out of quota, drive it yourself with chrome-devtools-axi.
+   Use a written Playwright script in a background tab for screen-free work; use `codex-computer-use` for interactive checks.
+   While Codex is out of quota and `codex-browser-fallback status` is active, chrome-devtools-axi is the fallback.
    Native apps and simulators go through agent-device the same way.
    Switch between the variants with the prototype's own switcher, screenshot every variant in the same state, and measure what decides it: timing, layout, output, token count.
    The observation is the test.
 5. Present the variants, the evidence, the tradeoffs and your pick, then let the owner choose.
-   For a visual comparison, publish one page with the screenshots side by side (T3 `html_render`, or `lavish-axi` with its Tailscale URL).
+   For a visual comparison, publish one page with the screenshots side by side with T3 `html_render` (`visual-reply` skill).
 6. Hand the chosen variant to `references/feature.md`, or to `references/architect.md` for its shape.
    Never merge the prototype into production code.
 

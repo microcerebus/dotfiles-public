@@ -14,7 +14,7 @@ So each product repo gets a verification skill and a Feature Map before it gets 
 
 | Role | Team analogy | Lives in | Owns | Never does | Model |
 | --- | --- | --- | --- | --- | --- |
-| the owner | Product owner | Phone, T3, Lavish | Goals, irreversible calls, taste | Babysitting runs | - |
+| the owner | Product owner | Phone, T3 | Goals, irreversible calls, taste | Babysitting runs | - |
 | Orchestrator | Engineering manager | One pinned T3 thread, fresh each day | `board.md`, routing between lanes, the morning brief | Lane work, code | Opus 5.5 High for routine coordination, xhigh for open-ended work |
 | Heartbeat | On-call | A fresh scheduled thread every hour | Usage, context and stall checks, `log.md` | Long work, messages without a reason | Opus 5.5 xhigh (low effort is proposed, pending the owner's OK) |
 | Lane coordinator | Tech lead | One T3 thread per lane, rotated at 200k tokens | Briefs, the lane's units, ledger and decisions | Writing code | Opus 5.5 High for routine coordination, xhigh for open-ended judgment |

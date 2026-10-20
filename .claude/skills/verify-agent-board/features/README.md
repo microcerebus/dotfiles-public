@@ -14,8 +14,10 @@ Read this index before driving the board, then use the matching feature file as 
 ## Driving conventions
 
 - Run the feature's Playwright written flow when it has one (`scripts/flows/`, see the skill's Drive section).
-- Otherwise Codex drives the agent Chrome with the feature's recipe below; `chrome-devtools-axi` by hand is the fallback only, and its evidence names the fallback and why.
-- The rest of this list is for the agent Chrome recipes.
+- Otherwise Codex drives the agent Chrome through built-in computer use, using the feature's actions and expected results.
+  Do not give Codex the axi commands as its driver.
+- `chrome-devtools-axi` requires a confirmed Codex usage limit and active `codex-browser-fallback status`; its evidence names the fallback and why.
+- The rest of this list is for that active quota fallback only.
 - Open each page with `chrome-devtools-axi open <url>`; it opens a background tab.
 - Size each tab with `chrome-devtools-axi emulate --viewport`, never `resize`.
 - Read values with `chrome-devtools-axi eval` over the selectors each recipe names, not from screenshot pixels.

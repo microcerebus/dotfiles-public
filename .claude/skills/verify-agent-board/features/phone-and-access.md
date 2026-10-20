@@ -19,6 +19,9 @@ On a narrow screen the clock hides, long titles stop at two lines, and the map i
 
 ## Driving it with chrome-devtools-axi
 
+These commands are quota fallback only and require active `codex-browser-fallback status`.
+Use a written Playwright flow first; otherwise Codex follows the actions and expected results through built-in computer use, without running these axi commands.
+
 Preconditions:
 
 - A fixture run, and Tailscale up for the tailnet steps: `$BOARD_PHONE_URL` is not empty.

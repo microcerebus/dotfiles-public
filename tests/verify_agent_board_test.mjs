@@ -361,11 +361,18 @@ test('the skill drives with Playwright written flows first and names chrome-devt
   const drivers = [...drive.matchAll(/^\d+\. \*\*(.+?)\*\*/gm)].map((m) => m[1]);
   assert.match(drivers[0] ?? '', /^Playwright/, `first driver is ${drivers[0]}`);
   assert.deepEqual(drivers.filter((d) => /chrome-devtools-axi/.test(d)), ['chrome-devtools-axi, fallback only']);
+  assert.doesNotMatch(drive, /or when you are Codex/);
+  assert.match(drive, /Codex is out of quota, and `codex-browser-fallback status` exits 0/);
   for (const flow of [...drive.matchAll(/`flows\/([\w-]+\.mjs)/g)].map((m) => m[1])) {
     assert.ok(fs.existsSync(path.join(REPO, SKILL, 'flows', flow)), `Drive names a missing flow ${flow}`);
   }
   const readme = fs.readFileSync(path.join(REPO, '.claude/skills/verify-agent-board/features/README.md'), 'utf8');
   assert.match(readme, /Run the feature's Playwright written flow/);
+  assert.match(readme, /Do not give Codex the axi commands as its driver/);
+  for (const feature of ['threads', 'auto-update', 'project-map', 'stale-rows', 'phone-and-access']) {
+    const recipe = fs.readFileSync(path.join(REPO, '.claude/skills/verify-agent-board/features', `${feature}.md`), 'utf8');
+    assert.match(recipe, /These commands are quota fallback only and require active `codex-browser-fallback status`/);
+  }
 });
 
 test('the written flows use the playwright-core version the daily sync pins', () => {

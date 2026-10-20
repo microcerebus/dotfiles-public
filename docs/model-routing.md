@@ -85,6 +85,35 @@ Keep the same quality standards.
   This table authorizes agent routing; it is not an app-level error handler.
   If a provider limit prevents the agent from running at all, T3 or the owner must switch the thread before the agent can continue.
 
+### Codex quota fallback for browser work
+
+When Codex reports a usage limit, commit work in progress and continue on Claude Opus 5.5 at the role's effort.
+For browser work, `codex-browser-fallback set <future Unix seconds>` records the reset time reported by Codex.
+Do not enable it merely because a browser tool failed or because axi is more convenient.
+If the limit has no reset time, leave the fallback disabled and report the missing reset time.
+`codex-browser-fallback status` exits 0 only while the fallback is active.
+Run `codex-browser-fallback clear` as soon as Codex is available again.
+
+The single state file is `~/.local/state/codex-browser-fallback/until`, containing two Unix timestamps in seconds: when it was set, then the reset time.
+The helper writes it atomically with mode 0600.
+Missing, unreadable, malformed or expired state disables the fallback, and so does the older one-number format.
+A reset time more than 7 days ahead is refused by `set`, because Codex limits reset within a week and a later time can only be a typo or a way around the gate.
+The state reads as inactive when its set time is in the future or its reset time is more than 7 days after its set time, so a far-off reset time never turns active as the clock approaches it.
+The wrapper and session-start hook read this file on each invocation; do not maintain a second reset time in another script.
+
+`scripts/chrome-devtools-axi` refuses every call from Claude or Codex unless that state is active, before probing or starting Chrome.
+It detects `CLAUDECODE=1`, `CLAUDE_CODE_SESSION_ID`, `CODEX_THREAD_ID`, `CODEX_SESSION_ID` or `CODEX_CI=1`.
+The live Claude Agent SDK shell confirmed `CLAUDECODE=1`; the live Codex shell confirmed its thread, session and CI signals without printing identifiers.
+During a fallback the wrapper prints its expiry and retains its Chrome identity, extension, sync and window guards.
+Outside the fallback, use written Playwright scripts attached to the agent Chrome in background tabs for screen-free work, including reading pages, screenshots and WhatsApp Web.
+Run these through `scripts/agent-chrome-playwright`.
+Interactive checks go through `codex-computer-use`; Codex itself uses built-in computer use, not axi.
+Do not unset the harness signals or call the pnpm binary directly to bypass the wrapper.
+Non-agent scripted maintenance callers remain supported; repeatable browser verification stays in written Playwright flows.
+
+Run `node --test tests/chrome_devtools_axi_test.cjs tests/codex_browser_fallback_test.cjs tests/axi_session_start_test.cjs`.
+These checks stub the upstream executable and never drive a browser.
+
 ### Fallback watcher trial
 
 `scripts/claude-fallback --dry-run` runs one manual decision tick against T3's local database, opened read-only.

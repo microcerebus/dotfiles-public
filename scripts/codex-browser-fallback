@@ -1,0 +1,75 @@
+#!/usr/bin/env node
+// The wrapper and SessionStart share this expiring Codex quota fallback.
+const fs = require("node:fs");
+const { homedir } = require("node:os");
+const { join, dirname } = require("node:path");
+
+// Codex's usage limits reset within a week, so a later time is a typo or a way around the gate. set refuses one, and
+// the state file records when it was set next to the reset time, so a far-off reset time reads as inactive for its whole
+// life, not only until it comes within a week of the clock.
+const MAX_AHEAD_MS = 7 * 24 * 60 * 60 * 1000;
+const STATE = /^([1-9]\d{0,11}) ([1-9]\d{0,11})$/;
+
+function statePath(env = process.env) {
+  return join(env.HOME || homedir(), ".local/state/codex-browser-fallback/until");
+}
+
+function fallbackUntil(env = process.env, now = Date.now()) {
+  try {
+    // "<set seconds> <until seconds>": set no later than now, until after now and at most 7 days after set.
+    const match = STATE.exec(fs.readFileSync(statePath(env), "utf8").trim());
+    if (!match) return null;
+    const [set, until] = [Number(match[1]), Number(match[2])];
+    return set * 1000 <= now && until * 1000 > now && (until - set) * 1000 <= MAX_AHEAD_MS ? until : null;
+  } catch {
+    // Missing, unreadable and malformed state, including the old one-number format, all fail closed.
+    return null;
+  }
+}
+
+function isAgent(env) {
+  return env.CLAUDECODE === "1" || Boolean(env.CLAUDE_CODE_SESSION_ID)
+    || Boolean(env.CODEX_THREAD_ID) || Boolean(env.CODEX_SESSION_ID)
+    || env.CODEX_CI === "1";
+}
+
+function main(args, env = process.env, io = process) {
+  const [command, timestamp] = args;
+  if (command === "status" && args.length === 1) {
+    const until = fallbackUntil(env);
+    io.stdout.write(until ? `Codex browser fallback active until ${new Date(until * 1000).toISOString()}.\n`
+      : "Codex browser fallback inactive; use codex-computer-use.\n");
+    return until ? 0 : 1;
+  }
+  const file = statePath(env);
+  if (command === "clear" && args.length === 1) {
+    fs.rmSync(file, { force: true });
+    io.stdout.write("Codex browser fallback cleared.\n");
+    return 0;
+  }
+  const now = Date.now();
+  if (command !== "set" || args.length !== 2 || !/^[1-9]\d{0,11}$/.test(timestamp)
+    || Number(timestamp) * 1000 <= now || Number(timestamp) * 1000 > now + MAX_AHEAD_MS) {
+    io.stderr.write("Usage: codex-browser-fallback set <future Unix seconds, at most 7 days ahead> | clear | status\n"
+      + "Set only after a confirmed Codex usage limit, using its reported reset time. See ~/dotfiles/docs/model-routing.md.\n");
+    return 2;
+  }
+  fs.mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
+  const temporary = `${file}.${process.pid}.tmp`;
+  try {
+    fs.writeFileSync(temporary, `${Math.floor(now / 1000)} ${timestamp}\n`, { mode: 0o600, flag: "wx" });
+    fs.renameSync(temporary, file);
+  } finally {
+    fs.rmSync(temporary, { force: true });
+  }
+  return main(["status"], env, io);
+}
+
+module.exports = { statePath, fallbackUntil, isAgent, main };
+if (require.main === module) {
+  try { process.exitCode = main(process.argv.slice(2)); }
+  catch (error) {
+    process.stderr.write(`codex-browser-fallback: ${error.message}\n`);
+    process.exitCode = 1;
+  }
+}

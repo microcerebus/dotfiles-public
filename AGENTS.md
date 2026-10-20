@@ -131,16 +131,13 @@ tool-adoption backlog; check it before adding workflow tooling).
   `brew upgrade` after the switch. Check HM actually applied with
   `readlink ~/.zshrc` (store path should change after a rebuild that touches
   `nix/user.nix`) (2026-10-07).
-- The axi tools (gh-axi, chrome-devtools-axi, lavish-axi, tasks-axi) are pnpm
-  globals in `$PNPM_HOME/bin` (~/Library/pnpm/bin), updated daily by the
-  `dotfiles-sync` agent (`pnpm update -g --latest`). Claude Code runs all
-  four at session start through one managed hook, `scripts/axi-session-start`,
-  which calls the bare command names, so updates do not break it, and cuts
-  each list to a count: Lavish's own hook printed 70 sessions into every
-  thread (2026-10-16). `merge-settings.sh` removes the tools' own SessionStart
-  hooks on each switch; `<tool> setup hooks` adds one back until then.
-  Bare `chrome-devtools-axi` and `lavish-axi` resolve to the wrappers in
-  `scripts/` (earlier on PATH), which run the pnpm globals (2026-10-10).
+- The axi tools are pnpm globals in `$PNPM_HOME/bin` (~/Library/pnpm/bin).
+  The managed `scripts/axi-session-start` hook summarizes gh-axi and tasks-axi, and routes screen-free browser work to written Playwright scripts in background agent Chrome tabs, with codex-computer-use reserved for interactive checks.
+  `scripts/agent-chrome-playwright` owns screen-free background tabs; `scripts/codex-computer-use` owns interactive runs, the screen warning and the idle-time check.
+  `scripts/axi-session-start` names chrome-devtools-axi only while the Codex quota fallback is active, without loading its upstream tool advertisement.
+  `merge-settings.sh` removes the tools' own SessionStart hooks on each switch.
+  Bare `chrome-devtools-axi` resolves to `scripts/chrome-devtools-axi`, which refuses Claude and Codex callers unless `codex-browser-fallback status` is active.
+  The single expiry file and helper are documented in `docs/model-routing.md`; do not bypass the wrapper by calling the pnpm executable or unsetting harness signals.
 - chrome-devtools-axi and agent-device are pinned pnpm globals: the daily
   update skips them and re-asserts the versions in `pins=`
   (scripts/dotfiles-autoupdate). pnpm 12's `update -g --latest` moves exact
@@ -149,9 +146,9 @@ tool-adoption backlog; check it before adding workflow tooling).
   axi's server (chrome-devtools-mcp) is pinned in nix/user.nix, and the two
   must match: axi 0.1.30 against server 1.10 (page-ID routing on by default)
   failed every page command with "pageId: Invalid input: expected number,
-  received undefined"; axi 0.1.39 fixed it. After bumping either, run
-  `chrome-devtools-axi open https://example.com` and `eval document.title`
-  against the agent Chrome (2026-10-10).
+  received undefined"; axi 0.1.39 fixed it.
+  After bumping either, run the wrapper and fallback tests named in `docs/model-routing.md`.
+  Live axi compatibility checks require an active confirmed Codex quota fallback; otherwise leave that check pending.
 - Signing in to Google inside a Chrome profile also signs the browser in,
   and Chrome then installs the account's synced extensions there. the owner's
   Gmail sign-in in the agent Chrome pulled in Dashlane, AdBlock, AI sidebars

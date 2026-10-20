@@ -1,0 +1,71 @@
+#!/usr/bin/env node
+// Run a written, screen-free flow in its own background agent Chrome tab.
+const { spawnSync } = require("node:child_process");
+const { randomUUID } = require("node:crypto");
+const { join, resolve } = require("node:path");
+const { setTimeout: sleep } = require("node:timers/promises");
+const { agentChromeFlagsError, AGENT_CHROME_URL } = require("./chrome-devtools-axi");
+
+function playwright() {
+  const listed = spawnSync("pnpm", ["ls", "-g", "--depth", "0", "--json"], { encoding: "utf8" });
+  if (listed.status !== 0) throw new Error("Cannot locate pinned playwright-core through pnpm.");
+  const directory = JSON.parse(listed.stdout).map((entry) => entry.dependencies?.["playwright-core"]?.path).find(Boolean);
+  if (!directory) throw new Error("playwright-core is missing; see scripts/dotfiles-autoupdate.");
+  return require(directory);
+}
+
+const defaults = {
+  ready: () => spawnSync(join(__dirname, "agent-chrome-ready"), [], { stdio: "inherit" }).status === 0,
+  identityError: () => agentChromeFlagsError(),
+  connect: () => playwright().chromium.connectOverCDP(AGENT_CHROME_URL),
+  sleep,
+};
+
+async function run(flow, deps = defaults) {
+  if (!deps.ready()) throw new Error("agent-chrome-ready failed; no browser flow started.");
+  const identityError = deps.identityError();
+  if (identityError) throw new Error(identityError);
+  const browser = await deps.connect();
+  let session;
+  let targetId;
+  try {
+    const context = browser.contexts()[0];
+    if (!context) throw new Error("The agent Chrome has no browser context.");
+    session = await browser.newBrowserCDPSession();
+    const marker = `about:blank#screen-free-${randomUUID()}`;
+    ({ targetId } = await session.send("Target.createTarget", { url: marker, background: true }));
+    let page;
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      page = context.pages().find((candidate) => candidate.url() === marker);
+      if (page) break;
+      await deps.sleep(50);
+    }
+    if (!page) throw new Error("Playwright did not attach to its background tab.");
+    return await flow(page);
+  } finally {
+    try {
+      if (targetId) await session.send("Target.closeTarget", { targetId });
+    } finally {
+      // connectOverCDP browsers disconnect here; they do not quit Chrome.
+      await browser.close();
+    }
+  }
+}
+
+module.exports = { run };
+if (require.main === module) {
+  const args = process.argv.slice(2);
+  if (args.length !== 1) {
+    process.stderr.write("Usage: agent-chrome-playwright <flow.cjs>\nThe file must export async function(page); never bring tabs to the front or close the browser.\n");
+    process.exitCode = 2;
+  } else {
+    Promise.resolve().then(() => {
+      const flow = require(resolve(args[0]));
+      if (typeof flow !== "function") throw new Error("The flow must export a function that receives its own page.");
+      return run(flow);
+    }).catch((error) => {
+      process.stderr.write(`agent-chrome-playwright: ${error.message}\n`);
+      process.exitCode = 1;
+    });
+  }
+}

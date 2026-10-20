@@ -4,16 +4,19 @@
 // Each tool's own hook printed its whole home view into every new thread.
 // On 16 Oct 2026 Lavish listed all 70 open sessions (20.7 KB, cut to a 2 KB
 // preview), tasks-axi its in-flight tasks, and every tool a `bin:` path into
-// pnpm's store. This runs the four tools in parallel, as Claude Code ran the
-// four hooks, and keeps what tells an agent to use them: each description and
+// pnpm's store. This runs the tools in parallel, as Claude Code ran their
+// hooks, and keeps what tells an agent to use them: each description and
 // one-line status fields. A list becomes its count, with the command that
 // prints it in full; help lists and `bin:` are dropped.
 // merge-settings.sh removes the tools' own SessionStart hooks on each switch;
 // `<tool> setup hooks` adds one back until the next switch.
 // Tests: tests/axi_session_start_test.cjs.
 const { execFile } = require("node:child_process");
+const { fallbackUntil } = require("./codex-browser-fallback");
 
-const TOOLS = ["gh-axi", "chrome-devtools-axi", "lavish-axi", "tasks-axi"];
+// lavish-axi left the list on 19 Oct 2026: T3 Code's built-ins replaced it
+// (the visual-reply skill), and its line sent every session to Lavish.
+const TOOLS = ["gh-axi", "tasks-axi"];
 const DROP = new Set(["bin", "help"]);
 
 function unquote(value) {
@@ -56,6 +59,9 @@ function runTool(tool, timeout, env) {
 async function main(env = process.env, out = process.stdout) {
   const timeout = Number(env.AXI_SESSION_START_TIMEOUT_MS) || 8000;
   const lines = await Promise.all(TOOLS.map((tool) => runTool(tool, timeout, env)));
+  lines.push("- Browser work: written Playwright scripts attached to the agent Chrome in background tabs for screen-free reading, screenshots and WhatsApp Web; codex-computer-use for interactive checks that take the screen.");
+  const until = fallbackUntil(env);
+  if (until) lines.push(`- chrome-devtools-axi: fallback only; Codex quota fallback active until ${new Date(until * 1000).toISOString()}.`);
   out.write(`axi tools (run one with no arguments for its full home view, lists included):\n${lines.join("\n")}\n`);
 }
 

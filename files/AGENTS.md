@@ -19,22 +19,21 @@ These are common instructions for my agents across all scenarios.
   If you see one, even if it is not caused by what you are working on right now, still get it fixed.
 - For anything browser-related - opening URLs, OAuth/login flows, browser automation, testing web pages - always use Google Chrome.
   Never launch or automate Brave; it is my personal browser and off limits to agents.
-  Agents drive the agent Chrome: Google Chrome Beta with its own signed-in profile on 127.0.0.1:9333, which `chrome-devtools-axi` uses by default (see its skill).
+  The agent Chrome is Google Chrome Beta with its own signed-in profile on 127.0.0.1:9333.
   It runs with no extensions and no Chrome sync; never add either to it.
   Never attach to the owner's own Chrome (autoConnect, or its port 9222) unless he asks in the thread, because it makes him click "Allow" for every session.
-  Lavish's upstream browser opener ignores BROWSER on macOS.
-  Use the Chrome-only `lavish-axi` wrapper in `~/dotfiles/scripts`, or pass `--no-open` and open the view explicitly in Chrome.
-  Never call the upstream Lavish executable without `--no-open` or `LAVISH_AXI_NO_OPEN=1`.
   Confirm browser identity from the actual Google Chrome application, not a generic Chromium label or debug port.
   This includes sessions running inside T3 Code: default to Chrome, not T3 Code's built-in preview browser (the t3-code `preview_*` tools), unless the owner asks for the in-app preview.
-- Browser driving (navigating, clicking through flows, filling forms, and similar mechanical browser work) is codex's job.
-  Agents other than codex shell out to it (e.g. via the codex-computer-use skill) and keep the judgment work themselves: what to write, which fields, and verifying the result.
-  This overrides skill descriptions that prefer chrome-devtools-axi for browser-only work.
+- Screen-free browser work, including reading pages, screenshots and WhatsApp Web, runs as a written Playwright script attached to the agent Chrome in background tabs through `scripts/agent-chrome-playwright`.
+  Never bring those tabs to the front, resize the shared window or close somebody else's tabs.
+  Interactive checks that need the screen go through the codex-computer-use skill; agents other than Codex delegate the driving and keep the judgment.
+  Every computer-use run must use `codex-computer-use --minutes N -- "prompt"`, which warns before taking the screen, offers a ten-minute deferral and notifies when done.
+  An unanswered warning may proceed only after two minutes of Mac idle time; do not bypass the launcher.
+  Codex uses built-in computer use for those checks, never chrome-devtools-axi outside the quota fallback.
   Exception: while Codex is out of quota, Claude agents drive Chrome themselves (see "Agent operations").
-- Always present Lavish pages with this machine's Tailscale MagicDNS hostname, including links and previews in T3 Code.
-  Use `~/dotfiles/scripts/lavish-axi <file> --no-open` to obtain the current URL, and use that exact URL when displaying or linking the page.
-  Never hand out `localhost`, `127.0.0.1`, or a local file path as the review link, and do not reuse stale localhost URLs from the session list.
-  Lavish detects Tailscale automatically; leave `LAVISH_AXI_HOST` unset so it can bind the tailnet address.
+- Review surfaces are T3 Code's built-ins, routed by the `visual-reply` skill: a page goes in the reply through `html_preview` then `html_render`, a decision through an `AskUserQuestion` card, feedback on a running UI through the preview panel's annotate tool, and anything else through a normal reply.
+  A page too big for `html_render`, or one the owner returns to for days, is a pack in `~/packs/<name>/`, linked at `https://<MagicDNS host>/packs/<name>/`.
+  Anything served over HTTP for review gets this machine's Tailscale MagicDNS hostname, never `localhost`, `127.0.0.1` or a local file path.
   If MagicDNS access is unavailable, report and fix it before claiming the page is ready for phone review.
 - TypeScript: never use `any` unless it is truly necessary or you are specifically instructed to.
 - Do not run dev-server commands (assume one is already running) and do not run build commands unless asked.
@@ -95,7 +94,9 @@ Each rule below is a correction the owner had to give more than once, or a failu
 - Coordinators coordinate: they write briefs, read results and decide.
   Code, restacks and conflicted merges go to workers in their own worktrees.
 - When Codex is out of quota, continue on Claude Opus 5.5 without asking, using the role-specific effort in `~/dotfiles/docs/model-routing.md`.
-  While Codex is out of quota, Claude agents also drive the agent Chrome themselves with chrome-devtools-axi, never Brave.
+  After a confirmed Codex usage limit, record its reset time with `codex-browser-fallback set <future Unix seconds>` as documented in `~/dotfiles/docs/model-routing.md`.
+  Only while that state is active may Claude agents drive the agent Chrome with chrome-devtools-axi.
+  Run `codex-browser-fallback clear` once Codex is available again.
   Native macOS apps and iOS Simulators go through the agent-device skill the same way; codex-computer-use is the route again once Codex is back.
   Before any provider or model switch, or when a usage-limit warning appears, commit work in progress.
   Never delete a worktree that has uncommitted edits.

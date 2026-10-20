@@ -30,7 +30,7 @@ R="python3 -I ~/.claude/skills/recall/scripts/recall.py"
 $R sessions --since 7d --cwd job-tracker --grep "resume upload"   # newest first
 $R messages <path> --max-chars 800                                  # typed and relayed messages only
 $R grep "convex variable" --since 14d                               # one hit per message, with context
-$R history --since 30d --grep lavish
+$R history --since 30d --grep packs
 $R self                                                             # this session's transcript path
 ```
 

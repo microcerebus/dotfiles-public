@@ -80,7 +80,7 @@ Transcript: <path from `recall.py self`>
 2. ...
 
 ## Things to re-establish
-- PR watches, linked PRs, scheduled tasks, background commands, open Lavish pages
+- PR watches, linked PRs, scheduled tasks, background commands, packs the owner is reviewing (`~/packs`, with their URLs)
 
 ## Gotchas
 - <traps, flaky checks, things that looked true and were not>

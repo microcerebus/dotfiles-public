@@ -102,7 +102,7 @@
       "discord"
       "google-chrome"
       # Agent Chrome (launchd agent in nix/user.nix). A separate app, so macOS
-      # never routes Chrome links (open-chrome, lavish-axi) into the agent's
+      # never routes Chrome links (open-chrome) into the agent's
       # window. Its zap also trashes Google's shared updater: read it before
       # ever dropping this cask (AGENTS.md).
       "google-chrome@beta"

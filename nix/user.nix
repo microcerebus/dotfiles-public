@@ -99,14 +99,15 @@ in
 
   # pnpm's global-install home (`pnpm add -g`). npm's own prefix is the
   # read-only Nix store, so npm-distributed CLIs that must be real commands
-  # (firstmate's gh-axi / chrome-devtools-axi / lavish-axi / tasks-axi) are
+  # (firstmate's gh-axi / chrome-devtools-axi / tasks-axi) are
   # installed here instead - mutable like ~/.local/bin, PATH wired below.
   home.sessionVariables.PNPM_HOME = "${config.home.homeDirectory}/Library/pnpm";
 
-  # chrome-devtools-axi attaches to the agent Chrome (launchd agent below)
+  # During the confirmed Codex quota fallback, chrome-devtools-axi attaches
+  # to the agent Chrome (launchd agent below)
   # instead of launching a throwaway browser or attaching to the owner's own
   # Chrome, whose chrome://inspect toggle asks "Allow" for every session.
-  # scripts/chrome-devtools-axi enforces the same default and refuses his own
+  # scripts/chrome-devtools-axi gates agent calls on the quota state and refuses his own
   # Chrome without an opt-in; these cover anything that bypasses it. The
   # server is the pinned build above, never `npx ...@latest`. T3 Code hands
   # agents only PATH from the login shell, but every agent Bash command runs
@@ -380,10 +381,13 @@ in
   home.file.".codex/AGENTS.md".source = link "files/AGENTS.md";
 
   # Agent skills (vendored from upstream repos; see docs/workflow-north-star.md
-  # for provenance + update procedure). lavish-axi and chrome-devtools-axi are
-  # pnpm globals reached through the wrappers in scripts/ (Chrome only, agent
-  # Chrome by default); no-mistakes uses the flake-built binary above.
-  home.file.".claude/skills/lavish".source = link "files/.claude/skills/lavish";
+  # for provenance + update procedure). chrome-devtools-axi is a pnpm global
+  # reached through the wrapper in scripts/ (Chrome only, confirmed Codex
+  # quota fallback); no-mistakes uses the flake-built binary above.
+  # visual-reply (own authorship) routes review pages, decisions and UI
+  # feedback to T3 Code's built-ins and big or long-lived pages to ~/packs; it
+  # replaced the vendored lavish skill on 2026-10-19.
+  home.file.".claude/skills/visual-reply".source = link "files/.claude/skills/visual-reply";
   home.file.".claude/skills/no-mistakes".source = link "files/.claude/skills/no-mistakes";
   home.file.".claude/skills/chrome-devtools-axi".source = link "files/.claude/skills/chrome-devtools-axi";
   # agent-device (own authorship): native macOS apps and iOS Simulators via the
@@ -507,57 +511,23 @@ in
       ${dotfiles}/files/.claude/settings.managed.json
   '';
 
-  # Lavish over Tailscale: Lavish binds 127.0.0.1:4387 and rejects non-localhost
-  # Host headers, so a small node proxy on 127.0.0.1:4389 rewrites Host and
-  # strips X-Forwarded-*; `tailscale serve --bg http://127.0.0.1:4389` (one-time,
-  # persisted by tailscaled) publishes it as https://myhost.<tailnet>.ts.net.
-  # Phone URL for a session = https://myhost.tail608a89.ts.net/session/<id>.
-  home.file."bin/lavish-tailscale-proxy.mjs".source = link "files/bin/lavish-tailscale-proxy.mjs";
-  launchd.agents.lavish-tailscale-proxy = {
+  # Packs: long-lived review pages too big or too long-lived for T3's
+  # html_render, served from ~/packs at https://myhost.tail608a89.ts.net/packs/
+  # (a pack in ~/packs/<name>/ opens at /packs/<name>/). Loopback only on 4391;
+  # the server itself runs `tailscale serve --set-path /packs` at start, because
+  # the sandboxed Tailscale app refuses to serve a folder directly. Every pack
+  # page gets a Notes button: the owner's notes reach agents through
+  # `packs-notes`, their replies show on the page, and the page reloads itself
+  # when the pack is rebuilt. Test: tests/packs_server_test.py.
+  launchd.agents.packs-server = {
     enable = true;
     config = {
-      Label = "com.myuser.lavish-tailscale-proxy";
-      ProgramArguments = [ "${pkgs.nodejs_22}/bin/node" "${config.home.homeDirectory}/dotfiles/files/bin/lavish-tailscale-proxy.mjs" ];
+      Label = "com.myuser.packs-server";
+      ProgramArguments = [ "${pkgs.python3}/bin/python3" "-I" "${config.home.homeDirectory}/dotfiles/files/bin/packs-server.py" ];
       RunAtLoad = true;
       KeepAlive = true;
-      StandardOutPath = "${config.home.homeDirectory}/Library/Logs/lavish-tailscale-proxy.log";
-      StandardErrorPath = "${config.home.homeDirectory}/Library/Logs/lavish-tailscale-proxy.log";
-    };
-  };
-
-  # Restarts a Lavish server whose package a pnpm update deleted, which serves
-  # every page blank (16 Oct 2026; scripts/lavish-axi says why). Runs on every
-  # change to pnpm's global packages, whoever made it: the daily sync, an
-  # agent's `pnpm add -g`, a reinstall. Every lavish-axi command checks too,
-  # and `dotfiles-autoupdate status` alarms on a server whose assets fail.
-  # It also starts a server when none runs, at login and every minute: a page
-  # link on the owner's phone cannot start one, and the server that stopped
-  # itself at 11:57 on 16 Oct left every link dead until an agent ran a
-  # command. A check that finds the server up costs a pgrep and a ps.
-  # Silent unless it restarts or starts something. AbandonProcessGroup: the
-  # server it starts outlives the job.
-  launchd.agents.lavish-restart = {
-    enable = true;
-    config = {
-      Label = "com.myuser.lavish-restart";
-      ProgramArguments = [ "${pkgs.nodejs_22}/bin/node" "${config.home.homeDirectory}/dotfiles/scripts/lavish-axi" "--restart-stale-server" ];
-      WatchPaths = [
-        "${config.home.homeDirectory}/Library/pnpm/global/v11"
-        "${config.home.homeDirectory}/Library/pnpm/bin"
-      ];
-      RunAtLoad = true;
-      StartInterval = 60;
-      AbandonProcessGroup = true;
-      EnvironmentVariables = {
-        PNPM_HOME = "${config.home.homeDirectory}/Library/pnpm";
-        PATH = lib.concatStringsSep ":" [
-          "/etc/profiles/per-user/${username}/bin"
-          "/run/current-system/sw/bin"
-          "/usr/bin" "/bin" "/usr/sbin" "/sbin"
-        ];
-      };
-      StandardOutPath = "${config.home.homeDirectory}/Library/Logs/lavish-restart.log";
-      StandardErrorPath = "${config.home.homeDirectory}/Library/Logs/lavish-restart.log";
+      StandardOutPath = "${config.home.homeDirectory}/Library/Logs/packs-server.log";
+      StandardErrorPath = "${config.home.homeDirectory}/Library/Logs/packs-server.log";
     };
   };
 
@@ -612,8 +582,8 @@ in
   };
 
   # Agent Chrome: Google Chrome Beta (never Brave) with its own profile, which
-  # agents drive through chrome-devtools-axi on 127.0.0.1:9333 without an
-  # "Allow" prompt. Chrome 136+ refuses a debugging port on the default
+  # Codex drives through built-in computer use. The quota fallback uses
+  # chrome-devtools-axi on 127.0.0.1:9333. Chrome 136+ refuses a debug port on the default
   # profile, so the separate --user-data-dir is what makes this work. Beta is a
   # separate app: a second copy of Google Chrome would share its app identity,
   # and macOS would route Chrome links into whichever copy started first

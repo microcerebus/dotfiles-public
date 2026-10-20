@@ -17,7 +17,7 @@
 # hook wipes the job's HOME, TMPDIR and work dir, the way a hosted runner
 # starts each job on a fresh VM.
 # Not covered: other users' listeners on this Mac's loopback and LAN
-# addresses (the agent Chrome's DevTools, T3 Code, Lavish). macOS delivers
+# addresses (the agent Chrome's DevTools, T3 Code, the packs server). macOS delivers
 # that traffic without pf ever seeing it, so the runner can connect to them,
 # and its check only warns. The owner accepted this on 2026-10-11: job-tracker
 # is private, and the dependencies and PR code its jobs run already run as the

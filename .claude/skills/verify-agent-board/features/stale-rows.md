@@ -21,6 +21,9 @@ The row keeps its place in its lane; hovering the line says how the board knows.
 
 ## Driving it with chrome-devtools-axi
 
+These commands are quota fallback only and require active `codex-browser-fallback status`.
+Use a written Playwright flow first; otherwise Codex follows the actions and expected results through built-in computer use, without running these axi commands.
+
 Preconditions:
 
 - A fixture run: doctor reports `pages: / and /map render the fixture data`.

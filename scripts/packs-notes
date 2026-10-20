@@ -1,0 +1,8 @@
+#!/bin/sh
+# packs-notes - read the notes the owner sends from a pack page (~/packs, served over
+# the tailnet at /packs/). `packs-notes` lists packs with notes; `packs-notes
+# <pack>` prints the sent ones and marks them read; `--wait` blocks until he
+# sends; `--all` prints everything and changes nothing; `packs-notes reply
+# <pack> <id> <text>` shows an answer under the note on the page. The notes
+# store and its format live in files/bin/packs-server.py.
+exec python3 -I "$(dirname "$0")/../files/bin/packs-server.py" notes "$@"

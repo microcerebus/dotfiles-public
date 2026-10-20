@@ -60,7 +60,7 @@ split = path.lower().endswith(('.html', '.htm')) and splits_table_words(text)
 if split:
     problems.append(f'{path} sets {split}. Tables size each column from its narrowest content, so this '
                     'splits ordinary words ("Surfa ce"). Use overflow-wrap: break-word instead, and put a '
-                    'wide table in an overflow-x: auto wrapper (lavish skill).')
+                    'wide table in an overflow-x: auto wrapper (visual-reply skill).')
 if problems:
     print('\n'.join(problems), file=sys.stderr)
     sys.exit(2)

@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-// Agents drive the agent Chrome: Google Chrome Beta with its own signed-in
+// Quota fallback only. Codex normally drives Chrome through computer use.
+// Fallback agents drive Google Chrome Beta with its own signed-in
 // profile on 127.0.0.1:9333 (launchd agent in nix/user.nix). Attaching to
 // the owner's own Chrome (autoConnect, or its chrome://inspect port 9222) makes him
 // click "Allow" for every session, so it needs a named opt-in.
@@ -21,6 +22,7 @@ const { randomBytes } = require("node:crypto");
 const { existsSync } = require("node:fs");
 const { homedir } = require("node:os");
 const { join } = require("node:path");
+const { fallbackUntil, isAgent } = require("./codex-browser-fallback");
 
 const AXI_BINARY = join(homedir(), "Library/pnpm/bin/chrome-devtools-axi");
 const FOREGROUND = "--foreground";
@@ -86,7 +88,7 @@ function ensureAgentChrome(env, deps, io) {
   return null;
 }
 
-function agentChromeFlagsError(deps) {
+function agentChromeFlagsError(deps = defaultDeps) {
   const lines = deps.browserCommandLines();
   const unsafe = lines.length === 0
     || lines.some((line) => AGENT_CHROME_FLAGS.some((flag) => !line.split(" ").includes(flag)));
@@ -144,6 +146,16 @@ const defaultDeps = {
 };
 
 function run(args, env, deps = defaultDeps, io = process) {
+  if (isAgent(env)) {
+    const until = (deps.fallbackUntil ?? fallbackUntil)(env);
+    if (!until) {
+      io.stderr.write("chrome-devtools-axi: Use written Playwright scripts attached to the agent Chrome in background tabs for screen-free work (reading pages, screenshots, WhatsApp Web).\n"
+        + "For interactive checks, use codex-computer-use; it warns before Codex takes the screen.\n"
+        + "chrome-devtools-axi is only a fallback while Codex is out of quota. See ~/dotfiles/docs/model-routing.md and `codex-browser-fallback status`.\n");
+      return 2;
+    }
+    io.stderr.write(`chrome-devtools-axi: Codex quota fallback active until ${new Date(until * 1000).toISOString()}.\n`);
+  }
   const resolved = resolveEnv(env);
   if (resolved.error) {
     io.stderr.write(resolved.error);
@@ -173,5 +185,5 @@ function run(args, env, deps = defaultDeps, io = process) {
   return result.status ?? 1;
 }
 
-module.exports = { run, resolveEnv, AGENT_CHROME_URL, AGENT_CHROME_LABEL, AGENT_CHROME_FLAGS };
+module.exports = { run, resolveEnv, agentChromeFlagsError, AGENT_CHROME_URL, AGENT_CHROME_LABEL, AGENT_CHROME_FLAGS };
 if (require.main === module) process.exitCode = run(process.argv.slice(2), process.env);

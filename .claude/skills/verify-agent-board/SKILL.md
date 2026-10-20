@@ -73,9 +73,11 @@ Drivers, in this order:
    - `flows/look.mjs <url> <dir> <name> [<width>]`: loads one page of your run at 1440x900, or at the width given (390 is a phone, 844 tall at 3x with touch), saves a full-page screenshot and its text with the horizontal overflow measured, and fails unless the page answered 2xx.
      Like every flow, it refuses the live board on port 4790.
    A journey you would run twice belongs in a flow.
-2. **Codex computer use** for interactive checks no flow covers yet, through the `codex-computer-use` skill (its binary and `-s danger-full-access`), in the agent Chrome.
+   For screen-free checks against the signed-in agent Chrome, run a written flow through `agent-chrome-playwright` in its own background tab; see the codex-computer-use skill.
+2. **Codex computer use** for interactive checks no flow covers yet, through the `codex-computer-use` skill and its screen-warning launcher, in the agent Chrome.
    You keep the judgment: pick the feature file, hand Codex its Driving bullets with literal values, then check what it saved.
-3. **chrome-devtools-axi, fallback only**: when no flow fits and Codex is out of quota, or when you are Codex.
+3. **chrome-devtools-axi, fallback only**: when no flow fits, Codex is out of quota, and `codex-browser-fallback status` exits 0.
+   Codex itself uses built-in computer use; being Codex never permits axi.
    The evidence must name the fallback and why, as a `driver:` line in the run's `.txt`, such as `driver: chrome-devtools-axi (Codex out of quota, no flow for stale-rows)`.
 
 - Browser: Google Chrome only, never Brave and never the owner's own Chrome.
@@ -95,13 +97,14 @@ Drivers, in this order:
 - Second view: `curl -s "$BOARD_URL/map" -o "$BOARD_EVIDENCE/<name>.html"` saves the same HTML the browser got.
 
 A Codex prompt, filled in from a feature file.
-Run `agent-chrome-ready` before Codex, as its own command, and stop if it exits 1.
-It is the `codex-computer-use` skill's start-up check: it kickstarts the agent Chrome and fails if it does not come up.
+Run every interactive check through the `codex-computer-use` launcher.
+It runs `agent-chrome-ready`, shows the screen warning and waits for "Start now" or a timed-out dialog with at least two minutes of idle time.
+It never starts Codex after failed readiness or an unanswered warning while the Mac is busy.
 The prompt opens with that skill's three browser sentences, as written:
 
 ```sh
 eval "$(.claude/skills/verify-agent-board/scripts/board.mjs env)"
-"$CODEX" exec -s danger-full-access "Drive the agent Chrome (Google Chrome Beta, its own profile on 127.0.0.1:9333) through computer use: \
+codex-computer-use --minutes 5 -- "Drive the agent Chrome (Google Chrome Beta, its own profile on 127.0.0.1:9333) through computer use: \
 click, type and screenshot in its window. Do not use chrome-devtools-axi, Playwright or any other browser tool, and never Brave or \
 the owner's own Chrome. First bring Google Chrome Beta to the front with \
 \`osascript -e 'tell application \"System Events\" to set frontmost of process \"Google Chrome Beta\" to true'\`, which cannot start it: \
@@ -135,7 +138,8 @@ Finish with PASS or FAIL and one line per step saying what you saw."
   If the keeper died, `stop` confirms the board's command and listener before sending TERM, waits for exit, and confirms ownership again before escalating to KILL.
   It removes scratch only after the board exits; a stop failure retains the PID and scratch so the run can be inspected and stopped safely.
   `evidence/`, `board.log` and `run.json` stay.
-- Close your tabs: `chrome-devtools-axi pages`, then `chrome-devtools-axi closepage <id>` for each tab on your port.
+- Close the tabs you opened through the driver that opened them.
+  Only during the active quota fallback, use `chrome-devtools-axi pages` and `chrome-devtools-axi closepage <id>` for each tab on your port.
 - Never `pkill node`, never kill by port or name, never `launchctl` anything.
 - Run `stop` after every failed attempt too, so broken runs do not hold ports.
 - `scripts/board.mjs runs` lists this checkout's runs and their evidence.

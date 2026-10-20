@@ -19,6 +19,9 @@ With an alarm, the card goes first under a peach `Auto-update` heading, its alar
 
 ## Driving it with chrome-devtools-axi
 
+These commands are quota fallback only and require active `codex-browser-fallback status`.
+Use a written Playwright flow first; otherwise Codex follows the actions and expected results through built-in computer use, without running these axi commands.
+
 Preconditions:
 
 - A fixture run: doctor reports `pages: / and /map render the fixture data`.
@@ -36,6 +39,6 @@ Preconditions:
 ## Gotchas
 
 - The board runs the updater's reader on every page load, with a five-second timeout, so a fixture edit shows on the next reload with no relaunch.
-- The fixture points the reader's Lavish check at a port where nothing listens and its Sill check at an app that does not exist, so neither adds an alarm; on live data both can.
+- The fixture points the reader's Sill check at an app that does not exist, so it adds no alarm; on live data it can.
 - A reader that fails to run becomes one alarm, `could not read the auto-update status: ...`; the unit tests cover it (`node --test tests/agent_board_test.mjs`), and the fixture does not seed it.
 - Live alarms reflect this Mac's real updater state, which the board never changes; never fix them from a verification run.

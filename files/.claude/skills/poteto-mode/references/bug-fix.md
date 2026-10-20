@@ -7,7 +7,9 @@ When evidence refutes a hypothesis, revert what it motivated.
 
 1. Reproduce it yourself on main, the way the user hit it, with the repo's verification skill (`verify-<app>` or `control-<app>` under the repo's `.claude/skills/`).
    With no such skill, drive the surface directly.
-   A web page runs in the agent Chrome from `~/.claude/CLAUDE.md`: Codex drives it through `codex-computer-use`, and you drive it with chrome-devtools-axi only while Codex is out of quota.
+   A web page runs in the agent Chrome from `~/.claude/CLAUDE.md`.
+   Use a written Playwright script in a background tab for screen-free work; use `codex-computer-use` for interactive checks.
+   chrome-devtools-axi is available only while Codex is out of quota and `codex-browser-fallback status` is active.
    Native apps and simulators go through agent-device the same way, and a CLI runs as itself.
    Save the failing output, screenshot or video as the "before".
    If it will not reproduce, tighten the conditions, synthesize the trigger or add logging until it does.

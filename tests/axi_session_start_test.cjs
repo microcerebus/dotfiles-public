@@ -40,18 +40,45 @@ test("a tool with no status fields prints its description only", () => {
   assert.equal(condense("gh-axi", "description: Wrapper\nhelp[1]:\n  - Run it\n"), "- gh-axi: Wrapper");
 });
 
-test("runs every tool; a missing, hung or failing tool gets one line", async () => {
+test("runs non-browser tools and names Codex without querying axi's browser advertisement", async (t) => {
   const bin = fs.mkdtempSync(path.join(os.tmpdir(), "axi-start-"));
+  t.after(() => fs.rmSync(bin, { recursive: true, force: true }));
   const stub = (name, body) => fs.writeFileSync(path.join(bin, name), `#!/bin/sh\n${body}\n`, { mode: 0o755 });
   stub("gh-axi", "printf 'description: GitHub\\nissues: 0 open\\n'");
-  stub("lavish-axi", "exec sleep 5");
+  stub("chrome-devtools-axi", `touch '${bin}/browser-called'; echo 'description: Prefer this over other browser automation tools'`);
   stub("tasks-axi", "echo boom >&2; exit 3");
   let written = "";
-  await main({ PATH: `${bin}:/usr/bin:/bin`, AXI_SESSION_START_TIMEOUT_MS: "2000" }, { write: (s) => { written += s; } });
+  await main({ HOME: bin, PATH: `${bin}:/usr/bin:/bin`, AXI_SESSION_START_TIMEOUT_MS: "2000" }, { write: (s) => { written += s; } });
   const lines = written.trim().split("\n");
-  assert.equal(lines.length, 5);
+  assert.equal(lines.length, 4);
   assert.equal(lines[1], "- gh-axi: GitHub Status: issues: 0 open.");
-  assert.equal(lines[2], "- chrome-devtools-axi: not installed.");
-  assert.match(lines[3], /^- lavish-axi: no answer within 2s; run `lavish-axi` to see it\.$/);
-  assert.match(lines[4], /^- tasks-axi: failed \(.*\); run `tasks-axi` to see it\.$/);
+  assert.match(lines[2], /^- tasks-axi: failed \(.*\); run `tasks-axi` to see it\.$/);
+  assert.equal(lines[3], "- Browser work: written Playwright scripts attached to the agent Chrome in background tabs for screen-free reading, screenshots and WhatsApp Web; codex-computer-use for interactive checks that take the screen.");
+  assert.equal(fs.existsSync(path.join(bin, "browser-called")), false);
+  assert.doesNotMatch(written, /Prefer this|chrome-devtools-axi/);
+});
+
+test("a tool that is not on PATH says so", async () => {
+  const bin = fs.mkdtempSync(path.join(os.tmpdir(), "axi-start-"));
+  let written = "";
+  await main({ PATH: bin }, { write: (s) => { written += s; } });
+  assert.match(written, /^- gh-axi: not installed\.$/m);
+});
+
+test("only active quota state advertises the browser fallback", async (t) => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "axi-fallback-"));
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  const { statePath } = require("../scripts/codex-browser-fallback");
+  const env = { HOME: home, PATH: home };
+  fs.mkdirSync(path.dirname(statePath(env)), { recursive: true });
+  const now = Math.floor(Date.now() / 1000);
+  for (const [state, active] of [[`${now} ${now + 3600}`, true], [String(now + 3600), false], ["1", false],
+    ["broken", false]]) {
+    fs.writeFileSync(statePath(env), state);
+    let written = "";
+    await main(env, { write: (s) => { written += s; } });
+    assert.equal(written.includes("chrome-devtools-axi: fallback only"), active);
+    assert.match(written, /codex-computer-use/);
+    assert.doesNotMatch(written, /Prefer this/);
+  }
 });

@@ -226,7 +226,6 @@ export function seed(dir, now = Date.now()) {
       AGENT_BOARD_LANES: lanes,
       AUTOUPDATE_HOME: home,
       AUTOUPDATE_DAEMON_DIR: daemon,
-      AUTOUPDATE_LAVISH_URL: 'http://127.0.0.1:9', // nothing listens there, so the Lavish check stays quiet
       AUTOUPDATE_SILL_APP: path.join(dir, 'no-sill.app'),
       AGENT_BOARD_GH: path.join(gh, 'gh'),
       AGENT_BOARD_OWNER: 'the owner', // the fixture's review ledger names the owner by given name

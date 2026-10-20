@@ -75,15 +75,8 @@ cat >"$stubs/git" <<EOF
 stub-terminal-check git
 exec $(command -v git) "\$@"
 EOF
-# STUB_LAVISH=<code>: a Lavish server on :4387 answers <code> for its page
-# assets; STUB_LAVISH_APP names the app its /health reports. Only status
-# probes Lavish, never a sync step, so the terminal check skips it.
 cat >"$stubs/curl" <<'EOF'
 #!/bin/sh
-case "$*" in
-  *:4387/chrome.css*) [ -n "${STUB_LAVISH:-}" ] || exit 7; printf '%s' "$STUB_LAVISH"; exit 0 ;;
-  *:4387/health*) [ -n "${STUB_LAVISH:-}" ] || exit 7; printf '{"app":"%s"}' "${STUB_LAVISH_APP:-lavish-axi}"; exit 0 ;;
-esac
 stub-terminal-check curl
 [ "${STUB_OFFLINE:-0}" = 0 ]
 EOF
@@ -133,7 +126,8 @@ if [ "${STUB_PNPM_CTRL_C:-0}" = 1 ] && [ "$1" = update ]; then
 fi
 [ "${STUB_PNPM_STARTS_REBUILD:-0}" = 0 ] || [ "$1" != update ] || touch "$STUB_LOG/rebuilding"
 case $1 in
-  ls) echo '[{"dependencies":{"gh-axi":{},"lavish-axi":{},"chrome-devtools-axi":{},"agent-device":{}}}]' ;;
+  ls) if [ -n "${STUB_PNPM_LS:-}" ]; then echo "$STUB_PNPM_LS"
+      else echo '[{"dependencies":{"gh-axi":{},"chrome-devtools-axi":{},"agent-device":{}}}]'; fi ;;
   *) [ "${STUB_PNPM_FAIL:-0}" = 0 ] ;;
 esac
 EOF
@@ -679,22 +673,7 @@ as_path="$repo/scripts:$terminal:$real:/usr/bin:/bin:/usr/sbin:/sbin" \
 expect_eq "Ctrl-C in a terminal run stops it before the next step" "$(calls brew)" 0
 expect_alarm "a run stopped by Ctrl-C says so" "daily: interrupted \(Ctrl-C\)"
 
-# 22. A Lavish server left running from a package that a pnpm update deleted
-# answers 500 for its page assets and every page is blank (16 Oct 2026).
-# status alarms on it, never on a healthy server, no server, or another app.
-fresh
-at "2026-10-12 05:00"; tick
-expect_no_alarm "no Lavish server running is no alarm"
-STUB_LAVISH=200 expect_no_alarm "a Lavish server serving its assets is no alarm"
-STUB_LAVISH=404 STUB_LAVISH_APP=other expect_no_alarm "another app on the Lavish port is no alarm"
-STUB_LAVISH=500 expect_alarm "a Lavish server failing its assets alarms with the fix" \
-  "^dotfiles auto-update: lavish: the server on :4387 answers 500 for its page assets, so every Lavish page is blank; run lavish-axi --restart-stale-server$"
-legacy=$(env -i HOME="$home" TZ="$TZ" PATH="$stubs:/usr/bin:/bin" FAKE_NOW="$FAKE_NOW" STUB_LAVISH=500 \
-  AUTOUPDATE_HOME="$home" AUTOUPDATE_DAEMON_DIR="$AUTOUPDATE_DAEMON_DIR" AUTOUPDATE_SILL_APP="$AUTOUPDATE_SILL_APP" \
-  /bin/bash "$script" status)
-expect_eq "the Lavish alarm reads the same under macOS's bash 3.2" "$legacy" "$(STUB_LAVISH=500 report)"
-
-# 23. Sill comes from its developer's own tap, which the daily brew upgrade
+# 22. Sill comes from its developer's own tap, which the daily brew upgrade
 # trusts to replace the app. status alarms on a Sill.app signed by anyone but
 # the developer's team, never on the developer's build or no Sill at all.
 fresh
@@ -711,7 +690,7 @@ legacy=$(env -i HOME="$home" TZ="$TZ" PATH="$stubs:/usr/bin:/bin" FAKE_NOW="$FAK
   /bin/bash "$script" status)
 expect_eq "the Sill alarm reads the same under macOS's bash 3.2" "$legacy" "$(STUB_SILL_TEAM=ABCDE12345 report)"
 
-# 24. The day's run is the first from 04:00, after the cloud routine's 02:00
+# 23. The day's run is the first from 04:00, after the cloud routine's 02:00
 # flake.lock bump. On 16 Oct 2026 a `--now` run at 01:40 took its place, so
 # the 01:50 bump waited a day to be handed over.
 fresh
@@ -725,7 +704,7 @@ at "2026-10-16 08:30"; sync_now
 at "2026-10-16 09:00"; tick
 expect_eq "a --now run from 04:00 is the day's run" "$(calls brew)" 1
 
-# 25. Pushed work goes live within the hour (the owner, 16 Oct 2026): every
+# 24. Pushed work goes live within the hour (the owner, 16 Oct 2026): every
 # hourly sync hands origin/main over and the daemon switches to it. The heavy
 # steps (pnpm, brew, macOS updates) still run once a day, from 04:00, and
 # report as their own runner, so the sync's last good run is the hand-over.
@@ -750,7 +729,7 @@ got=$(alarms)
 if grep -q "sync: no successful run" <<<"$got"; then bad "failing heavy steps leave the hourly hand-over good" "got: $got"
 else ok "failing heavy steps leave the hourly hand-over good"; fi
 
-# 26. The switch runs as root, which cannot reach the owner's screen, so the sync
+# 25. The switch runs as root, which cannot reach the owner's screen, so the sync
 # agent in his GUI session notifies him when a switch fails or has waited on
 # him for 2 h: once per state, not every hour.
 fresh
@@ -777,7 +756,7 @@ for h in 08 09; do at "2026-10-12 $h:00"; tick; done
 expect_eq "a notification that did not post is posted at the next tick, once" \
   "$(grep -c '^notify switch to [0-9a-f]* failed (exit 1)' "$s/log/calls")" 1
 
-# 27. Both jobs fire together on wake. Each takes its own lock before it
+# 26. Both jobs fire together on wake. Each takes its own lock before it
 # checks the other's, so the switch's brew bundle never races brew upgrade.
 fresh
 at "2026-10-12 04:30"; commit_upstream "C: push"
@@ -824,7 +803,7 @@ rm -f "$s/log/rebuilding"
 at "2026-10-12 06:00"; tick
 expect_eq "a forced sync interrupted by a rebuild leaves daily work due" "$(calls brew)" 1
 
-# 28. Right after a push the board runs the new status from the checkout,
+# 27. Right after a push the board runs the new status from the checkout,
 # while the old agent still writes only sync.status (in its old format, with
 # the daily steps' results) until the switch reloads it.
 fresh
@@ -856,7 +835,7 @@ unset STUB_BREW_OUTPUT STUB_BREW_SUDO
 at "2026-10-13 05:00"; tick
 expect_no_alarm "a successful daily retry clears the migrated failure"
 
-# 29. The sync agent publishes origin/main to the public mirror on every
+# 28. The sync agent publishes origin/main to the public mirror on every
 # tick (a no-op when the mirror holds it), and a failure alarms: the mirror
 # is then behind main.
 fresh
@@ -874,5 +853,26 @@ fresh
 export STUB_OFFLINE=1
 at "2026-10-12 05:00"; tick
 expect_eq "an offline tick publishes nothing" "$(calls public-sync)" 0
+
+# 29. lavish-axi was retired on 20 Oct 2026, and its upstream CLI opens the
+# default browser. The daily run removes it when present instead of letting
+# it float to the next release, and never touches it when it is gone.
+fresh
+export STUB_PNPM_LS='[{"dependencies":{"gh-axi":{},"lavish-axi":{},"chrome-devtools-axi":{},"agent-device":{}}}]'
+at "2026-10-12 05:00"; tick
+expect_eq "the daily run removes the retired lavish-axi global" "$(calls 'pnpm remove -g lavish-axi$')" 1
+expect_eq "a retired global no longer floats" "$(calls 'pnpm update -g --latest gh-axi$')" 1
+expect_no_alarm "removing a retired global is no alarm"
+unset STUB_PNPM_LS
+at "2026-10-13 05:00"; tick
+expect_eq "nothing is removed once it is gone" "$(calls 'pnpm remove')" 1
+
+# 30. Every failed pnpm step reaches the alarm: a later failed update once
+# overwrote the failed lavish-axi removal, so the alarm named only "update".
+fresh
+export STUB_PNPM_LS='[{"dependencies":{"gh-axi":{},"lavish-axi":{},"chrome-devtools-axi":{},"agent-device":{}}}]'
+export STUB_PNPM_FAIL=1
+at "2026-10-12 05:00"; tick
+expect_alarm "a failed removal of a retired global stays in the alarm" "remove lavish-axi, update, pin "
 
 exit "$fail"

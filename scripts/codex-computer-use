@@ -1,0 +1,139 @@
+#!/usr/bin/env node
+// One entry point for Codex screen control, with a warning and idle fallback.
+const { execFile, spawn } = require("node:child_process");
+const fs = require("node:fs");
+const { homedir } = require("node:os");
+const { join } = require("node:path");
+const { setTimeout: delay } = require("node:timers/promises");
+const { promisify } = require("node:util");
+const execute = promisify(execFile);
+const CODEX = "/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex";
+
+function parseArgs(args) {
+  let minutes = 5;
+  if (args[0] === "--minutes") {
+    if (!/^[1-9]\d{0,2}$/.test(args[1]) || Number(args[1]) > 120) throw new Error("--minutes must be 1 through 120.");
+    minutes = Number(args[1]);
+    args = args.slice(2);
+  }
+  if (args[0] !== "--" || args.length !== 2 || !args[1].trim()) {
+    throw new Error('Usage: codex-computer-use [--minutes 5] -- "verification prompt"');
+  }
+  return { minutes, prompt: args[1] };
+}
+
+// `--` ends codex's options, so a prompt that starts with a dash or is a subcommand name ("resume") is still the prompt.
+function codexArgs(prompt) {
+  return ["exec", "-s", "danger-full-access", "--", prompt];
+}
+
+function decision(answer, idleSeconds) {
+  if (answer === "start") return "start";
+  if (answer === "defer") return "defer";
+  if (answer !== "timeout") throw new Error("Unknown screen warning response; refusing screen control.");
+  return Number.isFinite(idleSeconds) && idleSeconds >= 120 ? "start" : "wait";
+}
+
+function parseIdle(output) {
+  const match = /"HIDIdleTime"\s*=\s*(\d+)/.exec(output);
+  return match ? Number(match[1]) / 1e9 : null;
+}
+
+function dialogScript(minutes) {
+  return `set response to display dialog "Codex needs your screen for about ${minutes} min. Please stop using the Mac until it's done." with title "Codex screen control" buttons {"Wait 10 min", "Start now"} default button "Wait 10 min" giving up after 60
+if gave up of response then
+  return "timeout"
+else if button returned of response is "Start now" then
+  return "start"
+else
+  return "defer"
+end if`;
+}
+
+function dependencies(signal, start = spawn) {
+  return {
+    ready: async () => { await execute(join(__dirname, "agent-chrome-ready"), [], { signal }); },
+    dialog: async (minutes) => (await execute("/usr/bin/osascript", ["-e", dialogScript(minutes)], { signal, timeout: 65000 })).stdout.trim(),
+    idle: async () => {
+      try {
+        return parseIdle((await execute("/usr/sbin/ioreg", ["-c", "IOHIDSystem"], { signal, timeout: 5000 })).stdout);
+      } catch (error) {
+        if (signal.aborted) throw error;
+        return null;
+      }
+    },
+    sleep: (ms) => delay(ms, undefined, { signal }),
+    codex: (prompt) => new Promise((resolve, reject) => {
+      signal.throwIfAborted();
+      const child = start(CODEX, codexArgs(prompt), { stdio: "inherit" });
+      let childError;
+      const stop = () => child.kill("SIGTERM");
+      signal.addEventListener("abort", stop, { once: true });
+      child.once("error", (error) => { childError = error; });
+      child.once("close", (code) => {
+        signal.removeEventListener("abort", stop);
+        if (childError) reject(childError);
+        else resolve(code ?? 1);
+      });
+    }),
+    notify: async () => {
+      await execute("/usr/bin/osascript", ["-e", 'display notification "Codex is done. Your screen is free again." with title "Codex screen control"'], { timeout: 5000 });
+    },
+    log: (message) => process.stderr.write(`codex-computer-use: ${message}\n`),
+  };
+}
+
+async function run({ minutes, prompt }, deps) {
+  await deps.ready();
+  for (;;) {
+    const answer = await deps.dialog(minutes);
+    const action = decision(answer, answer === "timeout" ? await deps.idle() : null);
+    if (action === "start") break;
+    const deferred = action === "defer";
+    deps.log(deferred ? "Waiting 10 min before asking again." : "The Mac is busy or idle time is unknown; waiting before asking again.");
+    await deps.sleep(deferred ? 600000 : 60000);
+  }
+  try {
+    return await deps.codex(prompt);
+  } finally {
+    try { await deps.notify(); }
+    catch { deps.log("The completion notification failed; Codex has finished and the screen is free."); }
+  }
+}
+
+// Concurrent screen users must not overlap or announce that a busy screen is free.
+// A crash leaves a lock for inspection rather than guessing another process is dead.
+function acquireLock(home = homedir()) {
+  const directory = join(home, ".local/state/codex-computer-use");
+  fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+  const file = join(directory, "screen.lock");
+  let fd;
+  try { fd = fs.openSync(file, "wx", 0o600); }
+  catch (error) {
+    if (error.code !== "EEXIST") throw error;
+    throw new Error(`Screen control is already reserved. Inspect ${file} and its process; remove a stale lock only after confirming its run has ended.`);
+  }
+  try { fs.writeFileSync(fd, `${process.pid}\n`); }
+  catch (error) {
+    fs.rmSync(file, { force: true });
+    throw error;
+  } finally { fs.closeSync(fd); }
+  return () => fs.rmSync(file, { force: true });
+}
+
+module.exports = { parseArgs, decision, parseIdle, dialogScript, dependencies, run, acquireLock, codexArgs };
+if (require.main === module) {
+  const controller = new AbortController();
+  const stop = () => controller.abort();
+  process.once("SIGINT", stop);
+  process.once("SIGTERM", stop);
+  let release;
+  Promise.resolve().then(async () => {
+    const options = parseArgs(process.argv.slice(2));
+    release = acquireLock();
+    process.exitCode = await run(options, dependencies(controller.signal));
+  }).catch((error) => {
+    process.stderr.write(`codex-computer-use: ${controller.signal.aborted ? "Cancelled." : error.message}\n`);
+    process.exitCode = 1;
+  }).finally(() => { release?.(); });
+}

@@ -8,10 +8,12 @@
 #   re-added from the managed file, so a hook dropped here disappears on the
 #   next switch. Every other entry, for any event, is kept in place, except
 #   the axi tools' own SessionStart hooks (a command that is just gh-axi,
-#   chrome-devtools-axi, lavish-axi or tasks-axi, by name or path; other
-#   hooks in the same group stay): scripts/axi-session-start runs all four
+#   chrome-devtools-axi or tasks-axi, by name or path; other
+#   hooks in the same group stay): scripts/axi-session-start runs all three
 #   instead and prints counts where they print whole lists.
 #   `<tool> setup hooks` adds its hook back; the next switch removes it again.
+#   lavish-axi is retired (20 Oct 2026) but its package can still add its
+#   hook, so its hook is stripped the same way.
 # Idempotent. A failed merge warns and exits 0: aborting would skip the rest
 # of Home Manager activation (see the brew bundle sharp edge in AGENTS.md).
 # Usage: merge-settings.sh <jq> <settings.json> <settings.managed.json>

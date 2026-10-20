@@ -18,10 +18,8 @@
 #   status   the one reader of the status files, used by the zsh banner, the
 #            agent board and the SessionStart hook. Prints alarms, info and
 #            the last success of each runner, and alarms on a flake.lock on
-#            origin/main 4 or more days old (check_flake_lock), a Lavish
-#            server whose page assets fail after a pnpm update
-#            (check_lavish) and a Sill.app signed by anyone but its
-#            developer (check_sill).
+#            origin/main 4 or more days old (check_flake_lock) and a
+#            Sill.app signed by anyone but its developer (check_sill).
 #
 # launchd runs /nix/store copies of this file; root never runs the checkout.
 # `status` must also run under macOS's bash 3.2 (the agent board calls it).
@@ -311,19 +309,28 @@ sync_public() { # sync_public <1 to log the result>
 # turns the whole update into a no-op, so update the rest by name, then
 # re-assert the pins (which also installs a missing one).
 pins="chrome-devtools-axi@0.1.39 agent-device@0.21.23 playwright-core@1.64.1"
+# Retired globals are removed when present instead of floating: lavish-axi
+# went on 20 Oct 2026, and its upstream CLI opens the default browser.
+retired="lavish-axi"
 sync_pnpm() {
-  local listed floating failed_steps='' pin
+  local listed floating stale failed_steps='' pin
   log "--- pnpm globals"
   if ! listed=$(timed 120 pnpm ls -g --depth 0 --json); then
     fail "pnpm ls -g failed; pnpm globals were not updated"
     return
   fi
-  floating=$(printf '%s\n' "$listed" | jq -r --arg pins "$pins" \
-    '($pins | split(" ") | map(sub("@[^@]*$"; ""))) as $p
-     | .[0].dependencies // {} | keys[] | select(IN($p[]) | not)')
+  floating=$(printf '%s\n' "$listed" | jq -r --arg pins "$pins" --arg retired "$retired" \
+    '($pins | split(" ") | map(sub("@[^@]*$"; ""))) as $p | ($retired | split(" ")) as $r
+     | .[0].dependencies // {} | keys[] | select(IN($p[], $r[]) | not)')
+  stale=$(printf '%s\n' "$listed" | jq -r --arg retired "$retired" \
+    '($retired | split(" ")) as $r | .[0].dependencies // {} | keys[] | select(IN($r[]))')
+  if [ -n "$stale" ]; then
+    # shellcheck disable=SC2086 # one argument per package name
+    timed 120 pnpm remove -g $stale || failed_steps="remove $stale"
+  fi
   if [ -n "$floating" ]; then
     # shellcheck disable=SC2086 # one argument per package name
-    timed 600 pnpm update -g --latest $floating || failed_steps="update"
+    timed 600 pnpm update -g --latest $floating || failed_steps="$failed_steps${failed_steps:+, }update"
   fi
   for pin in $pins; do
     timed 300 pnpm add -g -E "$pin" || failed_steps="$failed_steps${failed_steps:+, }pin $pin"
@@ -542,18 +549,6 @@ read_status() { # read_status <name> <file> <log>
   fi
 }
 
-# A Lavish server left running from a package that a pnpm update deleted
-# serves every page blank (16 Oct 2026). The lavish-restart launchd job and
-# every lavish-axi command restart it (scripts/lavish-axi); this catches one
-# they missed. Nothing listening is fine: Lavish starts on demand.
-check_lavish() {
-  local base=${AUTOUPDATE_LAVISH_URL:-http://127.0.0.1:${LAVISH_AXI_PORT:-4387}} code
-  code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 1 "$base/chrome.css" 2>/dev/null) || return 0
-  [ "$code" != 200 ] || return 0
-  curl -s --max-time 1 "$base/health" 2>/dev/null | grep -q '"app":"lavish-axi"' || return 0
-  alarm "lavish: the server on :${base##*:} answers ${code:-nothing} for its page assets, so every Lavish page is blank; run lavish-axi --restart-stale-server"
-}
-
 # Sill comes from its developer's own tap (saffsanity/sill, nix/host.nix),
 # which the daily brew upgrade trusts to replace the app. A build signed by
 # anyone else means the tap or its download changed hands. codesign -dv reads
@@ -601,7 +596,6 @@ cmd_status() {
   fi
   read_status switch "$daemon_dir/status" "$daemon_log"
   check_flake_lock
-  check_lavish
   check_sill
   if [ "${1:-}" = --alarms ]; then
     [ -n "$alarm_lines" ] || return 0

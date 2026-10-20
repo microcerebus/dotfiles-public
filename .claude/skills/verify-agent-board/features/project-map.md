@@ -36,6 +36,9 @@ Nothing on the page is clipped: every line wraps, on a phone and on a desktop.
 
 ## Driving it with chrome-devtools-axi
 
+These commands are quota fallback only and require active `codex-browser-fallback status`.
+Use a written Playwright flow first; otherwise Codex follows the actions and expected results through built-in computer use, without running these axi commands.
+
 Written flows, on a fixture run:
 
 - `node scripts/flows/map-refresh.mjs` covers `map-then-you` and the page refreshing itself after a lane edit (the Dependency done journey below), with screenshots and reads saved as `project-map-refresh-*` in `$BOARD_EVIDENCE`.

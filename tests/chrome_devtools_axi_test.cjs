@@ -14,11 +14,12 @@ const FLAGGED = `${CHROME_BETA} ${PROFILE} --remote-debugging-port=9333 --disabl
 // `chrome-devtools-axi pages` for a session that owns no tab, and for one that does.
 const NO_OWN_TAB = "pages[2]{id,url,selected}:\n  1,chrome://new-tab-page/,false\n  2,https://example.com/other-agent,false\n";
 const OWN_TAB = `${NO_OWN_TAB}  3,"https://example.com/mine?a=1,2",true\n`;
-const LAVISH = "http://test-machine.example.ts.net:4387/session/123abc";
+const PAGE = "https://test-machine.example.ts.net/packs/review/";
 
-function harness({ up = [true], installed = true, browser = [FLAGGED], pages = NO_OWN_TAB } = {}) {
+function harness({ up = [true], installed = true, browser = [FLAGGED], pages = NO_OWN_TAB, until = null } = {}) {
   const calls = { spawn: [], probe: 0, kickstart: 0, stderr: "" };
   const deps = {
+    fallbackUntil: () => until,
     spawn: (command, args, options) => {
       calls.spawn.push({ command, args, env: options.env });
       return args[0] === "pages" ? { status: 0, stdout: pages } : { status: 0 };
@@ -109,11 +110,11 @@ test("explicit other browsers pass through untouched", () => {
 });
 
 test("each Claude thread gets its own session, and idle bridges exit", () => {
-  const { calls, deps, io } = harness();
+  const { calls, deps, io } = harness({ until: 2000000000 });
   run(["snapshot"], { CLAUDE_CODE_SESSION_ID: "f1966707-fda6-48e2-8c1b-89d704b86cbc" }, deps, io);
   assert.equal(calls.spawn[0].env.CHROME_DEVTOOLS_AXI_SESSION, "claude-f1966707");
   assert.equal(calls.spawn[0].env.CHROME_DEVTOOLS_AXI_IDLE_TIMEOUT_MS, "1800000");
-  const explicit = harness();
+  const explicit = harness({ until: 2000000000 });
   run(["snapshot"], { CLAUDE_CODE_SESSION_ID: "f1966707", CHROME_DEVTOOLS_AXI_SESSION: "ui-owner",
     CHROME_DEVTOOLS_AXI_IDLE_TIMEOUT_MS: "0" }, explicit.deps, explicit.io);
   assert.equal(explicit.calls.spawn[0].env.CHROME_DEVTOOLS_AXI_SESSION, "ui-owner");
@@ -178,12 +179,12 @@ test("newpage opens in the background unless the owner has to see it", () => {
 test("open gives a session without a tab a background one first", () => {
   const { calls, deps, io } = harness();
   const env = { CHROME_DEVTOOLS_AXI_SESSION: "claude-f1966707" };
-  assert.equal(run(["open", LAVISH], env, deps, io), 0);
+  assert.equal(run(["open", PAGE], env, deps, io), 0);
   const [pages, blank, open] = calls.spawn.map((c) => c.args);
   assert.deepEqual(pages, ["pages"]);
   assert.match(blank[1], /^about:blank#claude-f1966707-[0-9a-f]{8}$/);
   assert.deepEqual(blank, ["newpage", blank[1], "--background"]);
-  assert.deepEqual(open, ["open", LAVISH]);
+  assert.deepEqual(open, ["open", PAGE]);
   for (const call of calls.spawn) assert.equal(call.env.CHROME_DEVTOOLS_AXI_BROWSER_URL, AGENT_CHROME_URL);
   const script = harness();
   run(["run"], env, script.deps, script.io);
@@ -192,8 +193,8 @@ test("open gives a session without a tab a background one first", () => {
 
 test("open navigates the session's own tab in place", () => {
   const { calls, deps, io } = harness({ pages: OWN_TAB });
-  run(["open", LAVISH], {}, deps, io);
-  assert.deepEqual(calls.spawn.map((c) => c.args), [["pages"], ["open", LAVISH]]);
+  run(["open", PAGE], {}, deps, io);
+  assert.deepEqual(calls.spawn.map((c) => c.args), [["pages"], ["open", PAGE]]);
 });
 
 test("the launchd agent and session env match the wrapper", () => {
@@ -204,4 +205,15 @@ test("the launchd agent and session env match the wrapper", () => {
   assert.match(nix, new RegExp(`CHROME_DEVTOOLS_AXI_BROWSER_URL = "${AGENT_CHROME_URL}";`));
   assert.deepEqual(AGENT_CHROME_FLAGS, ["--disable-extensions", "--disable-sync"]);
   for (const flag of AGENT_CHROME_FLAGS) assert.match(nix, new RegExp(`^\\s+"${flag}"$`, "m"));
+});
+
+// Replay the Phase C command without contacting or starting a browser.
+test("Phase C phone command refuses both agent harnesses before any browser work", () => {
+  for (const env of [{ CLAUDECODE: "1" }, { CODEX_THREAD_ID: "fixture-thread" }, { CODEX_CI: "1" }]) {
+    const { calls, deps, io } = harness();
+    assert.equal(run(["emulate", "--viewport", "390x844x3,mobile,touch"], env, deps, io), 2);
+    assert.equal(calls.spawn.length, 0);
+    assert.equal(calls.probe, 0);
+    assert.match(calls.stderr, /codex-computer-use/);
+  }
 });

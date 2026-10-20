@@ -43,8 +43,10 @@ test('nothing in the skill starts Chrome Beta outside its launchd agent', () => 
 const READY = path.join(REPO, 'scripts/agent-chrome-ready');
 const CURL_CHECK = /curl[^\n]*9333|launchctl kickstart/;
 
-test('the skill runs agent-chrome-ready before Codex and carries no inline check', () => {
-  assert.match(browser, /Run `agent-chrome-ready` before Codex/);
+test('the skill puts readiness and screen permission in the launcher, with no inline check', () => {
+  assert.match(browser, /launcher runs `agent-chrome-ready` before showing the warning/);
+  assert.match(skill, /codex-computer-use --minutes 5 --/);
+  assert.doesNotMatch(skill, /CODEX=|"\$CODEX" exec/);
   assert.doesNotMatch(skill, CURL_CHECK, 'the start-up check belongs in scripts/agent-chrome-ready');
 });
 
@@ -171,15 +173,27 @@ test('the skill never offers chrome-devtools-axi as the browser driver', () => {
   assert.deepEqual(offers, []);
 });
 
-test('verify-agent-board runs agent-chrome-ready before Codex and opens its Codex prompt with the brief', () => {
+test('browser discovery routes Codex to computer use and axi to the expiring quota fallback', () => {
+  const axi = fs.readFileSync(path.join(REPO, 'files/.claude/skills/chrome-devtools-axi/SKILL.md'), 'utf8');
+  assert.match(axi, /description: "Fallback-only Chrome CLI/);
+  assert.match(axi, /Use written Playwright scripts attached to the agent Chrome in background tabs for screen-free work/);
+  assert.match(axi, /Use `codex-computer-use` for interactive checks that need the screen/);
+  assert.match(axi, /codex-browser-fallback status/);
+  assert.doesNotMatch(axi, /Prefer this over other browser automation tools|Use whenever a task needs a real browser|Use chrome-devtools-axi whenever/);
+  const device = fs.readFileSync(path.join(REPO, 'files/.claude/skills/agent-device/SKILL.md'), 'utf8');
+  assert.match(device, /For screen-free web work use written Playwright scripts/);
+  const agents = fs.readFileSync(path.join(REPO, 'files/AGENTS.md'), 'utf8');
+  assert.match(agents, /Screen-free browser work.*written Playwright script attached to the agent Chrome in background tabs/);
+  assert.doesNotMatch(agents, /which `chrome-devtools-axi` uses by default/);
+});
+
+test('verify-agent-board uses the screen-warning launcher and opens its prompt with the brief', () => {
   const board = fs.readFileSync(path.join(REPO, '.claude/skills/verify-agent-board/SKILL.md'), 'utf8');
-  assert.match(board, /Run `agent-chrome-ready` before Codex/);
+  assert.match(board, /Run every interactive check through the `codex-computer-use` launcher/);
   assert.doesNotMatch(board, CURL_CHECK, 'the start-up check belongs in scripts/agent-chrome-ready');
   const block = /A Codex prompt[\s\S]*?```sh\n([\s\S]*?)```/.exec(board)?.[1] ?? '';
-  // Next to the Codex command, a copy of the check takes the Codex run with it, so the check is its own command.
-  assert.match(board, /Run `agent-chrome-ready` before Codex, as its own command, and stop if it exits 1/);
-  assert.doesNotMatch(block, /agent-chrome-ready/, 'the Codex block must hold no start-up command');
-  const prompt = (/"\$CODEX" exec -s danger-full-access "([\s\S]*)"\s*$/.exec(block)?.[1] ?? '')
+  assert.doesNotMatch(block, /agent-chrome-ready|"\$CODEX" exec/, 'the launcher owns readiness and the Codex binary');
+  const prompt = (/codex-computer-use --minutes 5 -- "([\s\S]*)"\s*$/.exec(block)?.[1] ?? '')
     .replace(/ \\\n/g, ' ').replaceAll('\\`', '`').replaceAll('\\"', '"');
   assert.ok(prompt.startsWith(SENTENCES.join(' ')), `the board prompt does not open with the brief: ${prompt.slice(0, 120)}`);
 });
