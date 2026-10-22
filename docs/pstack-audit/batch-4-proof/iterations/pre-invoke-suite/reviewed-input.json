@@ -1,0 +1,7 @@
+{
+  "abstraction": "manual; fixed mutation mappings, no automated extraction",
+  "model_sha256": "b6b17312fec6c82d07ca89d0de26f883a89c75e774da0f2dd93e4a8f1af94103",
+  "nixpkgs_revision": "7a6522c868711d06e3a520bbcdfafe9806f4337f",
+  "source_commit": "da07c62e0699dba786ca93dbdc62d24dac25c43b",
+  "source_sha256": "fb5b63e9bfd4ed2580f790f7d55003b7ee12b95e5d21e95debe3fcc8181d2442"
+}

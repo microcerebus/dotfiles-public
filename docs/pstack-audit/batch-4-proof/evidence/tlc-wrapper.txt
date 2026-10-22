@@ -1,0 +1,2 @@
+#! /nix/store/i1pdjlwb27ki88zssg5q2h696v1r1m15-bash-5.3p20/bin/bash -e
+exec "/nix/store/ay03qcwncn5blfyv6y2qpi6fpl03nb0v-zulu-ca-jdk-8.0.492/bin/java"  -XX:+UseParallelGC -cp /nix/store/6w8dfk71vkcvhwnfw2bazrml6fx0qj4v-tlaplus-1.7.4/share/java/tla2tools.jar tlc2.TLC "$@" 

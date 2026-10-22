@@ -1,0 +1,14 @@
+{
+  "exit": 12,
+  "invariants": [
+    "HandoffIsFetched"
+  ],
+  "model_sha256": "e38f3c4a24167dfc796b411f8a7596a1066876f5d2ad2d7033b376ea3c69446d",
+  "name": "mutation-handoff",
+  "result": "counterexample",
+  "source_sha256": "345fa51c5e07ff50af08be62e06f4b004dcf5d440b7df2383eca20f06377bf6b",
+  "spec": "Spec",
+  "states_distinct": 49935,
+  "states_generated": 137631,
+  "violated": "HandoffIsFetched"
+}

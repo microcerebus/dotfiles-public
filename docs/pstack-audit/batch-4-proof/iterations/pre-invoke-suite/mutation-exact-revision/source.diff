@@ -1,0 +1,11 @@
+--- baseline/scripts/dotfiles-autoupdate
++++ scratch/scripts/dotfiles-autoupdate
+@@ -467,7 +467,7 @@
+   # Nix opens the repo through libgit2, which lets root read a repo another
+   # user owns only when SUDO_UID names that owner, as it does under `rebuild`.
+   # the owner's read-only sudo check of 11 Oct says whether root needs it here.
+-  SUDO_UID=$(stat -f %u "$repo") darwin-rebuild switch --flake "git+file://$repo?rev=$want#$host"
++  SUDO_UID=$(stat -f %u "$repo") darwin-rebuild switch --flake "$repo#$host"
+   local code=$?
+   running=$(sed -n 's/.*"configurationRevision": *"\([^"]*\)".*/\1/p' "$system/darwin-version.json" 2>/dev/null)
+   if [ "$code" != 0 ]; then

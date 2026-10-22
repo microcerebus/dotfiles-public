@@ -1,0 +1,11 @@
+--- baseline/scripts/dotfiles-autoupdate
++++ scratch/scripts/dotfiles-autoupdate
+@@ -188,7 +188,7 @@
+     # The daemon waits while this sync holds its lock, so the switch's own
+     # brew bundle never races the brew upgrade below.
+     handed=$(cat "$sync_dir/revision" 2>/dev/null)
+-    printf '%s\n' "$fetched" >"$sync_dir/revision.tmp" && mv -f "$sync_dir/revision.tmp" "$sync_dir/revision"
++    printf '%s\n' "$(git -C "$repo" rev-parse main)" >"$sync_dir/revision.tmp" && mv -f "$sync_dir/revision.tmp" "$sync_dir/revision"
+     [ -z "$daily" ] && [ "$fetched" = "$handed" ] || log "handed origin/main ${fetched:0:12} to the daemon"
+     sync_public "$([ -z "$daily" ] && [ "$fetched" = "$handed" ] || echo 1)"
+   fi

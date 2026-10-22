@@ -1,0 +1,11 @@
+--- baseline/Handoff.tla
++++ scratch/Handoff.tla
+@@ -31,7 +31,7 @@
+     /\ refMoved = FALSE
+ 
+ \* Mutation sites: these expressions are MANUALLY reconciled with source edits.
+-PublishValue == s.fetched
++PublishValue == g.head
+ RequestedRevision == a.want
+ AdvanceAllowed == Ancestor(a.sampled, a.want)
+ 

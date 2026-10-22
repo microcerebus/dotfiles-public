@@ -79,6 +79,11 @@ The batch 3 ketchup refresh lists every waiting decision with evidence and risk,
 `/sharpen` returns an improved prompt with primary sources, concrete methods and an independent check; it does not execute the embedded task.
 Sharpen remains explicit-only.
 A new pstack skill stays slash-only and gets a route from a playbook, so the always-loaded skill list does not grow.
+Batch 4 adds the explicit-only `create-formal-verification-skill` and a narrow poteto-mode route for formal-check requests.
+It requires a verifier and runtime from pinned repository inputs, source mapping, bounded claims and a broken-source exercise.
+It returns no-verifier when ordinary checks suffice or no approved pinned tool is available.
+Its selection and tooling review are in [the batch 4 record](pstack-audit/batch-4-delta.md).
+The maintenance generator remains pending for batch 5.
 `python3 -I scripts/check-skills` checks every skill's frontmatter (as YAML), LICENSE, links and `home.file` line.
 `.githooks/pre-push` runs the pushed commit's checker against an exported copy of that commit before the public mirror leak gate on pushes to `main`.
 Skill validation fails closed, including when the checker or PyYAML is missing; `PUBLIC_SYNC_SKIP=1` skips only the leak gate.

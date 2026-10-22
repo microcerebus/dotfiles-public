@@ -1,0 +1,41 @@
+docs/pstack-audit/batch-4-proof/evidence/mutation-exact-revision/model.diff:4: trailing whitespace.
++ 
+docs/pstack-audit/batch-4-proof/evidence/mutation-exact-revision/model.diff:10: trailing whitespace.
++ 
+docs/pstack-audit/batch-4-proof/evidence/mutation-handoff/model.diff:5: trailing whitespace.
++ 
+docs/pstack-audit/batch-4-proof/evidence/mutation-handoff/model.diff:11: trailing whitespace.
++ 
+docs/pstack-audit/batch-4-proof/evidence/mutation-handoff/model.diff:11: new blank line at EOF.
+docs/pstack-audit/batch-4-proof/evidence/mutation-local-protection/model.diff:9: trailing whitespace.
++ 
+docs/pstack-audit/batch-4-proof/evidence/tlc-wrapper.txt:2: trailing whitespace.
++exec "/nix/store/ay03qcwncn5blfyv6y2qpi6fpl03nb0v-zulu-ca-jdk-8.0.492/bin/java"  -XX:+UseParallelGC -cp /nix/store/6w8dfk71vkcvhwnfw2bazrml6fx0qj4v-tlaplus-1.7.4/share/java/tla2tools.jar tlc2.TLC "$@" 
+docs/pstack-audit/batch-4-proof/iterations/first-suite/mutation-exact-revision/model.diff:4: trailing whitespace.
++ 
+docs/pstack-audit/batch-4-proof/iterations/first-suite/mutation-exact-revision/model.diff:10: trailing whitespace.
++ 
+docs/pstack-audit/batch-4-proof/iterations/first-suite/mutation-handoff/model.diff:5: trailing whitespace.
++ 
+docs/pstack-audit/batch-4-proof/iterations/first-suite/mutation-handoff/model.diff:11: trailing whitespace.
++ 
+docs/pstack-audit/batch-4-proof/iterations/first-suite/mutation-handoff/model.diff:11: new blank line at EOF.
+docs/pstack-audit/batch-4-proof/iterations/first-suite/mutation-local-protection/model.diff:9: trailing whitespace.
++ 
+docs/pstack-audit/batch-4-proof/iterations/first-suite/tlc-wrapper.txt:2: trailing whitespace.
++exec "/nix/store/ay03qcwncn5blfyv6y2qpi6fpl03nb0v-zulu-ca-jdk-8.0.492/bin/java"  -XX:+UseParallelGC -cp /nix/store/6w8dfk71vkcvhwnfw2bazrml6fx0qj4v-tlaplus-1.7.4/share/java/tla2tools.jar tlc2.TLC "$@" 
+docs/pstack-audit/batch-4-proof/iterations/pre-invoke-suite/mutation-exact-revision/model.diff:4: trailing whitespace.
++ 
+docs/pstack-audit/batch-4-proof/iterations/pre-invoke-suite/mutation-exact-revision/model.diff:10: trailing whitespace.
++ 
+docs/pstack-audit/batch-4-proof/iterations/pre-invoke-suite/mutation-handoff/model.diff:5: trailing whitespace.
++ 
+docs/pstack-audit/batch-4-proof/iterations/pre-invoke-suite/mutation-handoff/model.diff:11: trailing whitespace.
++ 
+docs/pstack-audit/batch-4-proof/iterations/pre-invoke-suite/mutation-handoff/model.diff:11: new blank line at EOF.
+docs/pstack-audit/batch-4-proof/iterations/pre-invoke-suite/mutation-local-protection/model.diff:9: trailing whitespace.
++ 
+docs/pstack-audit/batch-4-proof/iterations/pre-invoke-suite/tlc-wrapper.txt:2: trailing whitespace.
++exec "/nix/store/ay03qcwncn5blfyv6y2qpi6fpl03nb0v-zulu-ca-jdk-8.0.492/bin/java"  -XX:+UseParallelGC -cp /nix/store/6w8dfk71vkcvhwnfw2bazrml6fx0qj4v-tlaplus-1.7.4/share/java/tla2tools.jar tlc2.TLC "$@" 
+docs/pstack-audit/batch-4-proof/tlc-wrapper.txt:3: trailing whitespace.
++exec "/nix/store/ay03qcwncn5blfyv6y2qpi6fpl03nb0v-zulu-ca-jdk-8.0.492/bin/java"  -XX:+UseParallelGC -cp /nix/store/6w8dfk71vkcvhwnfw2bazrml6fx0qj4v-tlaplus-1.7.4/share/java/tla2tools.jar tlc2.TLC "$@" 

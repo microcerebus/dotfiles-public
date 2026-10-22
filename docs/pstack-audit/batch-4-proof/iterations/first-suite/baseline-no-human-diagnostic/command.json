@@ -1,0 +1,20 @@
+[
+  "nix",
+  "shell",
+  "--impure",
+  "--expr",
+  "let f = builtins.getFlake (toString ./.); p = import f.inputs.nixpkgs { system = builtins.currentSystem; }; in p.tlaplus",
+  "--command",
+  "tlc",
+  "-workers",
+  "1",
+  "-seed",
+  "1",
+  "-fp",
+  "0",
+  "-metadir",
+  "/Users/myuser/.t3/worktrees/dotfiles/t3-d7ac6c3a/docs/pstack-audit/batch-4-proof/evidence/baseline-no-human-diagnostic/.tlc-states",
+  "-config",
+  "/Users/myuser/.t3/worktrees/dotfiles/t3-d7ac6c3a/docs/pstack-audit/batch-4-proof/evidence/baseline-no-human-diagnostic/Handoff.cfg",
+  "/Users/myuser/.t3/worktrees/dotfiles/t3-d7ac6c3a/docs/pstack-audit/batch-4-proof/evidence/baseline-no-human-diagnostic/Handoff.tla"
+]

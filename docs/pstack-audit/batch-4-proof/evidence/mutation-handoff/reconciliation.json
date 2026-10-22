@@ -1,0 +1,10 @@
+{
+  "invariant": "HandoffIsFetched",
+  "mapping": "cmd_sync:191 -> PublishValue used by SyncWriteTemp",
+  "model_new": "PublishValue == g.head",
+  "model_old": "PublishValue == s.fetched",
+  "name": "mutation-handoff",
+  "source_new": "printf '%s\\n' \"$(git -C \"$repo\" rev-parse main)\" >\"$sync_dir/revision.tmp\" ",
+  "source_old": "printf '%s\\n' \"$fetched\" >\"$sync_dir/revision.tmp\" ",
+  "spec": "Spec"
+}

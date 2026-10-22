@@ -1,0 +1,14 @@
+{
+  "exit": 12,
+  "invariants": [
+    "ProtectLocalRebuild"
+  ],
+  "model_sha256": "07160603c59a707ce73254d37a40ca669a6935964750e7dd72049ac01d1c92e3",
+  "name": "mutation-local-protection",
+  "result": "counterexample",
+  "source_sha256": "eaccdea3b3cf2277c35c0da0d549d1c42baf26bf5fba90d2b54dd10a8771e413",
+  "spec": "NoHumanSpec",
+  "states_distinct": 84446,
+  "states_generated": 165954,
+  "violated": "ProtectLocalRebuild"
+}

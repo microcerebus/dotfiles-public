@@ -240,10 +240,10 @@
     {
       "group": "pstack skill",
       "item": "create-formal-verification-skill",
-      "status": "pending",
-      "evidence": "Upstream 0.15.29; absent from nix/user.nix",
-      "reason": "New generator for bounded formal checks, with TLA+ as a default and an explicit no-verifier outcome.",
-      "codex": "No: availability is sufficient, but selection, tooling review and project proof remain."
+      "status": "adapted",
+      "evidence": "nix/user.nix; create-formal-verification-skill/SKILL.md; docs/pstack-audit/batch-4-delta.md; docs/pstack-audit/batch-4-proof/README.md; docs/pstack-audit/batch-4-route-proof.md",
+      "reason": "Batch 4 adapts the generator with pinned tooling, a narrow route and no-verifier outcome. The bounded updater model finds a source-supported rollback race; two other invariants pass. Local only; no subject-code fix.",
+      "codex": "Fresh Astra proof and no-verifier route executed. Push approval and activation remain; the discovered defect needs a separate unit."
     },
     {
       "group": "pstack skill",
@@ -298,8 +298,8 @@
       "item": "maintain-formal-verification-skill",
       "status": "pending",
       "evidence": "Upstream 0.15.29; absent from nix/user.nix",
-      "reason": "New upkeep pass that checks proof drift against source changes; needs an adopted project verifier first.",
-      "codex": "No: availability is sufficient, but selection, tooling review and project proof remain."
+      "reason": "Batch 5 remains pending. The batch 4 project proof now exists; assess source drift and safe tooling against it before adopting the maintenance skill.",
+      "codex": "No: generator proof is available, but maintenance selection, tooling review and source-drift proof remain."
     },
     {
       "group": "pstack skill",
@@ -1618,7 +1618,7 @@
       "item": "correct",
       "status": "adapted",
       "evidence": "docs/pstack-audit/batch-3-delta.md; frozen upstream comparison 1e5c90a4...88d47514",
-      "reason": "Ported the broken-behavior and internal-refactor test-quality rule; kept its automatic correction trigger and enforcement-table workflow. Prepared locally; push approval and activation remain.",
+      "reason": "Ported the broken-behavior and internal-refactor test-quality rule; kept its automatic correction trigger and enforcement-table workflow. Pushed in batch 3; activation confirmation remains outstanding.",
       "codex": "Source review complete; local preparation does not claim rollout."
     },
     {
@@ -1626,7 +1626,7 @@
       "item": "ketchup",
       "status": "adapted",
       "evidence": "docs/pstack-audit/batch-3-delta.md; frozen upstream comparison 1e5c90a4...88d47514; docs/pstack-audit/batch-3-route-proof.md",
-      "reason": "Ported complete decision lists with evidence and risk, no total word cap, and explanatory visuals; kept Needs the owner first and authorization deduplication. Prepared locally; push approval and activation remain.",
+      "reason": "Ported complete decision lists with evidence and risk, no total word cap, and explanatory visuals; kept Needs the owner first and authorization deduplication. Pushed in batch 3; activation confirmation remains outstanding.",
       "codex": "Source review complete; local preparation does not claim rollout."
     },
     {
@@ -1642,7 +1642,7 @@
       "item": "interrogate",
       "status": "adapted",
       "evidence": "docs/pstack-audit/batch-3-delta.md; frozen upstream comparison 1e5c90a4...88d47514",
-      "reason": "Ported the lead-judgment trim, removing the five-finding cutoff; kept Codex reviewers and four verdict buckets. Prepared locally; push approval and activation remain.",
+      "reason": "Ported the lead-judgment trim, removing the five-finding cutoff; kept Codex reviewers and four verdict buckets. Pushed in batch 3; activation confirmation remains outstanding.",
       "codex": "Source review complete; local preparation does not claim rollout."
     },
     {
@@ -1674,7 +1674,7 @@
       "item": "sharpen",
       "status": "adapted",
       "evidence": "docs/pstack-audit/batch-3-delta.md; frozen upstream comparison 1e5c90a4...88d47514; docs/pstack-audit/batch-3-route-proof.md",
-      "reason": "Ported prompt rewriting without task execution, with primary material, concrete methods and an independent check; remains explicit-only. Prepared locally; push approval and activation remain.",
+      "reason": "Ported prompt rewriting without task execution, with primary material, concrete methods and an independent check; remains explicit-only. Pushed in batch 3; activation confirmation remains outstanding.",
       "codex": "Source review complete; local preparation does not claim rollout."
     },
     {
@@ -1682,7 +1682,7 @@
       "item": "swarm",
       "status": "adapted",
       "evidence": "docs/pstack-audit/batch-3-delta.md; frozen upstream comparison 1e5c90a4...88d47514",
-      "reason": "Removed duplicated report guidance; retained worktree ownership, explicit worker count, lane concurrency and Codex roles. Prepared locally; push approval and activation remain.",
+      "reason": "Removed duplicated report guidance; retained worktree ownership, explicit worker count, lane concurrency and Codex roles. Pushed in batch 3; activation confirmation remains outstanding.",
       "codex": "Source review complete; local preparation does not claim rollout."
     },
     {
@@ -1698,7 +1698,7 @@
       "item": "principle-attack-the-premise",
       "status": "adapted",
       "evidence": "docs/pstack-audit/batch-3-delta.md; frozen upstream comparison 1e5c90a4...88d47514",
-      "reason": "Ported the direct, rerunnable premise check into the bug-fix playbook; no mandatory imbalance census. Prepared locally; push approval and activation remain.",
+      "reason": "Ported the direct, rerunnable premise check into the bug-fix playbook; no mandatory imbalance census. Pushed in batch 3; activation confirmation remains outstanding.",
       "codex": "Source review complete; local preparation does not claim rollout."
     },
     {
@@ -1706,7 +1706,7 @@
       "item": "principle-fix-root-causes",
       "status": "adapted",
       "evidence": "docs/pstack-audit/batch-3-delta.md; frozen upstream comparison 1e5c90a4...88d47514",
-      "reason": "Ported the first-incorrect-transition and legitimate-state guard distinction into the bug-fix playbook. Prepared locally; push approval and activation remain.",
+      "reason": "Ported the first-incorrect-transition and legitimate-state guard distinction into the bug-fix playbook. Pushed in batch 3; activation confirmation remains outstanding.",
       "codex": "Source review complete; local preparation does not claim rollout."
     },
     {
@@ -1714,7 +1714,7 @@
       "item": "principle-make-operations-idempotent",
       "status": "adapted",
       "evidence": "docs/pstack-audit/batch-3-delta.md; frozen upstream comparison 1e5c90a4...88d47514",
-      "reason": "Ported current-state convergence and recognizable interruption leftovers into the autonomous-run playbook. Prepared locally; push approval and activation remain.",
+      "reason": "Ported current-state convergence and recognizable interruption leftovers into the autonomous-run playbook. Pushed in batch 3; activation confirmation remains outstanding.",
       "codex": "Source review complete; local preparation does not claim rollout."
     },
     {
@@ -1730,7 +1730,7 @@
       "item": "principle-test-behavior-not-implementation",
       "status": "adapted",
       "evidence": "docs/pstack-audit/batch-3-delta.md; frozen upstream comparison 1e5c90a4...88d47514",
-      "reason": "Ported observable-contract guidance into TDD, including external effects, meaningful absence and invariants; held OPINIONS stays unchanged. Prepared locally; push approval and activation remain.",
+      "reason": "Ported observable-contract guidance into TDD, including external effects, meaningful absence and invariants; held OPINIONS stays unchanged. Pushed in batch 3; activation confirmation remains outstanding.",
       "codex": "Source review complete; local preparation does not claim rollout."
     },
     {
@@ -1814,21 +1814,22 @@
     "Batch 2 closes the package comparison by retaining the local set and confirms built-in plugin enablement.",
     "Wheelhouse and Guide Part 3 remain pending on the named external evidence blockers below.",
     "Batch 3 closes all 16 assigned source reviews: 9 ported, 4 kept local and 3 skipped.",
-    "Its ports remain local pending push approval and activation; see batch-3-delta.md and batch-3-route-proof.md.",
+    "Its ports are pushed; activation confirmation remains outstanding; see batch-3-delta.md and batch-3-route-proof.md.",
+    "Batch 4 prepares the formal generator locally and records a bounded updater counterexample; maintenance remains batch 5 and the subject-code fix is separate.",
     "The table is generated from audit.json by render.py."
   ],
   "ownership": [
     {
       "entry": "pstack skill: create-formal-verification-skill",
       "lane": "dotfiles",
-      "blocked_by": "none",
-      "order": "4. Review and adapt the generator, then prove one bounded project case."
+      "blocked_by": "push approval and activation",
+      "order": "4. Adopt-adapted locally. Project counterexample and no-verifier case recorded; see batch-4-delta.md. The updater fix is separate."
     },
     {
       "entry": "pstack skill: maintain-formal-verification-skill",
       "lane": "dotfiles",
-      "blocked_by": "none",
-      "order": "5. Follow the first project proof with a source-drift check."
+      "blocked_by": "batch 4 proof acceptance",
+      "order": "5. Use the batch 4 project proof to review tooling and prove a source-drift check; remains pending."
     },
     {
       "entry": "pstack support: Claude Code package",
@@ -2039,5 +2040,8 @@
       "order": "1. Migrate routing and prove discovery and fresh-context execution locally."
     }
   ],
-  "rollout_status": "Batches 1 and 2 are approved, pushed and independently verified through 2e8783a; the main checkout is fast-forwarded there. One rebuild for both batches is requested but not confirmed. Batch 3 remains local and unpushed."
+  "rollout_status": "Batches 1-3 are approved and pushed through d0f515d. Rebuild confirmation remains outstanding. Batch 4 is local and unpushed; it changes no live skill links or system configuration.",
+  "batch_4_outcomes": {
+    "create-formal-verification-skill": "adopt-adapted"
+  }
 }

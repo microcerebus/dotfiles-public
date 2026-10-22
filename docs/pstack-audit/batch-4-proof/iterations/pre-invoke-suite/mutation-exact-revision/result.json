@@ -1,0 +1,14 @@
+{
+  "exit": 12,
+  "invariants": [
+    "ExactSelectedRevision"
+  ],
+  "model_sha256": "4de3ea27d9b0de8c1645054c988d90488dc64f87e2faf05f648a357b1a2990dc",
+  "name": "mutation-exact-revision",
+  "result": "counterexample",
+  "source_sha256": "caddd5ac8d715b784ab734a9d87fc74522dae142117d8d11d1eb14ea33435173",
+  "spec": "Spec",
+  "states_distinct": 121385,
+  "states_generated": 374107,
+  "violated": "ExactSelectedRevision"
+}

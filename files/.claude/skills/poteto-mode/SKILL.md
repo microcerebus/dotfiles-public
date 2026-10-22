@@ -1,6 +1,6 @@
 ---
 name: poteto-mode
-description: "Always load when asked to catch up, say what you think the user wants, confirm your understanding of their goals, or challenge their thinking through questions. Also routes investigations, fixes, plans, designs, prototypes, features, refactors, perf work, reviews, docs and code explanations to pstack playbooks."
+description: "Always load when asked to catch up, say what you think the user wants, confirm your understanding of their goals, or challenge their thinking through questions. Also routes investigations, fixes, plans, designs, prototypes, features, refactors, perf work, reviews, docs, formal verification and code explanations to pstack playbooks."
 ---
 
 # Poteto mode
@@ -23,6 +23,7 @@ Unattended work without such a predicate goes to figure-it-out, whose first phas
 | Catch me up on this work or what changed while I was away | `references/catch-up.md` |
 | Say what you think I want to achieve, restate my goals, or check your understanding before proceeding | `references/understand-goals.md` |
 | Challenge my thinking through questions, grill me on an idea, or run an interview drill | `references/grill.md` |
+| Explicitly model-check a race, prove an invariant, or create a formal verification skill | `references/formal-verification.md` |
 | A reported bug to reproduce and fix | `references/bug-fix.md` |
 | An unclear failure, or research toward a decision: a cause, a risk, a choice between options | `references/investigate.md` |
 | Explain code, a change or a design so a person understands it ("how does X work", "why is it like this") | `references/explain.md` |

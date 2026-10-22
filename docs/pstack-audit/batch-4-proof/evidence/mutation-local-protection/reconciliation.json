@@ -1,0 +1,10 @@
+{
+  "invariant": "ProtectLocalRebuild",
+  "mapping": "cmd_apply:448 -> AdvanceAllowed used by ApplyAdvance",
+  "model_new": "AdvanceAllowed == TRUE",
+  "model_old": "AdvanceAllowed == Ancestor(a.sampled, a.want)",
+  "name": "mutation-local-protection",
+  "source_new": "elif false; then",
+  "source_old": "elif ! user_git merge-base --is-ancestor \"$running\" \"$want\"; then",
+  "spec": "NoHumanSpec"
+}

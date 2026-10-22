@@ -111,3 +111,70 @@ Dated proof-boundary descriptions remain historical and link to current status.
 The targeted copy check failed before the correction and passes afterward, alongside renderer consistency and whitespace checks.
 Regenerated T3 previews at 390 px and 728 px pass the current-copy, row-count and overflow checks; both screenshots were inspected.
 This factual correction does not start another review round or authorize pushing batch 3.
+
+## Batch 4 checks
+
+- `python3 -I scripts/check-skills` passes the global skill tree and existing repository-local verifier.
+- `python3 -I scripts/check-skills --local .agents/skills` passes the generated project verifier.
+  The system skill-creator's generic validator rejects the established Claude `disable-model-invocation` field.
+  The repository checker validates that field and Codex's separate explicit-only policy; the generic validator was not changed.
+- `python3 -I tests/check_skills_test.py`: 20 tests pass.
+- `python3 -I tests/check_plan_test.py`: 14 tests pass.
+- The six browser/fallback fixture files listed in the batch 3 checks pass all 76 tests.
+  They use stubs and a throwaway replay browser; no agent Chrome session ran.
+- `bash tests/claude_fallback_test.sh`: 30 shell assertions and 22 Python tests pass.
+  No live watcher or provider switch ran.
+- `bash tests/pre_push_test.sh`: 68 assertions pass, including a repeat after staging the integrated proof and audit.
+- `nix flake check --no-build`: Darwin evaluation passes without a system build or activation.
+  Nix evaluation confirms 29 Codex aliases, including the new formal generator.
+- `python3 docs/pstack-audit/batch-4-proof/verify.py`: the parent rerun returns 12, reproducing the baseline rollback counterexample, both bounded passes and all three intended mutation failures.
+  The [proof report](batch-4-proof/README.md) records exact counts, bounds, output and limitations.
+- A fresh read-only Astra High session follows poteto-mode's formal route and returns no-verifier for the README heading requirement.
+  The original ordinary check passes and both in-memory broken variants fail.
+  [The invocation record](batch-4-route-proof.md) states the prompt, observed reads and limits.
+- `python3 docs/pstack-audit/render.py --check`: all 200 rows and three generated outputs agree.
+  It checks the batch 4 selection and keeps maintenance pending.
+- T3 document previews at 390 px and 728 px: both images inspected; no horizontal overflow or console errors.
+  The generator is adapted, maintenance is pending, and combined filters, case-insensitive search, empty state and reset pass.
+- All 36 local Markdown links in the new batch reports and generated skill resolve.
+  Full-diff whitespace checks pass with the proof's narrow attributes preserving raw captured evidence.
+- Fresh-context Astra High self-review found a first-run bootstrap defect: the runner read the TLC wrapper before realizing its closure.
+  The runner now realizes the pinned temporary shell first.
+  `python3 docs/pstack-audit/batch-4-proof/check_bootstrap.py` fails on the old runner and passes on the fix.
+  A second parent run of the real pinned TLC suite returns 12 with the same model results.
+
+The updater source, preferences and live skill links are unchanged.
+The bounded counterexample is supported by source inspection; it is not an executed Nix activation or a complete proof of implementation behavior.
+The maintenance skill, updater fix and live rollout remain separate work.
+
+## Batch 4 independent review
+
+One fresh-context Codex Astra High review, with Fast off, found no actionable findings or blockers in the complete batch 4 diff.
+No re-review was needed.
+The reviewer confirmed the pinned verifier and runtime, explicit-only policies, route evidence, maintenance deferral and source/model correspondence.
+It checked hashes, configurations, mutation diffs, exit codes and state counts across the final suite, historical iterations and parent reruns.
+It independently reproduced the missing-closure regression against the old runner and confirmed that the fix passes.
+Both skill checks, renderer consistency and full-diff whitespace checks also passed independently.
+
+The reviewer did not rerun TLC, the broader fixture suites, Nix evaluation, document previews or live activation.
+It inspected their saved evidence.
+It checked the child decision log against artifacts and the parent decision trail against the named current-session transcript and heading transcript.
+It reported no trail flags.
+The entire run used Codex; independent contexts do not constitute cross-provider evidence.
+
+This review covers the implementation, proof and audit before this review record and the final local commit.
+The authorized pack repoint and HTTP check follow that commit.
+
+## Batch 4 pre-push fix
+
+Rebasing batch 4 onto two daily flake updates made `verify.py` inconclusive: it read its nixpkgs pin from the root `flake.lock`, which the daily update moves.
+The runner now pins nixpkgs `7a6522c` itself by revision and NAR hash and resolves the same nixpkgs and tlaplus store paths.
+It also keeps Nix's stderr out of the parsed tool resolution: on a store without the pinned source, a "copying path" line had broken the JSON parse.
+`SOURCE_COMMIT` now names `d553897`, the main commit that last changed the subject with the reviewed bytes, instead of a pre-rebase batch commit.
+
+- `python3 -I docs/pstack-audit/batch-4-proof/check_pinned_toolchain.py`: three tests pass against the fixed runner and all three fail against the pre-fix runner.
+  `test_root_lock_bump_does_not_change_tool_pin` stopped on the root-lock check, `test_nix_stderr_stays_out_of_resolution_json` failed to decode JSON, and `test_source_commit_holds_reviewed_source_on_main` found `da07c62` was not on origin/main.
+- `python3 docs/pstack-audit/batch-4-proof/check_bootstrap.py` passes.
+- `python3 docs/pstack-audit/batch-4-proof/verify.py` on the rebased tree, with the root lock at a newer nixpkgs, returns 12.
+  All eight case results, exit codes, generated and distinct state counts, and source and model hashes match the committed evidence.
+- The other batch 4 checks above pass again on the fixed tree.

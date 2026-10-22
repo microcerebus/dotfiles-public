@@ -1,0 +1,9 @@
+Evidence: docs/pstack-audit/batch-4-proof/evidence
+baseline: counterexample, TLC exit 12, violated=ProtectLocalRebuild
+baseline-handoff-and-exact: pass, TLC exit 0, violated=None
+baseline-no-human-diagnostic: pass, TLC exit 0, violated=None
+mutation-handoff: counterexample, TLC exit 12, violated=HandoffIsFetched
+mutation-exact-revision: counterexample, TLC exit 12, violated=ExactSelectedRevision
+mutation-local-protection: counterexample, TLC exit 12, violated=ProtectLocalRebuild
+baseline-restored: counterexample, TLC exit 12, violated=ProtectLocalRebuild
+Restored baseline: counterexample; all three source/model mutations detected.

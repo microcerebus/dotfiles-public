@@ -1,0 +1,11 @@
+--- baseline/scripts/dotfiles-autoupdate
++++ scratch/scripts/dotfiles-autoupdate
+@@ -445,7 +445,7 @@
+   if [ "$running" = "$want" ]; then
+     if hm_applied; then finish; return; fi
+     log "system is at ${want:0:12} but Home Manager is not applied; switching again"
+-  elif ! user_git merge-base --is-ancestor "$running" "$want"; then
++  elif false; then
+     note "waiting:$running" "$push_after" "the running system is built from ${running:0:12}, which is not on origin/main yet; waiting for push"
+     finish
+     return

@@ -1,0 +1,15 @@
+{
+  "exit": 0,
+  "invariants": [
+    "HandoffIsFetched",
+    "ExactSelectedRevision"
+  ],
+  "model_sha256": "b6b17312fec6c82d07ca89d0de26f883a89c75e774da0f2dd93e4a8f1af94103",
+  "name": "baseline-handoff-and-exact",
+  "result": "pass",
+  "source_sha256": "fb5b63e9bfd4ed2580f790f7d55003b7ee12b95e5d21e95debe3fcc8181d2442",
+  "spec": "Spec",
+  "states_distinct": 227168,
+  "states_generated": 760518,
+  "violated": null
+}

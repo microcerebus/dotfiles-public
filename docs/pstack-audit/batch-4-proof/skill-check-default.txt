@@ -1,0 +1,37 @@
+ok agent-device: invocable=yes refs_checked=0 desc=613
+ok architect: invocable=no refs_checked=7 desc=238
+ok arena: invocable=no refs_checked=1 desc=239
+ok blast-radius: invocable=no refs_checked=0 desc=267
+ok chrome-devtools-axi: invocable=yes refs_checked=0 desc=253
+ok codex-computer-use: invocable=yes refs_checked=0 desc=338
+ok codex-review: invocable=no refs_checked=1 desc=266
+ok correct: invocable=yes refs_checked=0 desc=409
+ok create-formal-verification-skill: invocable=no refs_checked=0 desc=126
+ok create-verification-skill: invocable=no refs_checked=3 desc=270
+ok figure-it-out: invocable=no refs_checked=1 desc=264
+ok grilling: invocable=no refs_checked=0 desc=152
+ok how: invocable=no refs_checked=4 desc=297
+ok in-your-own-words: invocable=no refs_checked=0 desc=131
+ok interrogate: invocable=no refs_checked=5 desc=217
+ok ketchup: invocable=no refs_checked=0 desc=180
+ok maintain-verification-skill: invocable=no refs_checked=0 desc=260
+ok no-mistakes: invocable=yes refs_checked=1 desc=333
+ok pause-safely: invocable=yes refs_checked=0 desc=344
+ok poteto-mode: invocable=yes refs_checked=66 desc=333
+ok recall: invocable=yes refs_checked=0 desc=327
+ok reflect: invocable=no refs_checked=4 desc=175
+ok session-pickup: invocable=yes refs_checked=0 desc=230
+ok sharpen: invocable=no refs_checked=0 desc=167
+ok show-me-your-work: invocable=yes refs_checked=1 desc=322
+ok standing-orders: invocable=yes refs_checked=0 desc=308
+ok swarm: invocable=no refs_checked=1 desc=149
+ok tdd: invocable=no refs_checked=0 desc=225
+ok teach: invocable=no refs_checked=0 desc=251
+ok technical-writing: invocable=no refs_checked=0 desc=249
+ok unslop: invocable=yes refs_checked=0 desc=49
+ok visual-reply: invocable=yes refs_checked=0 desc=439
+ok why: invocable=no refs_checked=16 desc=388
+model-invocable listing: 4458 chars of name plus description
+ok verify-agent-board (repo-local): invocable=yes refs_checked=24 desc=545
+repo-local listing: 563 more chars, in sessions inside this repo only
+all skills ok

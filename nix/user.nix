@@ -440,8 +440,8 @@ in
   # upstream ships them. poteto-mode (added 2026-10-16, same pin) is the one
   # model-invocable entry: its body routes by task type to one playbook in
   # references/, and the playbooks run the slash-only skills by reading their
-  # SKILL.md. 13 playbooks kept or merged from upstream's 24, plus three
-  # local routes for catch-up, goal restatement and grilling; Cursor's PR
+  # SKILL.md. 13 playbooks kept or merged from upstream's 24, plus four
+  # local routes for catch-up, goal restatement, grilling and formal checks; Cursor's PR
   # machinery (babysit, shipping, autopilot-*, orchestrate, opening-a-pr,
   # bugbot-triage, watch-pr and orch scripts) and the playbooks that are
   # skills here (session-pickup, pause-safely) were dropped. check-plan.py
@@ -454,6 +454,9 @@ in
   home.file.".claude/skills/correct".source = link "files/.claude/skills/correct";
   home.file.".claude/skills/show-me-your-work".source = link "files/.claude/skills/show-me-your-work";
   home.file.".claude/skills/create-verification-skill".source = link "files/.claude/skills/create-verification-skill";
+  # Batch 4 adapts the 0.15.29 formal generator with pinned-tool provenance,
+  # no-verifier outcomes and a narrow poteto-mode route; no verifier is global.
+  home.file.".claude/skills/create-formal-verification-skill".source = link "files/.claude/skills/create-formal-verification-skill";
   home.file.".claude/skills/maintain-verification-skill".source = link "files/.claude/skills/maintain-verification-skill";
   home.file.".claude/skills/tdd".source = link "files/.claude/skills/tdd";
   home.file.".claude/skills/blast-radius".source = link "files/.claude/skills/blast-radius";
@@ -480,6 +483,7 @@ in
   home.file.".agents/skills/codex-review".source = link "files/.claude/skills/codex-review";
   home.file.".agents/skills/correct".source = link "files/.claude/skills/correct";
   home.file.".agents/skills/create-verification-skill".source = link "files/.claude/skills/create-verification-skill";
+  home.file.".agents/skills/create-formal-verification-skill".source = link "files/.claude/skills/create-formal-verification-skill";
   home.file.".agents/skills/figure-it-out".source = link "files/.claude/skills/figure-it-out";
   home.file.".agents/skills/grilling".source = link "files/.claude/skills/grilling";
   home.file.".agents/skills/how".source = link "files/.claude/skills/how";

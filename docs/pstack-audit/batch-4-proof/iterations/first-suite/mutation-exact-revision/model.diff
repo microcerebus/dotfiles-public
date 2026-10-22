@@ -1,0 +1,11 @@
+--- baseline/Handoff.tla
++++ scratch/Handoff.tla
+@@ -32,7 +32,7 @@
+ 
+ \* Mutation sites: these expressions are MANUALLY reconciled with source edits.
+ PublishValue == s.fetched
+-RequestedRevision == a.want
++RequestedRevision == IF g.dirty THEN "Dirty" ELSE g.head
+ AdvanceAllowed == Ancestor(a.sampled, a.want)
+ 
+ SyncAcquire ==

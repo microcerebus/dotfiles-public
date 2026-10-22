@@ -1,0 +1,107 @@
+[
+  {
+    "exit": 12,
+    "invariants": [
+      "HandoffIsFetched",
+      "ExactSelectedRevision",
+      "ProtectLocalRebuild"
+    ],
+    "model_sha256": "2d97a4f4cbe1183efee0a36583e7bfd2b842f041dd40ed68cabfd11047876588",
+    "name": "baseline",
+    "result": "counterexample",
+    "source_sha256": "fb5b63e9bfd4ed2580f790f7d55003b7ee12b95e5d21e95debe3fcc8181d2442",
+    "spec": "Spec",
+    "states_distinct": 167580,
+    "states_generated": 543351,
+    "violated": "ProtectLocalRebuild"
+  },
+  {
+    "exit": 0,
+    "invariants": [
+      "HandoffIsFetched",
+      "ExactSelectedRevision"
+    ],
+    "model_sha256": "2d97a4f4cbe1183efee0a36583e7bfd2b842f041dd40ed68cabfd11047876588",
+    "name": "baseline-handoff-and-exact",
+    "result": "pass",
+    "source_sha256": "fb5b63e9bfd4ed2580f790f7d55003b7ee12b95e5d21e95debe3fcc8181d2442",
+    "spec": "Spec",
+    "states_distinct": 227168,
+    "states_generated": 760518,
+    "violated": null
+  },
+  {
+    "exit": 0,
+    "invariants": [
+      "HandoffIsFetched",
+      "ExactSelectedRevision",
+      "ProtectLocalRebuild"
+    ],
+    "model_sha256": "2d97a4f4cbe1183efee0a36583e7bfd2b842f041dd40ed68cabfd11047876588",
+    "name": "baseline-no-human-diagnostic",
+    "result": "pass",
+    "source_sha256": "fb5b63e9bfd4ed2580f790f7d55003b7ee12b95e5d21e95debe3fcc8181d2442",
+    "spec": "NoHumanSpec",
+    "states_distinct": 103552,
+    "states_generated": 205416,
+    "violated": null
+  },
+  {
+    "exit": 12,
+    "invariants": [
+      "HandoffIsFetched"
+    ],
+    "model_sha256": "e38f3c4a24167dfc796b411f8a7596a1066876f5d2ad2d7033b376ea3c69446d",
+    "name": "mutation-handoff",
+    "result": "counterexample",
+    "source_sha256": "345fa51c5e07ff50af08be62e06f4b004dcf5d440b7df2383eca20f06377bf6b",
+    "spec": "Spec",
+    "states_distinct": 49935,
+    "states_generated": 137631,
+    "violated": "HandoffIsFetched"
+  },
+  {
+    "exit": 12,
+    "invariants": [
+      "ExactSelectedRevision"
+    ],
+    "model_sha256": "b911ea0f972a355eb7e5c842a1cfca25262cc890ab33effc945db6f4746213c6",
+    "name": "mutation-exact-revision",
+    "result": "counterexample",
+    "source_sha256": "caddd5ac8d715b784ab734a9d87fc74522dae142117d8d11d1eb14ea33435173",
+    "spec": "Spec",
+    "states_distinct": 121385,
+    "states_generated": 374107,
+    "violated": "ExactSelectedRevision"
+  },
+  {
+    "exit": 12,
+    "invariants": [
+      "ProtectLocalRebuild"
+    ],
+    "model_sha256": "07160603c59a707ce73254d37a40ca669a6935964750e7dd72049ac01d1c92e3",
+    "name": "mutation-local-protection",
+    "result": "counterexample",
+    "source_sha256": "eaccdea3b3cf2277c35c0da0d549d1c42baf26bf5fba90d2b54dd10a8771e413",
+    "spec": "NoHumanSpec",
+    "states_distinct": 84446,
+    "states_generated": 165954,
+    "violated": "ProtectLocalRebuild"
+  },
+  {
+    "exit": 12,
+    "invariants": [
+      "HandoffIsFetched",
+      "ExactSelectedRevision",
+      "ProtectLocalRebuild"
+    ],
+    "model_sha256": "2d97a4f4cbe1183efee0a36583e7bfd2b842f041dd40ed68cabfd11047876588",
+    "name": "baseline-restored",
+    "result": "counterexample",
+    "source_sha256": "fb5b63e9bfd4ed2580f790f7d55003b7ee12b95e5d21e95debe3fcc8181d2442",
+    "spec": "Spec",
+    "states_distinct": 167580,
+    "states_generated": 543351,
+    "violated": "ProtectLocalRebuild"
+  }
+]

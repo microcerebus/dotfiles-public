@@ -1,0 +1,4 @@
+# Preserve unified-diff context lines and captured tool output byte for byte.
+*.diff -whitespace
+tlc-wrapper.txt -whitespace
+whitespace-check.txt -whitespace

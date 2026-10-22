@@ -1,0 +1,16 @@
+{
+  "exit": 12,
+  "invariants": [
+    "HandoffIsFetched",
+    "ExactSelectedRevision",
+    "ProtectLocalRebuild"
+  ],
+  "model_sha256": "af2f1e94e78d563c252f2c50a1bc253052e0f55663bbfe90cf65ef70090eaf7a",
+  "name": "baseline",
+  "result": "counterexample",
+  "source_sha256": "fb5b63e9bfd4ed2580f790f7d55003b7ee12b95e5d21e95debe3fcc8181d2442",
+  "spec": "Spec",
+  "states_distinct": 175540,
+  "states_generated": 540021,
+  "violated": "ProtectLocalRebuild"
+}

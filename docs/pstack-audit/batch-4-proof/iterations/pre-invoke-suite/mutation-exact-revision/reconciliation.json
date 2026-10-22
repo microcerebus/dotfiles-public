@@ -1,0 +1,10 @@
+{
+  "invariant": "ExactSelectedRevision",
+  "mapping": "cmd_apply:470 -> RequestedRevision used by ApplyInvoke",
+  "model_new": "RequestedRevision == IF g.dirty THEN \"Dirty\" ELSE g.head",
+  "model_old": "RequestedRevision == a.want",
+  "name": "mutation-exact-revision",
+  "source_new": "darwin-rebuild switch --flake \"$repo#$host\"",
+  "source_old": "darwin-rebuild switch --flake \"git+file://$repo?rev=$want#$host\"",
+  "spec": "Spec"
+}
