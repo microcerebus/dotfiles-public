@@ -16,6 +16,13 @@
 # and no trusted Nix, and runs no jobs if any of it fails. After every job a
 # hook wipes the job's HOME, TMPDIR and work dir, the way a hosted runner
 # starts each job on a fresh VM.
+# Tool cache: the job-started hook copies the Node that job-tracker pins from
+# the Nix store into the job's tool cache, so setup-node finds it there and
+# needs no network (toolSeed below). Jobs get a copy; the store original is
+# root-owned and read-only, so no job can change the seed itself. Each job
+# gets a fresh copy: before copying, job-started clears any flags a job set
+# on the old copy (chflags uchg) and deletes it, and refuses the job if it
+# cannot.
 # Not covered: other users' listeners on this Mac's loopback and LAN
 # addresses (the agent Chrome's DevTools, T3 Code, the packs server). macOS delivers
 # that traffic without pf ever seeing it, so the runner can connect to them,
@@ -43,6 +50,33 @@ let
   inbox = "${root}/inbox";
   evidence = "${root}/evidence";
   logDir = "/var/log/github-runner";
+  # The runner's default (work/_tool), set explicitly so the hook and the
+  # runner agree. Inside work, so every job's wipe clears it.
+  toolCache = "${root}/work/_tool";
+
+  # The Node that job-tracker's .node-version names. Bump both together: set
+  # version, then hash to `nix hash convert --hash-algo sha256 <hex>` of the
+  # darwin-arm64 line in https://nodejs.org/dist/v<version>/SHASUMS256.txt. If they drift,
+  # setup-node misses the cache and downloads the job's version as before.
+  node = {
+    version = "22.23.2";
+    hash = "sha256-YRMPOUwWMNIR3VCuzENT03lIDzbTrJE82F27oa7VhcY=";
+  };
+  # Laid out the way @actions/tool-cache looks for a tool:
+  # <tool>/<version>/<arch>, plus <arch>.complete beside it. arm64 is what
+  # setup-node's os.arch() reports on this Apple silicon Mac. runCommand runs
+  # no fixup, so the binaries stay byte for byte (and signed) as released.
+  toolSeed = pkgs.runCommand "github-runner-tool-seed" {
+    src = pkgs.fetchurl {
+      url = "https://nodejs.org/dist/v${node.version}/node-v${node.version}-darwin-arm64.tar.gz";
+      inherit (node) hash;
+    };
+  } ''
+    mkdir -p $out/node/${node.version}
+    tar -xzf $src -C $out/node/${node.version}
+    mv $out/node/${node.version}/node-v${node.version}-darwin-arm64 $out/node/${node.version}/arm64
+    touch $out/node/${node.version}/arm64.complete
+  '';
   pfRules = pkgs.writeText "github-runner.pf"
     (builtins.replaceStrings [ "@uid@" ] [ (toString id) ] (builtins.readFile ./github-runner.pf));
 
@@ -55,6 +89,8 @@ let
     work=${root}/work
     home=${root}/home
     tmp=${root}/tmp
+    tool=${toolCache}
+    seed=${toolSeed}
     inbox=${inbox}
     protected=/Users/${username}
     anchor=com.apple/github-runner
@@ -144,6 +180,7 @@ in
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24 = "true";
       ACTIONS_RUNNER_HOOK_JOB_STARTED = "${jobStarted}";
       ACTIONS_RUNNER_HOOK_JOB_COMPLETED = "${jobCompleted}";
+      RUNNER_TOOL_CACHE = toolCache;
     };
     serviceConfig = {
       Label = "com.${username}.github-runner";

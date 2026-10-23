@@ -145,6 +145,13 @@ fresh() {
     tcp4 "127.0.0.1.$open" ESTABLISHED >"$r/log/netstat.txt"
   printf '%s\n' 'scrub-anchor "com.apple/*" all fragment reassemble' 'anchor "com.apple/*" all' >"$r/log/pf.main"
   echo "pass all" >"$r/rules.pf"
+  # A tool seed as nix/github-runner.nix builds it: read-only, like the store.
+  mkdir -p "$r/seed/node/22.23.2/arm64/bin" "$r/seed/node/22.23.2/arm64/lib"
+  printf '#!/bin/sh\necho v22.23.2\n' >"$r/seed/node/22.23.2/arm64/bin/node"
+  chmod +x "$r/seed/node/22.23.2/arm64/bin/node"
+  ln -s ../lib/npm-cli.js "$r/seed/node/22.23.2/arm64/bin/npm"
+  touch "$r/seed/node/22.23.2/arm64/lib/npm-cli.js" "$r/seed/node/22.23.2/arm64.complete"
+  chmod -R a-w "$r/seed"
   cat >"$r/conf" <<EOF
 url=https://github.com/owner/repo
 name=testhost
@@ -154,6 +161,8 @@ state=$r/state
 work=$r/work
 home=$r/home
 tmp=$r/tmp
+tool=$r/work/_tool
+seed=$r/seed
 inbox=$r/inbox
 protected=$r/protected
 anchor=com.apple/github-runner
@@ -176,6 +185,8 @@ seed() {
 }
 
 empty_dir() { [ -z "$(ls -A "$1")" ]; }
+# node_says: what the job's copy of node prints, or nothing if there is none.
+node_says() { "$r/work/_tool/node/22.23.2/arm64/bin/node" 2>/dev/null || true; }
 
 # ── check ──────────────────────────────────────────────────────────────────
 fresh; run check
@@ -301,6 +312,65 @@ fresh; chmod 100 "$r/protected"; run job-started
 if [ "$code" != 0 ] && grep -q "refusing to run jobs" <<<"$out"; then ok "job-started fails the job when not isolated"
 else bad "job-started fails the job when not isolated" "exit $code" "$out"; fi
 
+fresh; run job-started
+t="$r/work/_tool/node/22.23.2"
+if [ "$code" = 0 ] && grep -qx "tool cache: node/22.23.2/arm64 from $r/seed" <<<"$out" \
+  && [ -e "$t/arm64.complete" ] && [ "$(node_says)" = v22.23.2 ] \
+  && [ "$(readlink "$t/arm64/bin/npm")" = ../lib/npm-cli.js ] \
+  && touch "$t/arm64/bin/pnpm" 2>/dev/null \
+  && [ ! -w "$r/seed/node/22.23.2/arm64/bin" ] && [ ! -e "$r/seed/node/22.23.2/arm64/bin/pnpm" ]; then
+  ok "job-started copies the pinned Node into a tool cache the job can write, leaving the seed read-only"
+else bad "job-started copies the pinned Node into a tool cache the job can write, leaving the seed read-only" "exit $code" "$out" "$(find "$r/work" -ls 2>&1 | head -20)"; fi
+
+# A job swaps in its own node and locks it and the marker with the user
+# immutable flag, which the runner user may set on its own files. Neither
+# the wipe nor the next job's copy may leave it in place.
+poison() {
+  local t="$r/work/_tool/node/22.23.2"
+  mkdir -p "$t/arm64/bin" && printf '#!/bin/sh\necho poisoned\n' >"$t/arm64/bin/node" && chmod +x "$t/arm64/bin/node"
+  touch "$t/arm64.complete"
+  chflags uchg "$t/arm64/bin/node" "$t/arm64/bin" "$t/arm64.complete"
+}
+fresh; run job-started; poison; run job-completed; run job-started
+if [ "$code" = 0 ] && [ "$(node_says)" = v22.23.2 ]; then
+  ok "a job cannot hand the next job its own Node by locking its copy"
+else bad "a job cannot hand the next job its own Node by locking its copy" "exit $code" "$out"; fi
+
+# Same lock, but the wipe did not run (the hook crashed, or a reboot came
+# first): the next job's copy must still replace it.
+fresh; run job-started; poison; run job-started
+if [ "$code" = 0 ] && [ "$(node_says)" = v22.23.2 ]; then
+  ok "job-started replaces a locked copy an earlier job left"
+else bad "job-started replaces a locked copy an earlier job left" "exit $code" "$out"; fi
+
+# A leftover the runner user cannot delete at all (here: in a directory it
+# may not write) refuses the job.
+fresh; mkdir -p "$r/work/_tool/node/22.23.2"; touch "$r/work/_tool/node/22.23.2/arm64.complete"
+chmod 500 "$r/work/_tool/node/22.23.2"
+run job-started
+if [ "$code" != 0 ] && grep -q "isolation FAILED: cannot delete $r/work/_tool/node/22.23.2/arm64, which an earlier job left; refusing to run jobs" <<<"$out"; then
+  ok "job-started refuses the job when an earlier job's copy cannot be deleted"
+else bad "job-started refuses the job when an earlier job's copy cannot be deleted" "exit $code" "$out"; fi
+
+# A copy that fails (here: a tool cache the job user cannot write) must not
+# leave a marker setup-node would trust, and must not fail the job: setup-node
+# can still download Node, as it did before the seed.
+fresh; mkdir -p "$r/work/_tool"; chmod 500 "$r/work/_tool"; run job-started
+if [ "$code" = 0 ] && grep -q "warning: could not copy node/22.23.2/arm64 into the tool cache" <<<"$out" \
+  && [ ! -e "$r/work/_tool/node/22.23.2/arm64.complete" ]; then
+  ok "job-started warns, leaves no marker and runs the job when the copy fails"
+else bad "job-started warns, leaves no marker and runs the job when the copy fails" "exit $code" "$out"; fi
+
+fresh; run job-started; mkdir -p "$r/work/_tool/node/24.1.0/arm64"; run job-completed
+if [ "$code" = 0 ] && [ "$(grep -c '^::warning::' <<<"$out")" = 1 ] \
+  && grep -qx "::warning::setup-node downloaded node 24.1.0; the runner seeds 22.23.2; bump node in nix/github-runner.nix" <<<"$out"; then
+  ok "job-completed warns when setup-node downloaded a Node the runner does not seed"
+else bad "job-completed warns when setup-node downloaded a Node the runner does not seed" "exit $code" "$out"; fi
+
+fresh; run job-started; chmod -R a-w "$r/work/_tool" 2>/dev/null || true; run job-completed
+if [ "$code" = 0 ] && empty_dir "$r/work"; then ok "job-completed wipes the job's tool cache"
+else bad "job-completed wipes the job's tool cache" "exit $code" "$out" "$(ls -A "$r/work")"; fi
+
 # ── job-completed ──────────────────────────────────────────────────────────
 fresh; seed "$r/home"; seed "$r/tmp"; seed "$r/work"
 mkdir -p "$r/work/_temp/x" "$r/work/_PipelineMapping/x" "$r/work/_actions/a" "$r/work/_tool/node" "$r/work/repo/repo"
@@ -424,5 +494,9 @@ for line in "mkdir -p $store" "chown _github-runner:staff $store" "chmod 2750 $s
 done
 if [ -z "$missing" ]; then ok "activation creates the evidence store, runner-owned and readable by staff"
 else bad "activation creates the evidence store, runner-owned and readable by staff" "missing:$missing"; fi
+
+cache=$(nix eval --raw "$repo#darwinConfigurations.myhost.config.launchd.daemons.github-runner.serviceConfig.EnvironmentVariables.RUNNER_TOOL_CACHE" 2>&1 | tail -n 1 || true)
+if [ "$cache" = /var/lib/github-runner/work/_tool ]; then ok "the runner's tool cache is inside its work dir, which every job wipes"
+else bad "the runner's tool cache is inside its work dir, which every job wipes" "RUNNER_TOOL_CACHE=$cache"; fi
 
 exit "$fail"

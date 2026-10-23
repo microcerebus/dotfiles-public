@@ -7,7 +7,8 @@
 #                  the isolation check fails, wipe all job state, register if a
 #                  token is queued, then run the listener.
 #   job-started    runner hook before every job: the isolation check again, so
-#                  a job fails rather than run without it.
+#                  a job fails rather than run without it; then copy the pinned
+#                  tools into the job's tool cache.
 #   job-completed  runner hook after every job: wipe everything the job wrote,
 #                  so one PR's run cannot leave state for the next.
 #   check          isolation check: the runner user must not list or enter the
@@ -24,9 +25,10 @@
 #                  never printing it.
 #
 # <config> is the store file nix/github-runner.nix writes (url name labels bin
-# state work home tmp inbox protected anchor rules loaded). Paths come from it,
-# never from the environment: a job can rewrite HOME or TMPDIR for later steps
-# through GITHUB_ENV, and the completed hook must not follow that.
+# state work home tmp tool seed inbox protected anchor rules loaded). Paths
+# come from it, never from the environment: a job can rewrite HOME or TMPDIR
+# for later steps through GITHUB_ENV, and the completed hook must not follow
+# that.
 # Tests: tests/github_runner_test.sh
 # shellcheck disable=SC2154 # url, name and the paths come from <config>
 set -euo pipefail
@@ -231,6 +233,39 @@ register_queued() {
   rm -rf "$previous"
 }
 
+# seed_tools: copy each tool in $seed (a store path laid out as
+# @actions/tool-cache expects) into the job's tool cache at $tool, so
+# setup-node finds it without the network. A copy, not a link: jobs write
+# beside the tools (corepack enable puts pnpm next to node), and the store
+# copy must stay as it is. Whatever is already there goes first, flags and
+# all: a previous job could have changed it and locked it (chflags uchg) to
+# outlive the wipe. If it cannot go, the job is refused, as check refuses
+# one. The marker goes in last, so a copy cut short is a cache miss, never a
+# broken hit. A tool that fails to copy only warns: setup-node then
+# downloads it, as it did before.
+seed_tools() {
+  local marker rel dest
+  for marker in "$seed"/*/*/*.complete; do
+    [ -e "$marker" ] || continue
+    rel="${marker#"$seed/"}"
+    rel="${rel%.complete}"
+    dest="${tool:?}/$rel"
+    /usr/bin/chflags -R -P nouchg,nouappnd "$dest" "$dest.complete" 2>/dev/null || true
+    /bin/rm -rf "$dest.complete" "$dest" 2>/dev/null || true
+    if [ -e "$dest" ] || [ -L "$dest" ] || [ -e "$dest.complete" ] || [ -L "$dest.complete" ]; then
+      echo "isolation FAILED: cannot delete $dest, which an earlier job left; refusing to run jobs" >&2
+      exit 1
+    fi
+    if /bin/mkdir -p "${dest%/*}" && /bin/cp -R "$seed/$rel" "$dest" \
+      && /bin/chmod -R u+w "$dest" && : >"$dest.complete"; then
+      echo "tool cache: $rel from $seed"
+    else
+      echo "warning: could not copy $rel into the tool cache; setup-node will download it" >&2
+      /bin/rm -rf "$dest" || true
+    fi
+  done
+}
+
 case "$cmd" in
   start)
     echo "=== $(date '+%F %T') github-runner start"
@@ -249,9 +284,20 @@ case "$cmd" in
     ;;
   job-started)
     check
+    seed_tools
     ;;
   job-completed)
     PATH=/usr/bin:/bin
+    # A Node in the tool cache that the seed lacks means setup-node downloaded
+    # it: job-tracker's .node-version moved and the pin did not. Say so in the
+    # job's annotations, before the wipe removes the evidence.
+    pins="$(cd "$seed/node" 2>/dev/null && echo * || true)"
+    for dir in "$tool"/node/*/; do
+      [ -d "$dir" ] || continue
+      dir="${dir%/}"
+      [ -e "$seed/node/${dir##*/}" ] && continue
+      echo "::warning::setup-node downloaded node ${dir##*/}; the runner seeds ${pins:-nothing}; bump node in nix/github-runner.nix"
+    done
     empty "$home"
     empty "$tmp"
     # _temp and _PipelineMapping belong to the runner, which resets them per job.
