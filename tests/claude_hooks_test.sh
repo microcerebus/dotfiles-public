@@ -19,6 +19,7 @@ em=$'—'
 # Containers and VMs: blocked at command position, allowed with approval or as plain text.
 check "blocks docker run"            2 bash_guard.py "$(bash_cmd 'docker run --rm ubuntu true')"
 check "blocks orbctl after &&"       2 bash_guard.py "$(bash_cmd 'cd x && orbctl create ubuntu jt-ci-repro')"
+# shellcheck disable=SC2016 # $(orb list) is the command text under test
 check "blocks orb in subshell"       2 bash_guard.py "$(bash_cmd 'echo $(orb list)')"
 check "blocks open -a OrbStack"      2 bash_guard.py "$(bash_cmd 'open -a OrbStack')"
 check "blocks sudo podman"           2 bash_guard.py "$(bash_cmd 'sudo podman ps')"
@@ -35,6 +36,86 @@ check "allows quoted ampersand"      0 bash_guard.py "$(bash_cmd 'echo "a & dock
 check "allows heredoc body"          0 bash_guard.py "$(bash_cmd $'git commit -F - <<EOF\nfeat: x\n\nDocker images are pinned now\norb list\nEOF')"
 check "allows grep for docker"       0 bash_guard.py "$(bash_cmd 'grep -rn docker README.md')"
 check "allows git log"               0 bash_guard.py "$(bash_cmd 'git log --oneline -3')"
+# Bare darwin-rebuild switches: blocked at command position; the locked
+# commands, read-only actions and text that mentions them pass.
+check "blocks sudo darwin-rebuild switch"   2 bash_guard.py "$(bash_cmd 'sudo darwin-rebuild switch --flake ~/dotfiles')"
+check "blocks switch after cd &&"           2 bash_guard.py "$(bash_cmd 'cd ~/dotfiles && sudo darwin-rebuild switch --flake .#myhost')"
+check "blocks the old rebuild alias text"   2 bash_guard.py "$(bash_cmd 'sudo darwin-rebuild switch --flake /Users/x/dotfiles && brew upgrade')"
+check "blocks darwin-rebuild --rollback"    2 bash_guard.py "$(bash_cmd 'sudo darwin-rebuild --rollback')"
+check "blocks darwin-rebuild -G"            2 bash_guard.py "$(bash_cmd 'sudo darwin-rebuild -G 42')"
+check "blocks --switch-generation="         2 bash_guard.py "$(bash_cmd 'sudo darwin-rebuild --switch-generation=42')"
+check "blocks activate by full path"        2 bash_guard.py "$(bash_cmd 'sudo /run/current-system/sw/bin/darwin-rebuild activate')"
+check "blocks flags before the action"      2 bash_guard.py "$(bash_cmd 'sudo darwin-rebuild --flake . switch')"
+check "blocks nix run darwin-rebuild"       2 bash_guard.py "$(bash_cmd 'sudo nix run nix-darwin/master#darwin-rebuild -- switch --flake .#myhost')"
+check "blocks env-prefixed switch"          2 bash_guard.py "$(bash_cmd 'SUDO_UID=501 darwin-rebuild switch --flake x')"
+check "allows rebuild alias"                0 bash_guard.py "$(bash_cmd 'rebuild')"
+check "allows dotfiles-autoupdate rebuild"  0 bash_guard.py "$(bash_cmd 'sudo dotfiles-autoupdate rebuild ~/dotfiles')"
+check "allows dotfiles-autoupdate rollback" 0 bash_guard.py "$(bash_cmd 'sudo dotfiles-autoupdate rollback 41')"
+check "allows darwin-rebuild build"         0 bash_guard.py "$(bash_cmd 'darwin-rebuild build --flake .#myhost')"
+check "allows darwin-rebuild check"         0 bash_guard.py "$(bash_cmd 'darwin-rebuild check --flake .')"
+check "allows --list-generations"           0 bash_guard.py "$(bash_cmd 'sudo darwin-rebuild --list-generations')"
+check "allows nix run darwin-rebuild build" 0 bash_guard.py "$(bash_cmd 'nix run nix-darwin#darwin-rebuild -- build --flake .')"
+check "allows nix run of another switch"    0 bash_guard.py "$(bash_cmd 'nix run .#deploy -- switch')"
+check "allows grep for a switch"            0 bash_guard.py "$(bash_cmd "git grep -n 'sudo darwin-rebuild switch --flake' -- . | head")"
+check "allows sed over the old alias"       0 bash_guard.py "$(bash_cmd "sed -i '' 's|sudo darwin-rebuild switch|sudo x rebuild|' nix/user.nix")"
+check "allows a commit that names it"       0 bash_guard.py "$(bash_cmd "git commit -m 'fix(rebuild): stop calling darwin-rebuild switch directly'")"
+check "allows a comment that names it"     0 bash_guard.py "$(bash_cmd $'ls # then: sudo darwin-rebuild --rollback; done\necho ok')"
+check "blocks a switch after a comment line" 2 bash_guard.py "$(bash_cmd $'# switch now\nsudo darwin-rebuild switch --flake .')"
+check "allows a heredoc that names it"      0 bash_guard.py "$(bash_cmd $'cat >notes.md <<EOF\nsudo darwin-rebuild --rollback\nEOF')"
+check "allows a <<\\EOF heredoc that names it" 0 bash_guard.py "$(bash_cmd $'cat <<\\EOF\nsudo darwin-rebuild switch\nEOF')"
+# Switches through wrappers, nix run of the nix-darwin flake, and sh -c strings.
+check "blocks nix run of the nix-darwin flake" 2 bash_guard.py "$(bash_cmd 'sudo nix run nix-darwin -- switch --flake .')"
+check "blocks nix run of a github nix-darwin"  2 bash_guard.py "$(bash_cmd 'nix run github:nix-darwin/nix-darwin/nix-darwin-25.05 -- switch')"
+check "blocks nix flags before run"         2 bash_guard.py "$(bash_cmd "sudo nix --extra-experimental-features 'nix-command flakes' run nix-darwin/master#darwin-rebuild -- switch --flake .")"
+check "blocks nix run args without --"      2 bash_guard.py "$(bash_cmd 'sudo nix run nix-darwin#darwin-rebuild switch')"
+check "blocks a timeout wrapper"            2 bash_guard.py "$(bash_cmd 'timeout 900 sudo darwin-rebuild switch --flake .')"
+check "blocks a timeout wrapper with flags" 2 bash_guard.py "$(bash_cmd 'timeout -s KILL 900 darwin-rebuild --rollback')"
+check "blocks a caffeinate wrapper"         2 bash_guard.py "$(bash_cmd 'caffeinate -i sudo darwin-rebuild switch --flake .')"
+check "blocks sudo -u root"                 2 bash_guard.py "$(bash_cmd 'sudo -u root darwin-rebuild switch --flake .')"
+check "blocks bash -c"                      2 bash_guard.py "$(bash_cmd "bash -c 'sudo darwin-rebuild switch --flake .'")"
+check "blocks zsh -lc after cd"             2 bash_guard.py "$(bash_cmd "cd ~/dotfiles && zsh -lc 'git pull && sudo darwin-rebuild switch --flake .'")"
+check "blocks sh -c docker"                 2 bash_guard.py "$(bash_cmd "sh -c 'docker run --rm x'")"
+check "allows bash -c of a build"           0 bash_guard.py "$(bash_cmd "bash -c 'darwin-rebuild build --flake .'")"
+check "allows bash running a script"        0 bash_guard.py "$(bash_cmd 'bash tests/autoupdate_test.sh switch')"
+check "allows nix run of nix-darwin build"  0 bash_guard.py "$(bash_cmd 'nix run nix-darwin -- build --flake .')"
+check "allows nix run of another flake"     0 bash_guard.py "$(bash_cmd 'nix run nixpkgs#hello -- switch')"
+check "allows command -v docker"            0 bash_guard.py "$(bash_cmd 'command -v docker && echo yes')"
+# Comments: only an unquoted # at the start of a word opens one, and quotes inside it are text.
+check "blocks docker after an apostrophe comment" 2 bash_guard.py "$(bash_cmd $'# don\'t start it yet\ndocker run hello')"
+check "blocks docker after a quoted #"      2 bash_guard.py "$(bash_cmd "echo '#' ; docker run hello")"
+check "blocks docker after a quoted shebang" 2 bash_guard.py "$(bash_cmd "printf '#!/bin/sh\\n' > x; docker run hello")"
+check "blocks em dash after a quoted #"     2 bash_guard.py "$(bash_cmd "git commit -m '#42 fix ${em} thing'")"
+check "blocks em dash after an apostrophe comment" 2 bash_guard.py "$(bash_cmd $'# it\'s fine\ngit commit -m \'a '"${em}"$' b\'')"
+check "blocks docker after a trailing comment" 2 bash_guard.py "$(bash_cmd $'ls # note\ndocker run x')"
+# shellcheck disable=SC2016 # ${#arr[@]} is the command text under test
+check "blocks docker after \${#arr[@]}"     2 bash_guard.py "$(bash_cmd 'echo ${#arr[@]}; docker run x')"
+check "blocks docker after x=a#b"           2 bash_guard.py "$(bash_cmd 'x=a#b; docker run x')"
+check "allows a quoted commit body with quotes" 0 bash_guard.py "$(bash_cmd $'git commit -m "$(cat <<\'EOF\'\nfix: say "docker run" once\n\ndocker run x\nEOF\n)"')"
+# The block names the aliases only: on the owner's PATH, dotfiles-autoupdate is the checkout's copy.
+msg=$(bash_cmd 'sudo darwin-rebuild switch' | python3 -I "$hooks/bash_guard.py" 2>&1 >/dev/null || true)
+# shellcheck disable=SC2016 # the backquotes are literal text
+if [[ $msg == *'run `rebuild` (or `rollback`'* && $msg != *dotfiles-autoupdate* ]]; then echo "ok   the switch block names only the aliases"
+else echo "FAIL the switch block names only the aliases: $msg"; fail=1; fi
+# The nix run installable comes before --; what follows is the program's arguments.
+check "allows nix-darwin after nix run --"    0 bash_guard.py "$(bash_cmd 'nix run nixpkgs#ripgrep -- -e nix-darwin -e switch docs')"
+check "allows a nix-darwin path after --"     0 bash_guard.py "$(bash_cmd 'nix run nixpkgs#git -- -C ~/src/nix-darwin switch main')"
+# A backslash-newline continues the command, as in the shell.
+check "blocks a switch across a continuation" 2 bash_guard.py "$(bash_cmd $'sudo darwin-rebuild \\\n  switch --flake .')"
+check "blocks an em dash across a continuation" 2 bash_guard.py "$(bash_cmd $'git commit \\\n  -m \'a '"${em}"$' b\'')"
+check "allows a quoted backslash-newline"     0 bash_guard.py "$(bash_cmd $'echo \'darwin-rebuild \\\nswitch\'')"
+# Reserved words before the command word.
+check "blocks a switch after if"              2 bash_guard.py "$(bash_cmd 'if sudo darwin-rebuild switch --flake .; then echo ok; fi')"
+check "blocks a switch in braces"             2 bash_guard.py "$(bash_cmd '{ sudo darwin-rebuild switch --flake .; }')"
+check "blocks a switch after !"               2 bash_guard.py "$(bash_cmd '! sudo darwin-rebuild switch --flake .')"
+check "blocks a switch after do"              2 bash_guard.py "$(bash_cmd 'for i in 1; do sudo darwin-rebuild switch --flake .; done')"
+check "allows an if that greps for it"        0 bash_guard.py "$(bash_cmd 'if grep -q darwin-rebuild file; then echo ok; fi')"
+check "allows echo docker in braces"          0 bash_guard.py "$(bash_cmd '{ echo docker; }')"
+# Heredoc delimiters with - or . end their body.
+check "allows an END-NOTES heredoc body"      0 bash_guard.py "$(bash_cmd $'cat > notes.md <<\'END-NOTES\'\ndocker run hello\nEND-NOTES')"
+check "allows a MSG.txt heredoc body"         0 bash_guard.py "$(bash_cmd $'cat > notes.md <<\'MSG.txt\'\nsudo darwin-rebuild switch --flake .\nMSG.txt')"
+check "blocks a switch after an END.x heredoc" 2 bash_guard.py "$(bash_cmd $'cat <<END.x\nfoo\nEND.x\nsudo darwin-rebuild switch')"
+# shellcheck disable=SC2016 # $((1<<2)) is the command text under test
+check "blocks a switch after an arithmetic shift" 2 bash_guard.py "$(bash_cmd $'echo $((1<<2))\nsudo darwin-rebuild switch --flake .')"
 # Em dashes in commit messages.
 check "blocks em dash commit"        2 bash_guard.py "$(bash_cmd "git commit -m 'feat: a ${em} b'")"
 check "allows plain commit"          0 bash_guard.py "$(bash_cmd "git commit -m 'feat: a - b'")"

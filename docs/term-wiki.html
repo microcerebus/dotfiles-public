@@ -453,7 +453,8 @@
   <div class="tablewrap">
     <table>
       <tbody>
-        <tr><td class="k"><code>rebuild</code></td><td class="dim">apply the flake (<code>sudo darwin-rebuild switch</code>, after waiting for any auto-update switch in progress) - the one command that changes the machine</td></tr>
+        <tr><td class="k"><code>rebuild</code></td><td class="dim">apply the flake (<code>sudo dotfiles-autoupdate rebuild</code>: darwin-rebuild switch, after waiting for any auto-update switch in progress) - the one command that changes the machine</td></tr>
+        <tr><td class="k"><code>rollback</code></td><td class="dim">switch back to the previous system generation (<code>rollback &lt;n&gt;</code>: generation n), after the same wait; the next auto-update moves forward again unless you push a revert</td></tr>
         <tr><td class="k"><code>v</code> · <code>vim</code></td><td class="dim">nvim (<code>$EDITOR</code> is nvim too)</td></tr>
         <tr><td class="k"><code>lg</code></td><td class="dim">lazygit</td></tr>
         <tr><td class="k"><code>g</code> + git plugin</td><td class="dim">gst · gco · gaa · gp · glog …</td></tr>

@@ -40,7 +40,8 @@ shift
 exec "$@"
 EOF
 # sudo -u <user> [-H] [env VAR=...] cmd: runs cmd as the caller, keeping the
-# stub PATH whatever the caller asked for. STUB_SYNC_STARTS=<pid>: a sync
+# stub PATH whatever the caller asked for. It refuses any user but testuser:
+# root asks git about the repo as its owner, never as itself. STUB_SYNC_STARTS=<pid>: a sync
 # takes its lock as pid <pid> while the daemon asks git about the repo.
 # STUB_HUMAN_SWITCH=<rev>: at that moment, after apply sampled the system,
 # a darwin-rebuild run outside `rebuild` finishes a switch to <rev>, once.
@@ -55,7 +56,11 @@ if [ -n "${STUB_HUMAN_SWITCH:-}" ] && [ ! -e "$STUB_LOG/human-switched" ]; then
   ln -sfn "$(mksystem "$STUB_HUMAN_SWITCH")" "$AUTOUPDATE_SYSTEM"
 fi
 while [ $# -gt 0 ]; do
-  case $1 in -u) shift 2 ;; -H|--set-home) shift ;; *) break ;; esac
+  case $1 in
+    -u) [ "$2" = testuser ] || { echo "sudo: refused -u $2" >>"$STUB_LOG/calls"; exit 1; }; shift 2 ;;
+    -H|--set-home) shift ;;
+    *) break ;;
+  esac
 done
 if [ "${1:-}" = env ]; then
   shift
@@ -189,12 +194,35 @@ EOF
 # on its old generation, as the brew bundle abort of Aug-Oct 2026 did.
 # STUB_SWITCH_HOLD=<dir>: the switch announces itself in <dir>/started.<n>
 # and runs until <dir>/release exists, as a long build does.
+# darwin-rebuild --rollback / --switch-generation <n>: activates the fake
+# generation before the running one, or generation <n> (counted from 1 in
+# build order), and records its revision.
 cat >"$stubs/darwin-rebuild" <<'EOF'
 #!/usr/bin/env bash
-[ "$1" = switch ] && [ "$2" = --flake ] || exit 2
+case $1 in
+  switch) [ "$2" = --flake ] || exit 2 ;;
+  --rollback) [ $# = 1 ] || exit 2 ;;
+  --switch-generation) [ $# = 2 ] || exit 2 ;;
+  *) exit 2 ;;
+esac
 if [ -n "${STUB_SWITCH_HOLD:-}" ]; then
-  echo "$3" >"$STUB_SWITCH_HOLD/started.$(ls "$STUB_SWITCH_HOLD" | grep -c '^started')"
+  echo "$*" >"$STUB_SWITCH_HOLD/started.$(ls "$STUB_SWITCH_HOLD" | grep -c '^started')"
   for _ in $(seq 300); do [ -e "$STUB_SWITCH_HOLD/release" ] && break; /bin/sleep 0.1; done
+fi
+if [ "$1" != switch ]; then
+  gens=$(ls "$SYSTEMS" | grep -- '-darwin-system$' | sort -n)
+  if [ "$1" = --rollback ]; then
+    n=$(grep -nx -- "$(basename "$(readlink "$AUTOUPDATE_SYSTEM")")" <<<"$gens" | cut -d: -f1)
+    n=$((n - 1))
+  else
+    n=$2
+  fi
+  sys="$SYSTEMS/$(sed -n "${n}p" <<<"$gens")"
+  [ "$n" -ge 1 ] && [ -d "$sys" ] && [ "$sys" != "$SYSTEMS/" ] || { echo "darwin-rebuild: no generation $n" >&2; exit 1; }
+  sed -n 's/.*"configurationRevision": *"\([^"]*\)".*/\1/p' "$sys/darwin-version.json" >>"$STUB_LOG/built"
+  ln -sfn "$sys" "$AUTOUPDATE_SYSTEM"
+  ln -sfn "$(cat "$sys/closure")" "$HM_GCROOT"
+  exit 0
 fi
 ref=$3
 if [[ $ref == *'?rev='* ]]; then
@@ -635,6 +663,10 @@ agent=$(nix eval --raw "$hm.launchd.agents.dotfiles-sync.config.ProgramArguments
 daemon=$(nix eval --raw "$darwin.launchd.daemons.dotfiles-autoupdate.command")
 expect_eq "autoupdate-now runs the dotfiles-sync agent's program" "${alias_cmd%% *}" "$agent"
 expect_eq "the root daemon runs the same program" "${daemon%% *}" "$agent"
+rebuild_cmd=$(nix eval --raw "$hm.programs.zsh.shellAliases.rebuild")
+rollback_cmd=$(nix eval --raw "$hm.programs.zsh.shellAliases.rollback")
+expect_eq "rebuild switches through the same program, under its switch lock" "${rebuild_cmd%% && *}" "sudo $agent rebuild $(nix eval --raw "$hm.home.homeDirectory")/dotfiles"
+expect_eq "rollback rolls back through the same program, under its switch lock" "$rollback_cmd" "sudo $agent rollback"
 built_by=$(nix eval --json "$hm.programs.zsh.shellAliases.autoupdate-now" \
   --apply 'a: map (d: d + "^*") (builtins.attrNames (builtins.getContext a))' | jq -r '.[]')
 # shellcheck disable=SC2086 # one installable per derivation
@@ -962,7 +994,8 @@ expect_eq "and says what to do" \
   "$(grep -c '^rebuild: gave up after [0-9]* min: another switch still holds .*Nothing was rebuilt\. See /var/log/dotfiles-autoupdate.log and `dotfiles-autoupdate status`, and run rebuild again once that switch ends\. If the auto-update.s switch is stuck, `sudo pkill -f .darwin-rebuild switch --flake git\[+\]file.` stops it; its activation may still be finishing, so check `pgrep -fl activate` before rebuilding\.$' "$s/rebuild.out")" 1
 expect_eq "a lock held by no auto-update is not blamed on it" \
   "$(grep -c '^rebuild: another switch holds the switch lock (an auto-update deciding, or a rebuild in another terminal); waiting up to 0 min' "$s/rebuild.out")" 1
-pkill -P "$held" 2>/dev/null; kill "$held" 2>/dev/null; wait "$held" 2>/dev/null || true
+# pkill ends lockf too, so the kill can find it gone.
+pkill -P "$held" 2>/dev/null || true; kill "$held" 2>/dev/null || true; wait "$held" 2>/dev/null || true
 
 # Apply never decides while a rebuild holds the lock: it skips at once.
 fresh
@@ -985,5 +1018,141 @@ touch "$s/hold/release"
 wait "$rebuild_pid" || true; wait "$apply_pid" || true
 expect_eq "apply skips while a rebuild holds the switch lock" "$(built | tr '\n' ' ')$(running_rev)" "$L $L"
 unset STUB_SWITCH_HOLD AUTOUPDATE_REBUILD_WAIT
+
+# 32. `rollback` switches back a generation under the same switch lock, so a
+# rollback never overlaps the daemon's switch or is replaced by a decision
+# made before it.
+# rollback_bg <out> [generation]: the owner's `rollback`, in the background, in
+# the alias's environment: sudo sets SUDO_USER, and nothing sets AUTOUPDATE_USER.
+rollback_bg() {
+  local out=$1; shift
+  as "$root_home" env -u AUTOUPDATE_USER SUDO_USER=testuser bash "$script" rollback "$@" </dev/null >"$out" 2>&1 &
+  rollback_pid=$!
+}
+fresh
+at "2026-10-12 01:00"; commit_local "L: unpushed"
+L=$(git -C "$home/dotfiles" rev-parse HEAD)
+as "$root_home" bash "$script" rebuild "$home/dotfiles#testhost" </dev/null >"$s/rebuild.out" 2>&1 || true
+rollback_bg "$s/rollback.out"; rollback_code=0; wait "$rollback_pid" || rollback_code=$?
+expect_eq "rollback switches back to the previous generation" "$(built | tr '\n' ' ')$(running_rev) $rollback_code" "$L $A $A 0"
+expect_eq "and says the auto-update may switch forward again" \
+  "$(grep -c "^rollback: this Mac now runs $A\. If that revision is on origin/main, the hourly auto-update switches forward to origin/main again; to stay on it, push a revert to main\.$" "$s/rollback.out")" 1
+rollback_bg "$s/rollback.out" 2; rollback_code=0; wait "$rollback_pid" || rollback_code=$?
+expect_eq "rollback <n> switches to generation n" "$(running_rev) $rollback_code" "$L 0"
+rollback_bg "$s/rollback.out" latest; rollback_code=0; wait "$rollback_pid" || rollback_code=$?
+expect_eq "rollback refuses a generation that is not a number" "$(running_rev) $rollback_code $(grep -c '^usage: dotfiles-autoupdate rollback \[generation\]$' "$s/rollback.out")" "$L 2 1"
+
+# A daemon switch in progress makes `rollback` say so and wait, then roll
+# back, so the rollback lands last.
+fresh
+at "2026-10-12 02:00"; commit_upstream "C: flake.lock bump" flake.lock
+C=$(git -C "$s/upstream" rev-parse HEAD)
+git -C "$home/dotfiles" fetch -q origin
+mkdir -p "$home/.local/state/dotfiles-autoupdate"
+echo "$C" >"$home/.local/state/dotfiles-autoupdate/revision"
+mkdir -p "$s/hold"; export STUB_SWITCH_HOLD="$s/hold" AUTOUPDATE_REBUILD_WAIT=60
+at "2026-10-12 05:10"
+as "$root_home" bash "$script" apply </dev/null >>"$s/log/out" 2>&1 &
+apply_pid=$!
+wait_for 10 test -e "$s/hold/started.0" || bad "the daemon switch starts" "no switch started"
+rollback_bg "$s/rollback.out"
+wait_for 15 grep -q "waiting up to 1 min" "$s/rollback.out" || true
+expect_eq "rollback says it waits for the auto-update switch" \
+  "$(grep -c '^rollback: the hourly auto-update (pid [0-9]*) is switching this Mac to the pushed origin/main; waiting up to 1 min for it to finish, then rolling back' "$s/rollback.out")" 1
+expect_eq "rollback waits, without switching, while the daemon switches" \
+  "$(started) $(kill -0 "$rollback_pid" 2>/dev/null && echo waiting)" "1 waiting"
+touch "$s/hold/release"
+wait "$apply_pid" || true
+rollback_code=0; wait "$rollback_pid" || rollback_code=$?
+expect_eq "rollback lands after the daemon's switch" \
+  "$(built | tr '\n' ' ')$(running_rev) $rollback_code" "$C $A $A 0"
+
+# `rollback` gives up, with a reason and what to do, rather than waiting forever.
+fresh
+mkdir -p "$s/hold"; export STUB_SWITCH_HOLD="$s/hold" AUTOUPDATE_REBUILD_WAIT=3
+# shellcheck disable=SC2016 # $1 expands in the holder's shell
+lockf -k "$AUTOUPDATE_DAEMON_DIR/switch.lock" sh -c 'touch "$1"; exec /bin/sleep 30' sh "$s/held" & held=$!
+wait_for 5 test -e "$s/held" || bad "the lock holder starts" "no lock taken"
+rollback_bg "$s/rollback.out"
+rollback_code=0; wait "$rollback_pid" || rollback_code=$?
+expect_eq "rollback gives up when the switch lock stays held" "$rollback_code $(started) $(running_rev)" "75 0 $A"
+expect_eq "and leaves no hold" "$(cat "$AUTOUPDATE_DAEMON_DIR/attempt" 2>/dev/null)" ""
+# shellcheck disable=SC2016 # the backquotes are literal text
+expect_eq "and says nothing was rolled back" \
+  "$(grep -c '^rollback: gave up after [0-9]* min: another switch still holds .*Nothing was rolled back\. See /var/log/dotfiles-autoupdate.log and `dotfiles-autoupdate status`, and run rollback again once that switch ends\. .* before rolling back\.$' "$s/rollback.out")" 1
+# pkill ends lockf too, so the kill can find it gone.
+pkill -P "$held" 2>/dev/null || true; kill "$held" 2>/dev/null || true; wait "$held" 2>/dev/null || true
+unset STUB_SWITCH_HOLD AUTOUPDATE_REBUILD_WAIT
+
+# What the hourly apply does after a rollback (README "Updating things").
+# From a pushed revision, the rollback records it as a failed attempt, so
+# apply holds off switching back to it for a day.
+fresh
+at "2026-10-12 02:00"; commit_upstream "C: flake.lock bump" flake.lock
+C=$(git -C "$s/upstream" rev-parse HEAD)
+at "2026-10-12 05:10"; tick
+before=$(running_rev)
+rollback_bg "$s/rollback.out"; rollback_code=0; wait "$rollback_pid" || rollback_code=$?
+expect_eq "rollback from a pushed revision lands" "${before:0:12} $(running_rev) $rollback_code" "${C:0:12} $A 0"
+expect_eq "with no git question as any user but the repo's owner" "$(calls "sudo: refused")" 0
+expect_eq "and says when the auto-update may switch back" \
+  "$(grep -c "^rollback: this Mac now runs $A\\. The hourly auto-update will not switch back to ${C:0:12} before Tue 13 Oct 05:10; a newer push to main switches forward sooner\\. To stay on this revision, push a revert to main\\.$" "$s/rollback.out")" 1
+at "2026-10-12 06:10"; tick
+expect_eq "the hourly apply holds off that revision, with no alarm" "$(running_rev) $(alarms | wc -l | tr -d ' ')" "$A 0"
+at "2026-10-13 05:20"; tick
+expect_eq "and switches forward to it a day later" "$(running_rev)" "$C"
+# The hold is in place before the rollback's switch ends, so no apply can
+# decide between the two.
+fresh
+at "2026-10-12 02:00"; commit_upstream "C: flake.lock bump" flake.lock
+C=$(git -C "$s/upstream" rev-parse HEAD)
+at "2026-10-12 05:10"; tick
+mkdir -p "$s/hold"; export STUB_SWITCH_HOLD="$s/hold"
+rollback_bg "$s/rollback.out"
+wait_for 10 test -e "$s/hold/started.0" || bad "the rollback's switch starts" "no switch started"
+expect_eq "the hold is recorded while the rollback switches" "$(cut -d' ' -f1 "$AUTOUPDATE_DAEMON_DIR/attempt" 2>/dev/null)" "$C"
+touch "$s/hold/release"
+rollback_code=0; wait "$rollback_pid" || rollback_code=$?
+unset STUB_SWITCH_HOLD
+expect_eq "and stays once it lands" "$(running_rev) $rollback_code $(cut -d' ' -f1 "$AUTOUPDATE_DAEMON_DIR/attempt")" "$A 0 $C"
+# A rollback that fails from C takes its new record out again, and puts
+# back the one that was there.
+held_at=$(cat "$AUTOUPDATE_DAEMON_DIR/attempt")
+ln -sfn "$(PATH="$stubs:$PATH" mksystem "$C")" "$AUTOUPDATE_SYSTEM"
+at "2026-10-12 05:30"
+rollback_bg "$s/rollback.out" 99; rollback_code=0; wait "$rollback_pid" || rollback_code=$?
+expect_eq "a failed rollback puts back the record that was there" "$(running_rev) $rollback_code $(cat "$AUTOUPDATE_DAEMON_DIR/attempt")" "$C 1 $held_at"
+rm -f "$AUTOUPDATE_DAEMON_DIR/attempt"
+rollback_bg "$s/rollback.out" 99; rollback_code=0; wait "$rollback_pid" || rollback_code=$?
+expect_eq "and with none, leaves none" "$(running_rev) $rollback_code $(cat "$AUTOUPDATE_DAEMON_DIR/attempt" 2>/dev/null)" "$C 1 "
+# A fresh record of a daemon switch that failed stays, so apply does not
+# retry that revision at once.
+fresh
+at "2026-10-12 02:00"; commit_upstream "C: flake.lock bump" flake.lock
+C=$(git -C "$s/upstream" rev-parse HEAD)
+at "2026-10-12 05:10"; tick
+at "2026-10-12 06:00"; commit_upstream "D: broken" flake.lock
+D=$(git -C "$s/upstream" rev-parse HEAD)
+export STUB_SWITCH_EXIT=1
+at "2026-10-12 06:10"; tick
+unset STUB_SWITCH_EXIT
+failed_at=$(cat "$AUTOUPDATE_DAEMON_DIR/attempt")
+at "2026-10-12 07:00"
+rollback_bg "$s/rollback.out"; rollback_code=0; wait "$rollback_pid" || rollback_code=$?
+expect_eq "a rollback keeps the record of a failed daemon switch" "$(running_rev) $rollback_code $(cat "$AUTOUPDATE_DAEMON_DIR/attempt")" "$A 0 $failed_at"
+at "2026-10-12 07:10"; tick
+expect_eq "so the hourly apply does not retry that revision at once" "$(running_rev) $(built | grep -c "$D")" "$A 1"
+# A rollback to a generation built from unpushed work stays, with the
+# waiting-for-push note.
+fresh
+at "2026-10-12 01:00"; commit_local "L: unpushed"
+L=$(git -C "$home/dotfiles" rev-parse HEAD)
+as "$root_home" bash "$script" rebuild "$home/dotfiles#testhost" </dev/null >/dev/null 2>&1 || true
+commit_local "L2: unpushed"
+as "$root_home" bash "$script" rebuild "$home/dotfiles#testhost" </dev/null >/dev/null 2>&1 || true
+rollback_bg "$s/rollback.out"; rollback_code=0; wait "$rollback_pid" || rollback_code=$?
+at "2026-10-12 05:10"; tick
+expect_eq "a rollback to an unpushed generation stays through the hourly apply" "$(running_rev) $rollback_code" "$L 0"
+expect_eq "with the waiting-for-push note" "$(report | grep -c "${L:0:12}, which is not on origin/main yet; waiting for push")" 1
 
 exit "$fail"

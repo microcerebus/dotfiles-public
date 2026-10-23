@@ -221,6 +221,11 @@ in
       # brew upgrade runs after the switch so one broken cask cannot block it
       # (see homebrew.onActivation in nix/host.nix).
       rebuild = "sudo ${autoupdate} rebuild ${dotfiles} && brew upgrade";
+      # darwin-rebuild --rollback under the same switch lock as rebuild;
+      # `rollback <n>` switches to generation n.
+      # It runs the old generation's brew bundle with --zap, so casks added since
+      # then are zapped (prefs and data deleted).
+      rollback = "sudo ${autoupdate} rollback";
       # The daily dotfiles-sync run, now and in this terminal, where sudo can
       # prompt for the casks that ship a .pkg. The agent's own program
       # (nix/autoupdate.nix), not the checkout on PATH.

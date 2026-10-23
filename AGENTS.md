@@ -11,7 +11,12 @@ Model defaults: `docs/model-routing.md` (Codex-first for new work, Claude fallba
 ## Safety contract (non-negotiable)
 
 - Agents may run local installation, upgrade, and activation commands necessary to complete setup work the user explicitly requests.
-  This includes `brew` and `darwin-rebuild`.
+  This includes `brew`, read-only `darwin-rebuild` actions (`build`, `check`, `--list-generations`), and the `rebuild` and `rollback` aliases.
+- The system switches only through the `rebuild` and `rollback` (or `rollback <n>`) aliases in `nix/user.nix`, which take the auto-update's switch lock.
+  A bare `darwin-rebuild switch`, `activate`, `--rollback` or `--switch-generation` takes no lock, so the hourly apply can run alongside it or replace it (docs/formal/autoupdate-handoff).
+  The one exception is `setup/mac.sh`'s first activation, which runs before the auto-updater and its lock exist.
+  `bash_guard.py` blocks a bare switch from Claude agents only; Codex agents have only this rule.
+  A `rollback` from a pushed revision prints whether, and until when, the auto-update holds off switching back to it (normally a day; a newer push to main switches forward sooner); to stay on the old revision, push a revert to main.
 - Prefer a visible local terminal when supported.
   Otherwise use the agent's shell tool and report the results.
 - Agents may invoke `sudo` for those authorized operations.
@@ -117,7 +122,8 @@ Model defaults: `docs/model-routing.md` (Codex-first for new work, Claude fallba
   brew formula/cask not declared in `nix/host.nix` - a plain `brew install`
   lasts only until the next switch, which runs within about an hour of any
   push to main (the owner kept zap for that, 2026-10-16). Declare everything; adopt
-  already-present apps with `brew install --cask --adopt <cask>` (2026-07-06).
+  already-present apps with `brew install --cask --adopt <cask>`.
+  A `rollback` runs the old generation's brew bundle with --zap, so casks added since then are zapped (prefs and data deleted); the next switch reinstalls the app but not its data (2026-07-06).
 - Removing a cask from `nix/host.nix` runs its *zap* stanza, which can trash
   data shared with other installs (claude-code's zap deletes `~/.claude.json*`
   and the native `~/.local/share/claude`). Before dropping a cask, read its

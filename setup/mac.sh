@@ -5,7 +5,8 @@
 #   * Humans run this. Agents NEVER run it for real — they validate it through
 #     tests/mac_setup_test.sh, which masks PATH with stub executables.
 #   * Safe to re-run: every step checks before acting.
-#   * Everything after this script is `rebuild` (darwin-rebuild switch --flake).
+#   * Everything after this script is `rebuild`, which switches through
+#     `sudo dotfiles-autoupdate rebuild` under the auto-update's switch lock.
 #
 # What it does, in order:
 #   1. Verify Xcode Command Line Tools (git). Prompt to install if missing.
@@ -17,7 +18,7 @@
 # Undo story:
 #   * Nix:      /nix/nix-installer uninstall
 #   * Homebrew: official uninstall script
-#   * nix-darwin: darwin-rebuild --rollback / generation switching
+#   * nix-darwin: `rollback` (or `rollback <n>`), under the same switch lock
 
 set -euo pipefail
 
@@ -71,7 +72,18 @@ fi
 HOSTNAME_FLAKE="$(sed -n 's/^ *hostname *= *"\(.*\)";.*/\1/p' flake.nix | head -n1)"
 [ -n "$HOSTNAME_FLAKE" ] || die "Could not read hostname from flake.nix."
 
-if command -v darwin-rebuild >/dev/null 2>&1; then
+# A re-run on a configured Mac would race the hourly auto-update like any
+# other switch, so it takes the updater's switch lock, as `rebuild` does
+# (scripts/dotfiles-autoupdate). The first activation needs none: the
+# updater does not exist until that activation finishes.
+SWITCH_LOCK="${DOTFILES_SWITCH_LOCK:-/var/db/dotfiles-autoupdate/switch.lock}"
+if command -v darwin-rebuild >/dev/null 2>&1 && [ -d "$(dirname "$SWITCH_LOCK")" ]; then
+  log "nix-darwin: present; switching to current flake once no auto-update switch is in progress (waits up to 30 min)..."
+  code=0
+  sudo lockf -k -t 1800 "$SWITCH_LOCK" darwin-rebuild switch --flake ".#${HOSTNAME_FLAKE}" || code=$?
+  [ "$code" != 75 ] || die "an auto-update switch still holds $SWITCH_LOCK after 30 min; nothing was switched. See /var/log/dotfiles-autoupdate.log and \`dotfiles-autoupdate status\`."
+  [ "$code" = 0 ] || exit "$code"
+elif command -v darwin-rebuild >/dev/null 2>&1; then
   log "nix-darwin: present; switching to current flake..."
   sudo darwin-rebuild switch --flake ".#${HOSTNAME_FLAKE}"
 else

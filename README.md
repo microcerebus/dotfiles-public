@@ -73,6 +73,8 @@ Details: [`docs/tmux-training.md`](docs/tmux-training.md).
 
 ```sh
 rebuild            # apply the flake, waiting for an auto-update switch in progress (alias: sudo dotfiles-autoupdate rebuild ~/dotfiles)
+rollback           # back to the previous system generation (rollback <n>: generation n), under the same wait
+                   # caution: it runs that generation's brew bundle with --zap, so casks added since are zapped (prefs and data deleted)
 term-dojo          # daily training: 10 questions from YOUR live configs
 term-dojo drill X  # hands-on exercises (ghostty|tmux|neovim|motions|shell|git|nix|herdr|agents)
 term-dojo tutor X  # interactive tutorial (tmux|vim): do it for real, verified live

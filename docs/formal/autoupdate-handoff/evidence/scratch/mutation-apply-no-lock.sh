@@ -17,6 +17,8 @@
 #            tree, and never rolls back a system built from unpushed work.
 #   rebuild  the owner's `rebuild` alias (nix/user.nix), under sudo: the same
 #            switch, holding the switch lock apply decides and switches under.
+#   rollback the owner's `rollback` alias (nix/user.nix), under sudo, for the
+#            SUDO_USER: darwin-rebuild --rollback under the same switch lock.
 #   status   the one reader of the status files, used by the zsh banner, the
 #            agent board and the SessionStart hook. Prints alarms, info and
 #            the last success of each runner, and alarms on a flake.lock on
@@ -29,6 +31,7 @@
 set -uo pipefail
 
 user=${AUTOUPDATE_USER:-$(id -un)}
+[ "${1:-}" != rollback ] || user=${AUTOUPDATE_USER:-${SUDO_USER:-$user}}
 home=${AUTOUPDATE_HOME:-/Users/$user}
 repo=$home/dotfiles
 sync_dir=$home/.local/state/dotfiles-autoupdate
@@ -519,23 +522,93 @@ cmd_apply_locked() {
 
 system_revision() { sed -n 's/.*"configurationRevision": *"\([^"]*\)".*/\1/p' "$system/darwin-version.json" 2>/dev/null; }
 
-# ── rebuild: the owner's switch ─────────────────────────────────────────────────
+# ── rebuild and rollback: the owner's switches ──────────────────────────────────
 # rebuild <flake> [darwin-rebuild options]: the `rebuild` alias, as root
-# under sudo. It switches under the switch lock, so apply never decides on a
-# system that a rebuild is about to replace. A held lock is apply deciding,
-# which takes a moment, or switching to the pushed origin/main, which can
-# take minutes: rebuild says so and waits, then switches, so the owner's switch
-# lands last.
+# under sudo.
 cmd_rebuild() {
   if [ $# = 0 ]; then
     echo "usage: dotfiles-autoupdate rebuild <flake> [darwin-rebuild options]" >&2
     return 2
   fi
+  switch_locked rebuild rebuilt rebuilding switch --flake "$@"
+}
+
+# rollback [generation]: the `rollback` alias, as root under sudo. Switches
+# back to the previous system generation, or to the numbered one
+# (`sudo darwin-rebuild --list-generations` lists them). A pushed revision
+# rolled back from is recorded as a failed attempt, so the hourly apply
+# holds off switching back to it for retry_after (a day); a newer push
+# switches forward sooner. A generation built from unpushed work stays.
+cmd_rollback() {
+  case $# in
+    0) ;;
+    1)
+      case $1 in
+        '' | *[!0-9]*) echo "usage: dotfiles-autoupdate rollback [generation]" >&2; return 2 ;;
+      esac ;;
+    *) echo "usage: dotfiles-autoupdate rollback [generation]" >&2; return 2 ;;
+  esac
+  # Only a pushed revision needs holding off: apply never switches to
+  # unpushed work. The record goes in before the switch, so no apply decides
+  # between the switch and the record, and comes out again if the switch
+  # fails or leaves the revision unchanged. A fresh record for another
+  # revision (a daemon switch that failed) stays: apply retries that one,
+  # not this, and replacing it would retry it at once.
+  local code from running prev prev_at record=''
+  from=$(system_revision)
+  prev=$(cat "$daemon_dir/attempt" 2>/dev/null)
+  prev_at=${prev#* }
+  case $prev_at in '' | *[!0-9]*) prev_at=0 ;; esac
+  case $from in
+    *[!0-9a-f]* | '') ;;
+    *)
+      if [ "${#from}" = 40 ] && user_git merge-base --is-ancestor "$from" refs/remotes/origin/main \
+          && { [ "${prev% *}" = "$from" ] || [ $(($(date +%s) - prev_at)) -ge "$retry_after" ]; }; then
+        record="$from $(date +%s)"
+        mkdir -p "$daemon_dir" && echo "$record" >"$daemon_dir/attempt" || record=''
+      fi ;;
+  esac
+  if [ $# = 0 ]; then
+    switch_locked rollback "rolled back" "rolling back" --rollback
+  else
+    switch_locked rollback "rolled back" "rolling back" --switch-generation "$1"
+  fi
+  code=$?
+  running=$(system_revision)
+  # A record that changed while rollback waited for the lock is apply's:
+  # its switch ran in between, and `from` was read before it.
+  if [ -n "$record" ] && [ "$(cat "$daemon_dir/attempt" 2>/dev/null)" = "$record" ]; then
+    if [ "$code" != 0 ] || [ "$running" = "$from" ]; then
+      if [ -n "$prev" ]; then echo "$prev" >"$daemon_dir/attempt"; else rm -f "$daemon_dir/attempt"; fi
+      record=''
+    fi
+  else
+    record=''
+  fi
+  [ "$code" = 0 ] || return "$code"
+  if [ -n "$record" ]; then
+    echo "rollback: this Mac now runs ${running:-a generation with no recorded revision}." \
+      "The hourly auto-update will not switch back to ${from:0:12} before $(date -v+"$retry_after"S '+%a %d %b %H:%M');" \
+      "a newer push to main switches forward sooner. To stay on this revision, push a revert to main." >&2
+  else
+    echo "rollback: this Mac now runs ${running:-a generation with no recorded revision}." \
+      "If that revision is on origin/main, the hourly auto-update switches forward to origin/main again;" \
+      "to stay on it, push a revert to main." >&2
+  fi
+}
+
+# switch_locked <name> <done> <doing> <darwin-rebuild arguments>: runs
+# darwin-rebuild under the switch lock, so apply never decides on a system
+# that a human switch is about to replace. A held lock is apply deciding,
+# which takes a moment, or switching to the pushed origin/main, which can
+# take minutes: say so and wait, then switch, so the owner's switch lands last.
+switch_locked() {
+  local name=$1 done=$2 doing=$3 code pid holder
+  shift 3
   mkdir -p "$daemon_dir" || return 1
-  local code pid holder
   # Switch at once when the lock is free; lockf prints "already locked" when
   # it is not (75).
-  lockf -k -t 0 "$switch_lock" darwin-rebuild switch --flake "$@"
+  lockf -k -t 0 "$switch_lock" darwin-rebuild "$@"
   code=$?
   [ "$code" = 75 ] || return "$code"
   pid=$(cat "$daemon_dir/switching" 2>/dev/null)
@@ -544,17 +617,17 @@ cmd_rebuild() {
   else
     holder="another switch holds the switch lock (an auto-update deciding, or a rebuild in another terminal)"
   fi
-  echo "rebuild: $holder; waiting up to $((rebuild_wait / 60)) min for it to finish, then rebuilding." \
+  echo "$name: $holder; waiting up to $((rebuild_wait / 60)) min for it to finish, then $doing." \
     "The auto-update's log: $daemon_log" >&2
-  lockf -k -t "$rebuild_wait" "$switch_lock" darwin-rebuild switch --flake "$@"
+  lockf -k -t "$rebuild_wait" "$switch_lock" darwin-rebuild "$@"
   code=$?
   if [ "$code" = 75 ]; then
     # A stuck activation holds the lock until its darwin-rebuild ends;
     # stopping that process fails the auto-update's switch and frees it.
-    echo "rebuild: gave up after $((rebuild_wait / 60)) min: another switch still holds $switch_lock." \
-      "Nothing was rebuilt. See $daemon_log and \`dotfiles-autoupdate status\`, and run rebuild again once that switch ends." \
+    echo "$name: gave up after $((rebuild_wait / 60)) min: another switch still holds $switch_lock." \
+      "Nothing was $done. See $daemon_log and \`dotfiles-autoupdate status\`, and run $name again once that switch ends." \
       "If the auto-update's switch is stuck, \`sudo pkill -f 'darwin-rebuild switch --flake git[+]file'\` stops it;" \
-      "its activation may still be finishing, so check \`pgrep -fl activate\` before rebuilding." >&2
+      "its activation may still be finishing, so check \`pgrep -fl activate\` before $doing." >&2
   fi
   return "$code"
 }
@@ -686,6 +759,7 @@ case ${1:-} in
   apply) shift; cmd_apply "$@" ;;
   apply-locked) cmd_apply_locked ;; # cmd_apply runs it under the switch lock
   rebuild) shift; cmd_rebuild "$@" ;;
+  rollback) shift; cmd_rollback "$@" ;;
   status) shift; cmd_status "$@" ;;
-  *) echo "usage: dotfiles-autoupdate sync [--now] | apply | rebuild <flake> | status [--alarms]" >&2; exit 2 ;;
+  *) echo "usage: dotfiles-autoupdate sync [--now] | apply | rebuild <flake> | rollback [generation] | status [--alarms]" >&2; exit 2 ;;
 esac

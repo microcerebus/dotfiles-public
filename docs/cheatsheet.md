@@ -82,6 +82,7 @@ by hand. Layering contract: Ghostty `cmd+*` · tmux `C-a` · Herdr `C-b`
 | `Space (wait a beat)` | which-key popup showing every leader binding |
 | `Tab / S-Tab` | next / previous buffer (tabufline) |
 | `:LspInfo` | show LSP clients attached to this buffer |
+| `<Tab>` | buffer goto next |
 | `<Esc>` | Clear highlights |
 | `Space Space x` | Buffer close except current |
 | `Space cH` | Cheatsheet (keymap grid) |
@@ -124,24 +125,23 @@ by hand. Layering contract: Ghostty `cmd+*` · tmux `C-a` · Herdr `C-b`
 | `Space ds` | LSP diagnostic loclist |
 | `Space ch` | Cheatsheet (term-wiki) |
 | `Space n` | toggle line number |
-| `Space Space a` | Go: Code Action |
 | `Space Space n` | Select Node |
+| `Space Space a` | Go: Code Action |
 | `Space h` | terminal new horizontal term |
 | `Space bx` | Close all but current buffer |
-| `Space fk` | Find keymaps |
 | `Space fs` | Find document symbols |
 | `Space li` | Highlights |
 | `Space fu` | Undo tree |
 | `Space fa` | telescope find all files |
-| `Space Space dr` | Debug: Open REPL |
+| `Space fk` | Find keymaps |
 | `Space tt` | Debug: Toggle breakpoint |
-| `Space ft` | Telescope TODO |
+| `Space Space dr` | Debug: Open REPL |
 | `Space el` | Toggle error lens |
 | `Space td` | Todo/Fix/Fixme |
 | `Space t` | Toggle warnings |
+| `Space ft` | Telescope TODO |
 | `Space cs` | Symbols Outline |
 | `Space tr` | Toggle transparency |
-| `Space w` | Close buffer |
 
 ## motions
 
@@ -198,7 +198,7 @@ by hand. Layering contract: Ghostty `cmd+*` · tmux `C-a` · Herdr `C-b`
 | `v` | alias: open nvim |
 | `c` | alias: clear the screen |
 | `g` | alias: git |
-| `rebuild` | alias: apply the flake (sudo darwin-rebuild switch) |
+| `rebuild` | alias: apply the flake (sudo dotfiles-autoupdate rebuild: darwin-rebuild switch, after any auto-update switch in progress) |
 | `dev-doctor` | scan current project for toolchain markers, suggest devShells |
 | `dev-enable <tpl>` | copy a devShell template here + wire direnv |
 | `direnv allow` | trust and activate this project's .envrc |
@@ -234,7 +234,7 @@ by hand. Layering contract: Ghostty `cmd+*` · tmux `C-a` · Herdr `C-b`
 | key | action |
 |---|---|
 | `rebuild` | apply the flake: build + switch to a new generation |
-| `darwin-rebuild --rollback` | switch back to the previous generation |
+| `rollback` | switch back to the previous generation, after any auto-update switch in progress |
 | `sudo darwin-rebuild --list-generations` | list system generations |
 | `nix flake update herdr && rebuild` | update one pinned input |
 | `nix flake check` | validate the flake evaluates |

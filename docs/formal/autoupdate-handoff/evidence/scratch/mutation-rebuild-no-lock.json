@@ -2,8 +2,8 @@
   "constants": {
     "HumanLocks": "FALSE"
   },
-  "mapping": "cmd_rebuild lockf -> HumanLocks (HumanRequest, HumanStart, HumanComplete)",
+  "mapping": "switch_locked lockf (rebuild and rollback) -> HumanLocks (HumanRequest, HumanStart, HumanComplete)",
   "name": "mutation-rebuild-no-lock",
-  "source_new": "darwin-rebuild switch --flake \"$@\"",
-  "source_old": "lockf -k -t 0 \"$switch_lock\" darwin-rebuild switch --flake \"$@\""
+  "source_new": "darwin-rebuild \"$@\"",
+  "source_old": "lockf -k -t 0 \"$switch_lock\" darwin-rebuild \"$@\""
 }

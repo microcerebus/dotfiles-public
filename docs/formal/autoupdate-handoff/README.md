@@ -22,8 +22,11 @@ One switch lock, `/var/db/dotfiles-autoupdate/switch.lock`, held through macOS's
   It then switches, so the owner's switch lands last.
   If the lock is held by something else (an auto-update still deciding, or a rebuild in another terminal), the message says that instead.
   If the lock is still held after 30 minutes, it stops with exit 75, says nothing was rebuilt, points to the log and `dotfiles-autoupdate status`, and names the `pkill` that stops a stuck auto-update switch (its activation may still be finishing); `brew upgrade` does not run.
+- `rollback` runs `sudo dotfiles-autoupdate rollback`, which runs `darwin-rebuild --rollback` (or `--switch-generation <n>`) through the same `switch_locked` code as `rebuild`, with the same wait and messages.
+  A rollback to a generation built from unpushed work stays, as a rebuild of it would.
+  A rollback to a pushed revision lasts until the next hourly apply, which switches forward to origin/main; `rollback` says so and points to pushing a revert.
 - Just before invoking darwin-rebuild, `apply` checks again for a darwin-rebuild process and for a running revision that differs from its sample.
-  This only catches a darwin-rebuild run outside `rebuild` that finished before that check; the lock is what closes the race.
+  This only catches a darwin-rebuild run outside `rebuild` and `rollback` that finished before that check; the lock is what closes the race.
 
 Apply still switches only to the exact handed-over revision (`git+file://...?rev=`), never the working tree.
 
@@ -60,6 +63,12 @@ Each mutation removes one part of the fix from a scratch copy of the real source
   "apply does not wait for a rebuild's lock" and "apply skips while a rebuild holds the switch lock" hold a `rebuild` switch open and check that apply skips at once.
 - "rebuild gives up when the switch lock stays held", "and says what to do" and "a lock held by no auto-update is not blamed on it": the 30-minute limit, set to 3 seconds in the test.
 
+Case 32 holds `rollback` to the same checks: "rollback waits, without switching, while the daemon switches", "rollback lands after the daemon's switch" and "rollback gives up when the switch lock stays held".
+Every case 32 check fails on cb9c321, which had no `rollback` and left only a bare `darwin-rebuild --rollback`.
+Its last checks pin what the hourly apply does after a rollback: from a pushed revision, the rollback records that revision as a failed attempt before it switches, so apply holds off switching back to it for a day; a generation built from unpushed work stays with the waiting-for-push note.
+They run `rollback` as the alias does, with `SUDO_USER` set and no `AUTOUPDATE_USER`, against a sudo stub that refuses any user but the repo's owner.
+A failed rollback puts back the record that was there, and a fresh record of a failed daemon switch stays, so apply does not retry that revision at once.
+
 On 817f7a9 every check in case 31 fails except the race probe's own setup check, "the race probe switches the system after apply sampled it".
 The whole suite passes with the fix.
 
@@ -67,7 +76,8 @@ The whole suite passes with the fix.
 
 The model keeps batch 4's bounds: one sync, one apply, at most one human rebuild and one external ref advance, the fixed commit graph A to B to C with local L, and 384 initial states (see [source-map.md](source-map.md)).
 The human may wait, give up, or switch; there is no fairness or liveness claim, so the model does not show that a waiting rebuild eventually runs.
-A darwin-rebuild run outside `rebuild` (including `setup/mac.sh`'s first install) takes no lock and is protected only by the recheck's narrower window.
+A darwin-rebuild run outside `rebuild` and `rollback` (including `setup/mac.sh`'s first install) takes no lock and is protected only by the recheck's narrower window.
+Claude agents cannot start one: `files/.claude/hooks/bash_guard.py` refuses a bare darwin-rebuild switch, activation or rollback and names the locked commands.
 The lock relies on `lockf` and BSD `flock` semantics, which the tests exercise with real processes; activation, Nix and launchd behaviour remain assumptions.
 Nothing here ran a real darwin-rebuild, sudo, launchctl or activation.
 The fix goes live only after a push and the owner's `rebuild`; until the new alias is in his shell, `rebuild` still runs darwin-rebuild directly.

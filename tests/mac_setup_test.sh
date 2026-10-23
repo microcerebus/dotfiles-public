@@ -85,8 +85,8 @@ grep -q "CHANGE_ME" "$WORK/flake.nix" && fail "personalization left a placeholde
 
 MARKER="$SANDBOX/.t0"; touch "$MARKER"; sleep 1
 : > "$CALLS"
-HOME="$FAKE_HOME" PATH="$TEST_PATH" bash "$WORK/setup/mac.sh" \
-  >"$SANDBOX/out2.log" 2>&1 \
+HOME="$FAKE_HOME" PATH="$TEST_PATH" DOTFILES_SWITCH_LOCK="$SANDBOX/no-updater/switch.lock" \
+  bash "$WORK/setup/mac.sh" >"$SANDBOX/out2.log" 2>&1 \
   || { cat "$SANDBOX/out2.log" >&2; fail "bootstrap failed against stubs"; }
 pass "bootstrap completes single-pass against stubs"
 
@@ -97,6 +97,16 @@ if ! grep -Eq "^sudo (nix run nix-darwin|darwin-rebuild switch)" "$CALLS"; then
 fi
 grep -q "$FAKE_HOST" "$CALLS" || fail "flake hostname not passed to darwin-rebuild"
 pass "attempts darwin-rebuild switch --flake .#$FAKE_HOST"
+
+# ── Test 4b: a re-run on a Mac with the auto-updater switches under its lock ─
+mkdir -p "$SANDBOX/updater"
+: > "$CALLS"
+HOME="$FAKE_HOME" PATH="$TEST_PATH" DOTFILES_SWITCH_LOCK="$SANDBOX/updater/switch.lock" \
+  bash "$WORK/setup/mac.sh" >"$SANDBOX/out3.log" 2>&1 \
+  || { cat "$SANDBOX/out3.log" >&2; fail "re-run with the auto-updater failed against stubs"; }
+grep -qx "sudo lockf -k -t 1800 $SANDBOX/updater/switch.lock darwin-rebuild switch --flake .#$FAKE_HOST" "$CALLS" \
+  || { echo "--- calls ---"; cat "$CALLS"; fail "re-run did not switch under the auto-update switch lock"; }
+pass "a re-run with the auto-updater switches under its switch lock"
 
 # ── Test 5: sandbox containment — nothing outside SANDBOX was written ───────
 LEAKS="$(find "$REPO_DIR" -type f -newer "$MARKER" 2>/dev/null || true)"

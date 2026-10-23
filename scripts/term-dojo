@@ -136,7 +136,7 @@ NVCHAD_BANK = [
 
 NIX_BANK = [
     ("rebuild", "apply the flake: build + switch to a new generation"),
-    ("darwin-rebuild --rollback", "switch back to the previous generation"),
+    ("rollback", "switch back to the previous generation, after any auto-update switch in progress"),
     ("sudo darwin-rebuild --list-generations", "list system generations"),
     ("nix flake update herdr && rebuild", "update one pinned input"),
     ("nix flake check", "validate the flake evaluates"),
@@ -168,7 +168,7 @@ SHELL_BANK = [
     ("v", "alias: open nvim"),
     ("c", "alias: clear the screen"),
     ("g", "alias: git"),
-    ("rebuild", "alias: apply the flake (sudo darwin-rebuild switch, after any auto-update switch in progress)"),
+    ("rebuild", "alias: apply the flake (sudo dotfiles-autoupdate rebuild: darwin-rebuild switch, after any auto-update switch in progress)"),
     ("dev-doctor", "scan current project for toolchain markers, suggest devShells"),
     ("dev-enable <tpl>", "copy a devShell template here + wire direnv"),
     ("direnv allow", "trust and activate this project's .envrc"),
