@@ -2,23 +2,26 @@ const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const { run } = require("../scripts/agent-chrome-playwright");
 
-function harness({ ready = true, identityError = null, attach = true } = {}) {
+function harness({ ready = true, identityError = null, attach = true, windowless = false } = {}) {
   const calls = [];
   let marker;
   const listeners = {};
   const page = { url: () => marker, on: (event, listener) => { listeners[event] = listener; }, emit: (event, value) => listeners[event]?.(value) };
-  const session = { send: async (method, args) => {
-    calls.push([method, args]);
-    if (method === "Target.createTarget") { marker = args.url; return { targetId: "own-target" }; }
-  } };
   const deps = {
     ready: () => { calls.push("ready"); return ready; },
     identityError: () => identityError,
+    openTab: async (url) => {
+      calls.push(["Target.createTarget", { url, background: true }]);
+      marker = url;
+      return { targetId: "own-target", close: async () => { calls.push(["Target.closeTarget", { targetId: "own-target" }]); } };
+    },
     connect: async () => {
       calls.push("connect");
+      // Chrome unloads its profile when its last window closes; until a tab
+      // loads it again, Playwright's attach fails with Chrome's own error.
+      if (windowless && !marker) throw new Error("browserType.connectOverCDP: Protocol error (Browser.setDownloadBehavior): Browser context management is not supported.");
       return {
         contexts: () => [{ pages: () => attach ? [{ url: () => "https://other-tab.example" }, page] : [] }],
-        newBrowserCDPSession: async () => session,
         close: async () => { calls.push("disconnect"); },
       };
     },
@@ -31,9 +34,10 @@ function harness({ ready = true, identityError = null, attach = true } = {}) {
 test("a written flow gets only its own background tab and closes that target before disconnecting", async () => {
   const { calls, page, deps } = harness();
   assert.equal(await run(async (actual) => { assert.equal(actual, page); return "read"; }, deps), "read");
-  assert.deepEqual(calls.slice(0, 2), ["ready", "connect"]);
-  assert.equal(calls[2][0], "Target.createTarget");
-  assert.equal(calls[2][1].background, true);
+  assert.equal(calls[0], "ready");
+  assert.equal(calls[1][0], "Target.createTarget");
+  assert.equal(calls[1][1].background, true);
+  assert.equal(calls[2], "connect");
   assert.deepEqual(calls.slice(-2), [["Target.closeTarget", { targetId: "own-target" }], "disconnect"]);
 });
 
@@ -43,6 +47,276 @@ test("failed flows and attachment timeouts still clean up only the owned tab", a
     await assert.rejects(run(async () => { throw new Error("failed flow"); }, deps), attach ? /failed flow/ : /did not attach/);
     assert.deepEqual(calls.slice(-2), [["Target.closeTarget", { targetId: "own-target" }], "disconnect"]);
   }
+});
+
+test("a windowless agent Chrome: the flow's tab is opened before Playwright attaches, so the attach finds a browser context", async () => {
+  const { calls, page, deps } = harness({ windowless: true });
+  assert.equal(await run(async (actual) => { assert.equal(actual, page); return "read"; }, deps), "read");
+  assert.deepEqual(calls.map((call) => (Array.isArray(call) ? call[0] : call)).slice(0, 3), ["ready", "Target.createTarget", "connect"]);
+  assert.deepEqual(calls.slice(-2), [["Target.closeTarget", { targetId: "own-target" }], "disconnect"]);
+});
+
+test("a failed attach still closes the tab the runner opened", async () => {
+  const { calls, deps } = harness();
+  await assert.rejects(run(async () => assert.fail("must not run"), { ...deps, connect: async () => { calls.push("connect"); throw new Error("attach failed"); } }), /attach failed/);
+  assert.deepEqual(calls.slice(-2), ["connect", ["Target.closeTarget", { targetId: "own-target" }]]);
+});
+
+test("a Chrome or gate that never answers fails the tab opening instead of hanging the run", async (t) => {
+  const http = require("node:http");
+  const { openBackgroundTab } = require("../scripts/agent-chrome-playwright");
+  const server = http.createServer(() => {}).listen(0, "127.0.0.1");
+  await new Promise((resolve) => server.once("listening", resolve));
+  t.after(() => server.close());
+  server.on("connection", (socket) => t.after(() => socket.destroy()));
+  await assert.rejects(openBackgroundTab("about:blank#x", `http://127.0.0.1:${server.address().port}`, 200), /did not answer within 0\.2s/);
+});
+
+// A local stand-in for the agent Chrome behind the gate. By default it answers
+// /json/version and accepts the WebSocket; `command` gets each CDP command
+// and a reply function, and answers nothing unless it calls it.
+async function fakeChrome(t, { version, upgrade, command = () => {} } = {}) {
+  const http = require("node:http");
+  const { createHash } = require("node:crypto");
+  const { frameHeader, unmask, encodeFrame } = require("../scripts/agent-chrome-gate");
+  const sockets = new Set();
+  const closed = [];
+  const server = http.createServer((req, res) => {
+    if (version) return version(req, res);
+    res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ webSocketDebuggerUrl: `ws://127.0.0.1:${server.address().port}/devtools/browser/fake` }));
+  });
+  server.on("connection", (socket) => {
+    sockets.add(socket);
+    socket.on("error", () => {});
+  });
+  server.on("upgrade", (req, socket) => {
+    // The runner hanging up shows as the end of what it sends.
+    closed.push(new Promise((resolve) => { socket.once("end", resolve); socket.once("close", resolve); }));
+    if (upgrade) return upgrade(req, socket);
+    const accept = createHash("sha1").update(`${req.headers["sec-websocket-key"]}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`).digest("base64");
+    socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`);
+    let buffered = Buffer.alloc(0);
+    socket.on("data", (chunk) => {
+      buffered = Buffer.concat([buffered, chunk]);
+      for (let header = frameHeader(buffered); header && buffered.length >= header.size + header.length; header = frameHeader(buffered)) {
+        const payload = unmask(buffered.subarray(header.size, header.size + header.length), header.mask);
+        buffered = buffered.subarray(header.size + header.length);
+        if (header.opcode !== 1) continue;
+        const message = JSON.parse(payload.toString("utf8"));
+        command(message, (result) => socket.write(encodeFrame(JSON.stringify({ id: message.id, result }))), socket);
+      }
+    });
+  });
+  server.listen(0, "127.0.0.1");
+  await new Promise((resolve) => server.once("listening", resolve));
+  t.after(() => {
+    for (const socket of sockets) socket.destroy();
+    server.close();
+  });
+  return { url: `http://127.0.0.1:${server.address().port}`, closed };
+}
+
+test("a WebSocket upgrade that is never answered fails the tab opening", async (t) => {
+  const { openBackgroundTab } = require("../scripts/agent-chrome-playwright");
+  const chrome = await fakeChrome(t, { upgrade: () => {} });
+  await assert.rejects(openBackgroundTab("about:blank#x", chrome.url, 200), /Opening a CDP connection: the agent Chrome did not answer within 0\.2s/);
+});
+
+test("the CLI exits once it has reported, whatever the flow left open", { timeout: 10000 }, async (t) => {
+  const { spawn } = require("node:child_process");
+  const fs = require("node:fs");
+  const { join } = require("node:path");
+  const { tmpdir } = require("node:os");
+  const dir = fs.mkdtempSync(join(tmpdir(), "agent-chrome-playwright-flow-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  // Fails before any session or browser work, with a timer still running.
+  const flow = join(dir, "flow.cjs");
+  fs.writeFileSync(flow, "setInterval(() => {}, 1000);\nmodule.exports = 'not a function';\n");
+  const child = spawn(require.resolve("../scripts/agent-chrome-playwright"), ["--minutes", "1", "--what", "test", flow], { stdio: ["ignore", "ignore", "pipe"] });
+  t.after(() => child.kill("SIGKILL"));
+  let stderr = "";
+  child.stderr.on("data", (chunk) => { stderr += chunk; });
+  const code = await Promise.race([new Promise((resolve) => child.once("exit", resolve)), new Promise((resolve) => setTimeout(resolve, 5000, "still running"))]);
+  assert.equal(code, 1);
+  assert.match(stderr, /must export a function/);
+});
+
+test("a second signal exits through the session's stop, after its notice and with 128 + the signal", { timeout: 10000 }, async (t) => {
+  const { spawn } = require("node:child_process");
+  const fs = require("node:fs");
+  const { join } = require("node:path");
+  const { tmpdir } = require("node:os");
+  const session = require("../scripts/agent-chrome-session");
+  const home = fs.mkdtempSync(join(tmpdir(), "agent-chrome-playwright-"));
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  const log = join(home, "notices");
+  // The flow is still running at the second signal and ends while the slow
+  // stopped notice is going out.
+  const flow = join(home, "flow.cjs");
+  fs.writeFileSync(flow, `module.exports = () => new Promise((_, failed) => {
+  process.kill(process.pid, "SIGINT");
+  setTimeout(() => process.kill(process.pid, "SIGINT"), 100);
+  setTimeout(() => failed(new Error("Target page, context or browser has been closed")), 200);
+});\n`);
+  const script = `
+    const fs = require('node:fs');
+    const { cli } = require(${JSON.stringify(require.resolve("../scripts/agent-chrome-playwright"))});
+    const session = require(${JSON.stringify(require.resolve("../scripts/agent-chrome-session"))});
+    let marker;
+    cli(['--minutes', '1', '--what', 'flow', ${JSON.stringify(flow)}], {
+      ready: () => true, identityError: () => null, sleep: async () => {}, log: () => {},
+      openTab: async (url) => { marker = url; return { targetId: 'own-target', close: async () => {} }; },
+      connect: async () => ({ contexts: () => [{ pages: () => [{ url: () => marker, on: () => {} }] }], close: async () => {} }),
+    }, {
+      dir: () => session.stateDir(${JSON.stringify(home)}), now: Date.now, log: () => {},
+      notify: (message) => new Promise((resolve) => setTimeout(() => { fs.appendFileSync(${JSON.stringify(log)}, message + '\\n'); resolve(); }, 300)),
+    });
+  `;
+  const child = spawn(process.execPath, ["-e", script], { stdio: "ignore", env: { ...process.env, [session.ENV]: "" } });
+  t.after(() => child.kill("SIGKILL"));
+  const code = await new Promise((resolve) => child.once("exit", (exitCode, signal) => resolve(exitCode ?? signal)));
+  assert.equal(code, 130);
+  assert.match(fs.readFileSync(log, "utf8"), /flow: stopped after/);
+  assert.deepEqual(fs.readdirSync(session.stateDir(home)), []);
+});
+
+test("a malformed CDP message from the peer fails the pending command instead of the process", { timeout: 5000 }, async (t) => {
+  const { randomBytes } = require("node:crypto");
+  const { encodeFrame } = require("../scripts/agent-chrome-gate");
+  const { openBackgroundTab } = require("../scripts/agent-chrome-playwright");
+  // Not JSON, JSON that is not an object, and a masked frame, which a server must never send.
+  for (const frame of [encodeFrame("not json"), encodeFrame("null"), encodeFrame(JSON.stringify({ id: 1, result: { targetId: "own-target" } }), randomBytes(4))]) {
+    const chrome = await fakeChrome(t, { command: (message, reply, socket) => socket.write(frame) });
+    await assert.rejects(openBackgroundTab("about:blank#x", chrome.url, 2000), /Target\.createTarget: the agent Chrome sent a malformed CDP message/);
+  }
+});
+
+test("a 101 without the right Sec-WebSocket-Accept fails the handshake at once", { timeout: 5000 }, async (t) => {
+  const { openBackgroundTab } = require("../scripts/agent-chrome-playwright");
+  for (const accept of ["", "Sec-WebSocket-Accept: d3Jvbmc=\r\n"]) {
+    const chrome = await fakeChrome(t, { upgrade: (req, socket) => socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n${accept}\r\n`) });
+    const started = Date.now();
+    await assert.rejects(openBackgroundTab("about:blank#x", chrome.url, 2000), /did not complete the WebSocket handshake/);
+    assert.ok(Date.now() - started < 500, `rejected after ${Date.now() - started}ms`);
+  }
+});
+
+test("a /json/version body that never ends fails the tab opening", { timeout: 5000 }, async (t) => {
+  const { openBackgroundTab } = require("../scripts/agent-chrome-playwright");
+  const chrome = await fakeChrome(t, { version: (req, res) => { res.writeHead(200, { "Content-Type": "application/json" }); res.write("{"); } });
+  await assert.rejects(openBackgroundTab("about:blank#x", chrome.url, 200), /Reading \/json\/version: the agent Chrome did not answer within 0\.2s/);
+});
+
+test("a peer that takes the WebSocket but never answers: createTarget times out and the connection is let go", { timeout: 5000 }, async (t) => {
+  const { openBackgroundTab } = require("../scripts/agent-chrome-playwright");
+  const chrome = await fakeChrome(t);
+  await assert.rejects(openBackgroundTab("about:blank#x", chrome.url, 200), /Target\.createTarget: the agent Chrome did not answer within 0\.2s/);
+  // Waiting on the closing handshake kept the process alive for good.
+  const letGo = await Promise.race([chrome.closed[0].then(() => true), new Promise((resolve) => setTimeout(resolve, 1500, false))]);
+  assert.equal(letGo, true, "the runner closed its CDP socket");
+});
+
+test("a runner that cannot reach the agent Chrome exits instead of hanging", { timeout: 10000 }, async (t) => {
+  const { spawn } = require("node:child_process");
+  const chrome = await fakeChrome(t);
+  const child = spawn(process.execPath, ["-e", `require(${JSON.stringify(require.resolve("../scripts/agent-chrome-playwright"))}).openBackgroundTab("about:blank#x", ${JSON.stringify(chrome.url)}, 200).catch(() => {})`], { stdio: "ignore" });
+  t.after(() => child.kill("SIGKILL"));
+  const exited = await Promise.race([new Promise((resolve) => child.once("exit", () => resolve(true))), new Promise((resolve) => setTimeout(resolve, 5000, false))]);
+  assert.equal(exited, true, "the process exited within 5s");
+});
+
+test("closing the tab after the agent Chrome dropped the connection fails at once", { timeout: 5000 }, async (t) => {
+  const { openBackgroundTab } = require("../scripts/agent-chrome-playwright");
+  const chrome = await fakeChrome(t, {
+    command: (message, reply, socket) => {
+      reply({ targetId: "own-target" });
+      setTimeout(() => socket.destroy(), 50);
+    },
+  });
+  const tab = await openBackgroundTab("about:blank#x", chrome.url, 2000);
+  await chrome.closed[0];
+  const started = Date.now();
+  await assert.rejects(tab.close(), /Target\.closeTarget: the agent Chrome closed the connection/);
+  assert.ok(Date.now() - started < 500, `rejected after ${Date.now() - started}ms`);
+});
+
+test("a tab whose createTarget answer comes too late is found by its marker and closed", { timeout: 5000 }, async (t) => {
+  const { openBackgroundTab } = require("../scripts/agent-chrome-playwright");
+  const closedTargets = [];
+  const marker = "about:blank#screen-free-late";
+  const chrome = await fakeChrome(t, {
+    command: (message, reply) => {
+      if (message.method === "Target.getTargets") reply({ targetInfos: [{ targetId: "other", url: "https://other.example" }, { targetId: "late", url: marker }] });
+      if (message.method === "Target.closeTarget") {
+        closedTargets.push(message.params.targetId);
+        reply({ success: true });
+      }
+    },
+  });
+  await assert.rejects(openBackgroundTab(marker, chrome.url, 200), /Target\.createTarget: the agent Chrome did not answer/);
+  assert.deepEqual(closedTargets, ["late"]);
+});
+
+test("the gate's refusal text reaches the runner's error", async (t) => {
+  const { openBackgroundTab } = require("../scripts/agent-chrome-playwright");
+  const refusal = "agent-chrome-gate: refused. the owner is told before any agent uses the agent Chrome, and this process did not tell him.";
+  const ws = await fakeChrome(t, {
+    upgrade: (req, socket) => socket.end(`HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: ${Buffer.byteLength(refusal)}\r\nConnection: close\r\n\r\n${refusal}`),
+  });
+  await assert.rejects(openBackgroundTab("about:blank#x", ws.url, 2000), (error) => error.message.includes(refusal));
+  const version = await fakeChrome(t, { version: (req, res) => res.writeHead(403, { "Content-Type": "text/plain" }).end(refusal) });
+  await assert.rejects(openBackgroundTab("about:blank#x", version.url, 2000), (error) => error.message.includes("403") && error.message.includes(refusal));
+});
+
+function stubPnpm(t, script) {
+  const fs = require("node:fs");
+  const { join } = require("node:path");
+  const { tmpdir } = require("node:os");
+  const bin = fs.mkdtempSync(join(tmpdir(), "agent-chrome-pnpm-"));
+  const path = process.env.PATH;
+  process.env.PATH = `${bin}:${path}`;
+  t.after(() => {
+    process.env.PATH = path;
+    fs.rmSync(bin, { recursive: true, force: true });
+  });
+  const write = (body) => fs.writeFileSync(join(bin, "pnpm"), `#!/bin/sh\n${body}\n`, { mode: 0o755 });
+  write(script);
+  return { bin, write };
+}
+
+const PNPM_LISTING = JSON.stringify([{ path: "/pnpm/global", dependencies: { "playwright-core": { version: "1.0.0", path: "/pnpm/global/node_modules/playwright-core" } } }], null, 2);
+
+test("pnpm output around the global listing does not break finding playwright-core", (t) => {
+  const { playwrightDirectory } = require("../scripts/agent-chrome-playwright");
+  // pnpm 12 prints warnings on stdout, such as this one inside a project that
+  // pins packageManager (job-tracker, 2026-10-22).
+  const pnpm = stubPnpm(t, `echo "[WARN] Using --global skips the package manager check for this project"
+cat <<'JSON'
+${PNPM_LISTING}
+JSON
+echo "WARN  a trailing notice"`);
+  assert.equal(playwrightDirectory(), "/pnpm/global/node_modules/playwright-core");
+  // Lines after the listing that end in "]", or are an array of their own,
+  // are not part of it.
+  for (const after of ['echo "WARN  see the docs [https://pnpm.io]"', "echo '[]'", "printf '[WARN] crlf\\r\\n'"]) {
+    pnpm.write(`cat <<'JSON'\n${PNPM_LISTING}\nJSON\n${after}`);
+    assert.equal(playwrightDirectory(), "/pnpm/global/node_modules/playwright-core", after);
+  }
+  // An empty global listing is one line; the runner then names the missing package.
+  pnpm.write("echo '[]'");
+  assert.throws(() => playwrightDirectory(), /playwright-core is missing/);
+});
+
+test("pnpm runs from the home directory, outside any project that pins packageManager", (t) => {
+  const fs = require("node:fs");
+  const { join } = require("node:path");
+  const { homedir } = require("node:os");
+  const { playwrightDirectory } = require("../scripts/agent-chrome-playwright");
+  const pnpm = stubPnpm(t, "");
+  const where = join(pnpm.bin, "cwd");
+  pnpm.write(`pwd -P > '${where}'\ncat <<'JSON'\n${PNPM_LISTING}\nJSON`);
+  playwrightDirectory();
+  assert.equal(fs.readFileSync(where, "utf8").trim(), fs.realpathSync(homedir()));
 });
 
 test("Chrome readiness and application identity failures refuse before connecting", async () => {

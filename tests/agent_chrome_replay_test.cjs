@@ -202,7 +202,7 @@ test("the gate ends an adopted declaration and says done at the grace deadline w
 });
 
 test("the runner closes popups from a page the flow opens with context.newPage", { skip }, async () => {
-  const { run: runFlow } = require("../scripts/agent-chrome-playwright");
+  const { run: runFlow, openBackgroundTab } = require("../scripts/agent-chrome-playwright");
   const logs = [];
   await runFlow(async (page) => {
     const extra = await page.context().newPage();
@@ -219,8 +219,32 @@ test("the runner closes popups from a page the flow opens with context.newPage",
     } finally { await extra.close(); }
   }, {
     ready: () => true, identityError: () => null,
+    openTab: (marker) => openBackgroundTab(marker, `http://127.0.0.1:${chromePort}`),
     connect: () => require(playwrightDir).chromium.connectOverCDP(`http://127.0.0.1:${chromePort}`),
     sleep, log: (message) => logs.push(message),
   });
   assert.equal(logs.length, 1);
+});
+
+test("through the gate and the helper, the runner's own CDP connection opens its background tab, and the runner closes only that tab", { skip }, async () => {
+  const flow = `
+    const { run, openBackgroundTab } = require(${JSON.stringify(require.resolve("../scripts/agent-chrome-playwright"))});
+    const { chromium } = require(process.env.PLAYWRIGHT_CORE);
+    const url = "http://127.0.0.1:" + process.argv[1];
+    run(async (page) => {
+      await page.goto("data:text/html,<title>runner replay</title>");
+      console.log("title: " + await page.title());
+    }, {
+      ready: () => true, identityError: () => null,
+      openTab: (marker) => openBackgroundTab(marker, url),
+      connect: () => chromium.connectOverCDP(url),
+      sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)), log: () => {},
+    }).catch((error) => { console.error(error.message); process.exit(1); });
+  `;
+  const before = (await (await fetch(`http://127.0.0.1:${chromePort}/json/list`)).json()).filter((target) => target.type === "page").map((target) => target.id);
+  const { stdout } = await run(process.execPath, [HELPER, "--minutes", "1", "--what", "runner replay", "--",
+    process.execPath, "-e", flow, String(strict.port)], { env: strict.env });
+  assert.match(stdout, /^title: runner replay$/m);
+  const after = (await (await fetch(`http://127.0.0.1:${chromePort}/json/list`)).json()).filter((target) => target.type === "page").map((target) => target.id);
+  assert.deepEqual(after.sort(), before.sort());
 });

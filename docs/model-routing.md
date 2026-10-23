@@ -113,7 +113,7 @@ Interactive checks go through `codex-computer-use`; Codex itself uses built-in c
 Do not unset the harness signals or call the pnpm binary directly to bypass the wrapper.
 Non-agent scripted maintenance callers remain supported; repeatable browser verification stays in written Playwright flows.
 
-Run `node --test tests/chrome_devtools_axi_test.cjs tests/codex_browser_fallback_test.cjs tests/axi_session_start_test.cjs tests/agent_chrome_session_test.cjs tests/agent_chrome_gate_test.cjs tests/agent_chrome_replay_test.cjs`.
+Run `node --test tests/chrome_devtools_axi_test.cjs tests/codex_browser_fallback_test.cjs tests/axi_session_start_test.cjs tests/agent_chrome_session_test.cjs tests/agent_chrome_gate_test.cjs tests/agent_chrome_replay_test.cjs tests/agent_chrome_playwright_test.cjs`.
 The replay test drives a throwaway headless Chromium on a spare port, never the agent Chrome.
 These checks stub the upstream executable and never drive a browser.
 After bumping chrome-devtools-axi or chrome-devtools-mcp, also check that the axi bridge reconnects after the gate closes an expired lease.
