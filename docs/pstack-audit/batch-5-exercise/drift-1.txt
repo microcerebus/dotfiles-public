@@ -1,0 +1,8 @@
+$ cd /tmp/b5-exercise/drift
+$ sync=d553897cb44f482e8bfd17f760d6e196d766c5b3
+$ git diff --stat "$sync" -- scripts/dotfiles-autoupdate flake.nix
+$ git diff --stat -G 'darwin-rebuild|configurationRevision' "$sync" -- nix flake.nix scripts
+--- output ---
+ scripts/dotfiles-autoupdate | 1 -
+ 1 file changed, 1 deletion(-)
+exit status: 0

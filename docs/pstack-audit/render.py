@@ -33,8 +33,9 @@ INTRO = [
     'The core pstack workflow is present, but not every item is adopted or operational.',
     'The old Later list is stale: the explanation and multi-model skills, reflect and poteto-mode are installed; the TypeScript project skill is merged.',
     'Batch 1 declares 27 Codex aliases; batch 2 adds three automatic routes and a 28th alias.',
-    'The audited upstream is 0.15.29, compared with the dotfiles pin at 0.15.24. Keep the local skill set after comparing the Claude package; batch 4 prepares the formal generator locally, while its maintenance skill remains pending.',
+    'The audited upstream is 0.15.29, compared with the dotfiles pin at 0.15.24. Keep the local skill set after comparing the Claude package; batches 4 and 5 adapt the formal generator and its maintenance loop locally.',
     'Batch 4 records a source-supported updater rollback counterexample, two passing bounded invariants and an explicit no-verifier case. The updater is unchanged.',
+    'Batch 5 adds a drift check to that proof: a scratch updater edit reports it stale, and the unchanged tree stays quiet.',
     'Batch 3 closes its 16 source reviews: 9 entries ported, 4 kept local and 3 skipped. The baseline pin stays at 0.15.24.',
 ]
 DECISION = [
@@ -69,7 +70,7 @@ def check_inventory():
     assert {r['item'] for r in ROWS if r['group'] == 'pstack playbook'} == set(DATA['playbooks']), 'Incomplete playbook inventory'
     changes = {p.split('/')[2] for p in DATA['changed_pstack_files'] if p.startswith('pstack/skills/')}
     covered = {r['item'] for r in ROWS if r['group'] == 'Upstream delta'} | {r['item'] for r in ROWS if r['group'] == 'pstack skill' and r['status'] == 'pending'}
-    covered |= set(DATA['batch_4_outcomes'])
+    covered |= set(DATA['batch_4_outcomes']) | set(DATA['batch_5_outcomes'])
     assert changes <= covered, f'Uncovered upstream changes: {changes - covered}'
     outcomes = DATA['batch_3_outcomes']
     expected = changes - {'typescript-best-practices', 'create-formal-verification-skill', 'maintain-formal-verification-skill'}
@@ -84,7 +85,8 @@ def check_inventory():
     formal = next(r for r in ROWS if r['group'] == 'pstack skill' and r['item'] == 'create-formal-verification-skill')
     assert formal['status'] == 'adapted' and 'batch-4-delta.md' in formal['evidence'], 'Missing batch 4 evidence'
     maintenance = next(r for r in ROWS if r['group'] == 'pstack skill' and r['item'] == 'maintain-formal-verification-skill')
-    assert maintenance['status'] == 'pending', 'Maintenance belongs to batch 5'
+    assert DATA['batch_5_outcomes'] == {'maintain-formal-verification-skill': 'adopt-adapted'}, 'Batch 5 scope changed'
+    assert maintenance['status'] == 'adapted' and 'batch-5-delta.md' in maintenance['evidence'], 'Missing batch 5 evidence'
     ownership = DATA['ownership']
     assert len(ownership) == len({r['entry'] for r in ownership}) == 42, 'Original ownership inventory changed'
     assert {f'Upstream delta: {item}' for item in outcomes} <= {r['entry'] for r in ownership}, 'Missing batch 3 owner'
@@ -160,7 +162,7 @@ def page():
 <div class="scroll" tabindex="0" aria-label="Scrollable adoption record"><table><caption>Evidence, current adoption and remaining blockers for each item.</caption><thead><tr><th scope="col">Item</th><th scope="col">Status</th><th scope="col">Current state or blocker</th><th scope="col">Does Codex unblock it?</th><th scope="col">Evidence</th></tr></thead><tbody>''' + body + '''</tbody></table><p id="empty">No items match. Clear the filters to see the full record.</p></div>
 <details><summary>Eight approved routing resolutions</summary><ol>''' + conflicts + '''</ol></details>
 <details><summary>Scope and limits of the evidence</summary>''' + ''.join(f'<p>{esc(x)}</p>' for x in LIMITS) + '''</details>
-<details><summary>Source links and downloadable record</summary><ul>''' + sources + '''<li><a href="codex-discovery-proof.md">Batch 1 discovery proof</a></li><li><a href="batch-2-route-proof.md">Batch 2 route proof</a></li><li><a href="batch-2-sources.md">Batch 2 package and external sources</a></li><li><a href="batch-3-delta.md">Batch 3 upstream decisions</a></li><li><a href="batch-3-route-proof.md">Batch 3 invocation proof</a></li><li><a href="batch-4-delta.md">Batch 4 generator and tooling</a></li><li><a href="batch-4-route-proof.md">Batch 4 invocation proof</a></li><li><a href="batch-4-proof/README.md">Bounded updater proof and counterexample</a></li><li><a href="pending-ownership.md">Original 42 pending entries and owners</a></li><li><a href="audit.md">Complete Markdown table</a></li><li><a href="audit.json">Evidence inventory and pinned upstream revisions</a></li></ul><p>Local evidence: the original install list and catalog, workflow-north-star.md, nix/user.nix, installed skill files, the supplied code-review report, current standing order 71 and read-only forge checks.</p></details>
+<details><summary>Source links and downloadable record</summary><ul>''' + sources + '''<li><a href="codex-discovery-proof.md">Batch 1 discovery proof</a></li><li><a href="batch-2-route-proof.md">Batch 2 route proof</a></li><li><a href="batch-2-sources.md">Batch 2 package and external sources</a></li><li><a href="batch-3-delta.md">Batch 3 upstream decisions</a></li><li><a href="batch-3-route-proof.md">Batch 3 invocation proof</a></li><li><a href="batch-4-delta.md">Batch 4 generator and tooling</a></li><li><a href="batch-4-route-proof.md">Batch 4 invocation proof</a></li><li><a href="batch-4-proof/README.md">Bounded updater proof and counterexample</a></li><li><a href="batch-5-delta.md">Batch 5 maintenance and drift check</a></li><li><a href="pending-ownership.md">Original 42 pending entries and owners</a></li><li><a href="audit.md">Complete Markdown table</a></li><li><a href="audit.json">Evidence inventory and pinned upstream revisions</a></li></ul><p>Local evidence: the original install list and catalog, workflow-north-star.md, nix/user.nix, installed skill files, the supplied code-review report, current standing order 71 and read-only forge checks.</p></details>
 <footer>Catppuccin Mocha with JetBrains Mono. Tailnet pack; no external assets or analytics.</footer>
 </main><script>
 const rows=[...document.querySelectorAll('tbody tr')];

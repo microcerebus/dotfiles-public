@@ -243,7 +243,7 @@
       "status": "adapted",
       "evidence": "nix/user.nix; create-formal-verification-skill/SKILL.md; docs/pstack-audit/batch-4-delta.md; docs/pstack-audit/batch-4-proof/README.md; docs/pstack-audit/batch-4-route-proof.md",
       "reason": "Batch 4 adapts the generator with pinned tooling, a narrow route and no-verifier outcome. The bounded updater model finds a source-supported rollback race; two other invariants pass. Local only; no subject-code fix.",
-      "codex": "Fresh Astra proof and no-verifier route executed. Push approval and activation remain; the discovered defect needs a separate unit."
+      "codex": "Fresh Astra proof and no-verifier route executed. Pushed; activation remains, and the discovered defect needs a separate unit."
     },
     {
       "group": "pstack skill",
@@ -296,10 +296,10 @@
     {
       "group": "pstack skill",
       "item": "maintain-formal-verification-skill",
-      "status": "pending",
-      "evidence": "Upstream 0.15.29; absent from nix/user.nix",
-      "reason": "Batch 5 remains pending. The batch 4 project proof now exists; assess source drift and safe tooling against it before adopting the maintenance skill.",
-      "codex": "No: generator proof is available, but maintenance selection, tooling review and source-drift proof remain."
+      "status": "adapted",
+      "evidence": "nix/user.nix; maintain-formal-verification-skill/SKILL.md; .agents/skills/verify-autoupdate-handoff/SKILL.md; docs/pstack-audit/batch-5-delta.md",
+      "reason": "Batch 5 adapts the prompt-only maintenance loop. It runs only the project runner pinned in batch 4 and Git from the locked Home Manager profile. The handoff verify skill now names its covered code and a drift command; a scratch updater edit reports the proof stale and the unchanged tree stays quiet. Local only.",
+      "codex": "Fresh-context drift exercise executed on Claude during the Codex usage limit. Push approval and activation remain; no Codex invocation proof yet."
     },
     {
       "group": "pstack skill",
@@ -1815,21 +1815,22 @@
     "Wheelhouse and Guide Part 3 remain pending on the named external evidence blockers below.",
     "Batch 3 closes all 16 assigned source reviews: 9 ported, 4 kept local and 3 skipped.",
     "Its ports are pushed; activation confirmation remains outstanding; see batch-3-delta.md and batch-3-route-proof.md.",
-    "Batch 4 prepares the formal generator locally and records a bounded updater counterexample; maintenance remains batch 5 and the subject-code fix is separate.",
+    "Batch 4 adapts the formal generator and records a bounded updater counterexample; batch 5 adapts its maintenance loop locally.",
+    "The subject-code fix is separate.",
     "The table is generated from audit.json by render.py."
   ],
   "ownership": [
     {
       "entry": "pstack skill: create-formal-verification-skill",
       "lane": "dotfiles",
-      "blocked_by": "push approval and activation",
+      "blocked_by": "activation",
       "order": "4. Adopt-adapted locally. Project counterexample and no-verifier case recorded; see batch-4-delta.md. The updater fix is separate."
     },
     {
       "entry": "pstack skill: maintain-formal-verification-skill",
       "lane": "dotfiles",
-      "blocked_by": "batch 4 proof acceptance",
-      "order": "5. Use the batch 4 project proof to review tooling and prove a source-drift check; remains pending."
+      "blocked_by": "push approval and activation",
+      "order": "5. Adopt-adapted locally with a drift check exercised on the batch 4 proof; see batch-5-delta.md."
     },
     {
       "entry": "pstack support: Claude Code package",
@@ -2040,8 +2041,11 @@
       "order": "1. Migrate routing and prove discovery and fresh-context execution locally."
     }
   ],
-  "rollout_status": "Batches 1-3 are approved and pushed through d0f515d. Rebuild confirmation remains outstanding. Batch 4 is local and unpushed; it changes no live skill links or system configuration.",
+  "rollout_status": "Batches 1-4 are approved and pushed through 817f7a9. Rebuild confirmation remains outstanding. Batch 5 is local and unpushed; it changes no live skill links or system configuration.",
   "batch_4_outcomes": {
     "create-formal-verification-skill": "adopt-adapted"
+  },
+  "batch_5_outcomes": {
+    "maintain-formal-verification-skill": "adopt-adapted"
   }
 }

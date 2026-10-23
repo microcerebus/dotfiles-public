@@ -13,13 +13,14 @@ Batch 2 closes the package comparison by retaining the local set and confirms bu
 Wheelhouse and Guide Part 3 remain pending on the named external evidence blockers below.
 Batch 3 closes all 16 assigned source reviews: 9 ported, 4 kept local and 3 skipped.
 Its ports are pushed; activation confirmation remains outstanding; see batch-3-delta.md and batch-3-route-proof.md.
-Batch 4 prepares the formal generator locally and records a bounded updater counterexample; maintenance remains batch 5 and the subject-code fix is separate.
+Batch 4 adapts the formal generator and records a bounded updater counterexample; batch 5 adapts its maintenance loop locally.
+The subject-code fix is separate.
 The table is generated from audit.json by render.py.
 
 | Entry | Owning lane | Blocked by | Proposed order |
 |---|---|---|---|
-| pstack skill: create-formal-verification-skill | dotfiles | push approval and activation | 4. Adopt-adapted locally. Project counterexample and no-verifier case recorded; see batch-4-delta.md. The updater fix is separate. |
-| pstack skill: maintain-formal-verification-skill | dotfiles | batch 4 proof acceptance | 5. Use the batch 4 project proof to review tooling and prove a source-drift check; remains pending. |
+| pstack skill: create-formal-verification-skill | dotfiles | activation | 4. Adopt-adapted locally. Project counterexample and no-verifier case recorded; see batch-4-delta.md. The updater fix is separate. |
+| pstack skill: maintain-formal-verification-skill | dotfiles | push approval and activation | 5. Adopt-adapted locally with a drift check exercised on the batch 4 proof; see batch-5-delta.md. |
 | pstack support: Claude Code package | dotfiles | none | 2. Closed: retain the local set; the replacement loses local patches and adds executable tooling. See batch-2-sources.md. |
 | pstack support: Codex skill discovery | dotfiles | none | 1. Migrate routing and prove discovery and fresh-context execution locally. |
 | pstack support: Codex role migration for installed skills | dotfiles | none | 1. Migrate routing and prove discovery and fresh-context execution locally. |

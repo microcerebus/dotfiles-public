@@ -1,0 +1,16 @@
+$ cd /tmp/b5-exercise/drift
+$ git diff d553897cb44f482e8bfd17f760d6e196d766c5b3 -- scripts/dotfiles-autoupdate flake.nix
+--- output ---
+diff --git a/scripts/dotfiles-autoupdate b/scripts/dotfiles-autoupdate
+index c5756b7..ba82e2e 100755
+--- a/scripts/dotfiles-autoupdate
++++ b/scripts/dotfiles-autoupdate
+@@ -461,7 +461,6 @@ cmd_apply() {
+   # sync that started since the check above.
+   echo $$ >"$daemon_dir/switching"
+   trap 'rm -f "$daemon_dir/switching"' EXIT
+-  kill -0 "$(cat "$sync_dir/lock/pid" 2>/dev/null)" 2>/dev/null && return 0
+   mark_running
+   log "=== switching to ${want:0:12} (running: $running)"
+   # Nix opens the repo through libgit2, which lets root read a repo another
+exit status: 0

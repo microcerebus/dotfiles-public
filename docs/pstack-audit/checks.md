@@ -178,3 +178,47 @@ It also keeps Nix's stderr out of the parsed tool resolution: on a store without
 - `python3 docs/pstack-audit/batch-4-proof/verify.py` on the rebased tree, with the root lock at a newer nixpkgs, returns 12.
   All eight case results, exit codes, generated and distinct state counts, and source and model hashes match the committed evidence.
 - The other batch 4 checks above pass again on the fixed tree.
+
+## Batch 5 checks
+
+- `python3 -I scripts/check-skills` passes the global tree, including the new explicit-only maintenance skill.
+- `python3 -I scripts/check-skills --local .agents/skills` passes the updated project verifier and its new relative links.
+- `python3 -I tests/check_skills_test.py`: 20 tests pass.
+- `python3 -I tests/check_plan_test.py`: 14 tests pass.
+- The six browser/fallback fixture files pass all 76 tests, with stubs and a throwaway replay browser; no agent Chrome session ran.
+- `bash tests/claude_fallback_test.sh`: 30 shell assertions and 22 Python tests pass.
+  No live watcher or provider switch ran.
+- `bash tests/pre_push_test.sh`: 68 assertions pass.
+- `nix flake check --no-build`: Darwin evaluation passes without a build or activation.
+  Nix evaluation lists 30 Codex aliases, including both formal skills.
+- `python3 docs/pstack-audit/batch-4-proof/verify.py` returns 12; all eight case results, exit codes and state counts match the committed summary.
+- `check_bootstrap.py` passes, and `check_pinned_toolchain.py` passes its three tests.
+- `python3 docs/pstack-audit/render.py --check`: all 200 rows and three generated outputs agree; it requires the batch 5 outcome and evidence.
+- The fresh-context drift exercise is recorded in [the batch 5 delta](batch-5-delta.md#drift-exercise).
+
+## Batch 5 self-review
+
+A fresh-context Claude Opus 5.5 High review of the two commits found no blockers and eight smaller problems; all eight are fixed.
+The drift check now searches the whole repository, outside docs and project skills, for `darwin-rebuild` and `configurationRevision`, which now includes `setup/mac.sh`'s rebuild, and searches `nix/` for updater invokers such as the daemon.
+It no longer flags every `flake.nix` edit.
+The maintenance skill does the reading step before calling a check in sync when a drift command is narrower than the repository.
+Its edit scope includes source maps and proof notes, and any reproduction stays within the pinned tools without running the subject.
+The project skill gives the trace comparison command, poteto-mode's leaf replies with maintenance's report, and the batch 4 line citations name `d553897`.
+The widened drift commands are quiet on the unchanged tree, and the trace comparison returns 0 against the latest rerun.
+
+## Batch 5 independent review
+
+A fresh-context Claude Opus 5.5 xhigh review of the full diff, during the Codex usage limit, found one blocker and seven smaller problems.
+The blocker: the project skill claimed the updater's `nix/` invokers as covered, but edits to the sync agent's arguments, the `autoupdate-now` alias, the daemon's schedule or a new caller outside `nix/` left every drift command empty.
+The drift check now diffs the updater and its wrapper in full, searches `nix/` for lines naming the updater, and searches the repository for `darwin-rebuild`, `configurationRevision` and `dotfiles-autoupdate sync|apply`.
+A fourth command lists untracked files, which Git diffs cannot see.
+Launchd schedule fields that do not name the updater are stated as source-map assumptions that need the reading step, not covered code.
+The maintenance skill takes the in-sync shortcut only when the verify skill says its drift command covers all of its covered code.
+
+The smaller fixes list every departure from upstream in the delta, make reproductions source traces only, correct the friction count, say which drift check the exercise ran, and split a two-sentence rendered line.
+
+In a scratch worktree, the four commands stay quiet on the unchanged tree and report each of these one-line edits: the sync agent's arguments, the `autoupdate-now` alias, an untracked script calling `darwin-rebuild`, the `rebuild` alias and the updater script.
+A single re-review confirmed the blocker fixed and found the same class of gap: a quoted `"$root/scripts/dotfiles-autoupdate" apply` caller and an upper-case `AUTOUPDATE_USER` setting slipped past the patterns.
+The reviewer's tested patterns are applied, the daemon's `AbandonProcessGroup` and `StartCalendarInterval` are now reported, and the project skill no longer claims its commands cover everything, so maintenance always does its reading step.
+These last changes were not reviewed again, per the one re-review limit.
+The reviewer independently confirmed the upstream and license hashes, Git 2.56.0 and Python 3.14.8 store paths from the root `flake.lock` nixpkgs, the runner's TLC pin, explicit-only metadata, the untouched alias line and updater, and that no skill text invites unpinned tools.

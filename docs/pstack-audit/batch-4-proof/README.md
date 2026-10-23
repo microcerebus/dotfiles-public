@@ -53,7 +53,7 @@ No sync or external fetch needs to run.
 3. Apply passes its retry check, publishes its switching marker and sees no sync PID, at lines 454-464.
 4. The human starts and completes a rebuild of unpushed L.
    Witness states 13 and 14 leave apply poised at its invocation.
-   The rebuild alias at nix/user.nix line 223 has no check of the updater's marker.
+   The rebuild alias at nix/user.nix line 222 as of d553897 has no check of the updater's marker.
 5. Apply invokes its frozen revision A at line 470, then its successful activation replaces L with A.
    Witness states 15 and 16 record `before = L` and `built = A`.
 

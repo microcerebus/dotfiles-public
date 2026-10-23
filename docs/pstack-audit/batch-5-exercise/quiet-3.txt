@@ -1,0 +1,4 @@
+$ cd /tmp/b5-exercise/quiet/docs/pstack-audit/batch-4-proof
+$ diff <(sed -n '/Error: Invariant/,/states generated/p' evidence/baseline/tlc.txt | grep -v 'states generated') <(sed -n '/Error: Invariant/,/states generated/p' reruns/run-2m0nvhz2/baseline/tlc.txt | grep -v 'states generated')
+--- output ---
+exit status: 0

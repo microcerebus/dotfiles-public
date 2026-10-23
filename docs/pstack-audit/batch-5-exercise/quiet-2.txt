@@ -1,0 +1,14 @@
+$ cd /tmp/b5-exercise/quiet
+$ python3 docs/pstack-audit/batch-4-proof/verify.py
+--- output ---
+Evidence: docs/pstack-audit/batch-4-proof/reruns/run-2m0nvhz2
+baseline: counterexample, TLC exit 12, violated=ProtectLocalRebuild
+baseline-handoff-and-exact: pass, TLC exit 0, violated=None
+baseline-no-human-diagnostic: pass, TLC exit 0, violated=None
+baseline-pre-invoke-witness: counterexample, TLC exit 12, violated=ProtectLocalRebuild
+mutation-handoff: counterexample, TLC exit 12, violated=HandoffIsFetched
+mutation-exact-revision: counterexample, TLC exit 12, violated=ExactSelectedRevision
+mutation-local-protection: counterexample, TLC exit 12, violated=ProtectLocalRebuild
+baseline-restored: counterexample, TLC exit 12, violated=ProtectLocalRebuild
+Restored baseline: counterexample; all three source/model mutations detected.
+exit status: 12

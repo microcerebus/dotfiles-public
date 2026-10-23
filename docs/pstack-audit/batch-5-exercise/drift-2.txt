@@ -1,0 +1,5 @@
+$ cd /tmp/b5-exercise/drift
+$ python3 docs/pstack-audit/batch-4-proof/verify.py
+--- output ---
+INCONCLUSIVE: source drift. Follow the generated skill before updating the reviewed hash.
+exit status: 1

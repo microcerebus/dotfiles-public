@@ -456,7 +456,10 @@ in
   home.file.".claude/skills/create-verification-skill".source = link "files/.claude/skills/create-verification-skill";
   # Batch 4 adapts the 0.15.29 formal generator with pinned-tool provenance,
   # no-verifier outcomes and a narrow poteto-mode route; no verifier is global.
+  # Batch 5 adds its maintenance loop, which runs only the project's pinned
+  # runner and git.
   home.file.".claude/skills/create-formal-verification-skill".source = link "files/.claude/skills/create-formal-verification-skill";
+  home.file.".claude/skills/maintain-formal-verification-skill".source = link "files/.claude/skills/maintain-formal-verification-skill";
   home.file.".claude/skills/maintain-verification-skill".source = link "files/.claude/skills/maintain-verification-skill";
   home.file.".claude/skills/tdd".source = link "files/.claude/skills/tdd";
   home.file.".claude/skills/blast-radius".source = link "files/.claude/skills/blast-radius";
@@ -490,6 +493,7 @@ in
   home.file.".agents/skills/in-your-own-words".source = link "files/.claude/skills/in-your-own-words";
   home.file.".agents/skills/interrogate".source = link "files/.claude/skills/interrogate";
   home.file.".agents/skills/ketchup".source = link "files/.claude/skills/ketchup";
+  home.file.".agents/skills/maintain-formal-verification-skill".source = link "files/.claude/skills/maintain-formal-verification-skill";
   home.file.".agents/skills/maintain-verification-skill".source = link "files/.claude/skills/maintain-verification-skill";
   home.file.".agents/skills/pause-safely".source = link "files/.claude/skills/pause-safely";
   home.file.".agents/skills/poteto-mode".source = link "files/.claude/skills/poteto-mode";

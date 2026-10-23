@@ -60,8 +60,10 @@ If the model was wrong, record the correction and rerun.
 Keep models, configurations and output in the repository's existing verification or evidence directory.
 Use `.agents/skills/verify-<area>/SKILL.md` for a new project skill unless that repository declares another canonical location.
 Include frontmatter, when to run it, one exact command, source coverage, the last source commit checked, bounds, expected output, and what failure means.
+Add a drift command whose empty output means no covered source changed since that commit, including uncommitted edits.
 Record how to compare changed source with the model before advancing that commit.
-Do not point to the unadopted maintain-formal-verification-skill.
+Name where the recorded result lives.
+For covered changes made without the project skill, tell the reader to read and follow `maintain-formal-verification-skill/SKILL.md` from the user skills directory, since it is explicit-only.
 
 For every claimed safety property, demonstrate a failure on a broken variant.
 Change a scratch copy of the real source, reconcile that change into the model using the generated skill, and run the verifier.

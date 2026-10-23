@@ -60,7 +60,7 @@ This property has not been weakened to require a quiescent human.
 | `RequestedRevision`, `ApplyInvoke` | cmd_apply 470 | The command uses a git flake URL with exact `rev=$want`. Command expansion is separate from its eventual effect. |
 | `ApplyComplete`, `ApplyFail` | cmd_apply 470-489 | A successful switch atomically changes the installed revision to the requested one; an early failure leaves it unchanged. Partial activations and post-check error reporting are excluded. |
 | `ApplyRelease` | cmd_apply 463 | EXIT removes switching marker. |
-| `HumanStart`, `HumanComplete` | cmd_apply 408-411; nix/user.nix 220-223; flake.nix 64-68 | One external rebuild starts and later installs L or Dirty. The rebuild alias does not check sync's or apply's marker. An external actor may pause while apply samples state. |
+| `HumanStart`, `HumanComplete` | cmd_apply 408-411; nix/user.nix 219-222 at d553897; flake.nix 64-68 | One external rebuild starts and later installs L or Dirty. The rebuild alias does not check sync's or apply's marker. An external actor may pause while apply samples state. |
 | `Spec` stuttering | no shell statement | Arbitrary finite delays. No fairness assumption and no liveness claim. |
 
 ## Bounds and exclusions
