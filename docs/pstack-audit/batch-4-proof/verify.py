@@ -2,7 +2,8 @@
 """Replay a manually reconciled bounded model and source-mutation evidence.
 
 Never executes dotfiles-autoupdate. Only Nix's pinned TLC, Java version output,
-and bash syntax checks run. All writes stay in this proof directory.
+bash syntax checks and a read-only `git show` run. All writes stay in this proof
+directory.
 """
 
 import difflib
@@ -17,8 +18,12 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[2]
-SOURCE = ROOT / "scripts/dotfiles-autoupdate"
+# The repository that holds SOURCE_COMMIT; fixtures move ROOT, never this.
+REPO = ROOT
+SOURCE_PATH = "scripts/dotfiles-autoupdate"
 # The main commit that last changed the subject, so the record survives rebases.
+# The subject is read from this commit, not the working tree, so a later fix to
+# the script leaves this reviewed counterexample reproducible.
 SOURCE_COMMIT = "d553897cb44f482e8bfd17f760d6e196d766c5b3"
 SOURCE_SHA256 = "fb5b63e9bfd4ed2580f790f7d55003b7ee12b95e5d21e95debe3fcc8181d2442"
 # Pinned here, not read from the root flake.lock: the daily flake update moves
@@ -94,6 +99,16 @@ def execute_split(command, cwd=ROOT, timeout=180):
         return 124, error.stdout or b"", (error.stderr or b"") + b"\nRUNNER TIMEOUT: inconclusive\n"
 
 
+def reviewed_source():
+    """Return the subject's bytes at SOURCE_COMMIT."""
+    result = subprocess.run(["git", "-C", str(REPO), "show", f"{SOURCE_COMMIT}:{SOURCE_PATH}"],
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if result.returncode:
+        sys.exit(f"INCONCLUSIVE: cannot read {SOURCE_PATH} at {SOURCE_COMMIT}: "
+                 f"{result.stderr.decode(errors='replace').strip()}")
+    return result.stdout
+
+
 def replace_once(text, old, new):
     if text.count(old) != 1:
         raise ValueError(f"Expected one reviewed mutation site, got {text.count(old)}: {old}")
@@ -153,9 +168,15 @@ def run_case(output, name, source, model, invariants, spec="Spec"):
 
 
 def main():
-    source = SOURCE.read_text()
-    if digest(source.encode()) != SOURCE_SHA256:
-        sys.exit("INCONCLUSIVE: source drift. Follow the generated skill before updating the reviewed hash.")
+    source_bytes = reviewed_source()
+    if digest(source_bytes) != SOURCE_SHA256:
+        sys.exit("INCONCLUSIVE: the reviewed commit's subject does not match the reviewed hash.")
+    source = source_bytes.decode()
+    working_tree = REPO / SOURCE_PATH
+    working_tree_matches = working_tree.exists() and working_tree.read_bytes() == source_bytes
+    if not working_tree_matches:
+        print(f"Note: {SOURCE_PATH} has changed since {SOURCE_COMMIT[:7]}; "
+              "this run checks the reviewed revision, not the working tree.", flush=True)
     model = (HERE / "Handoff.tla").read_text()
     expected_cfg = ("SPECIFICATION Spec\nCHECK_DEADLOCK FALSE\n"
                     + "".join(f"INVARIANT {name}\n" for name in INVARIANTS))
@@ -210,6 +231,7 @@ def main():
         sys.exit("INCONCLUSIVE: pinned Java failed.")
     write_json(output / "reviewed-input.json", {
         "source_commit": SOURCE_COMMIT, "source_sha256": SOURCE_SHA256,
+        "working_tree_matches_source": working_tree_matches,
         "model_sha256": digest(model.encode()), "nixpkgs_revision": NIXPKGS,
         "abstraction": "manual; fixed mutation mappings, no automated extraction",
     })
@@ -239,12 +261,12 @@ def main():
 
     (scratch / "subject.sh").write_text(source)
     (scratch / "Handoff.tla").write_text(model)
-    assert (scratch / "subject.sh").read_bytes() == SOURCE.read_bytes()
+    assert (scratch / "subject.sh").read_bytes() == source_bytes
     assert (scratch / "Handoff.tla").read_bytes() == (HERE / "Handoff.tla").read_bytes()
     write_json(output / "restoration.json", {
-        "scratch_source_equals_real_source": True,
+        "scratch_source_equals_reviewed_source": True,
         "scratch_model_equals_baseline_model": True,
-        "real_source_sha256": digest(SOURCE.read_bytes()),
+        "reviewed_source_sha256": digest(source_bytes),
     })
     results.append(run_case(output, "baseline-restored", (scratch / "subject.sh").read_text(),
                             (scratch / "Handoff.tla").read_text(), INVARIANTS))
@@ -258,8 +280,6 @@ def main():
             sys.exit("INCONCLUSIVE: a mutation did not demonstrate its intended safety violation.")
     if results[0]["result"] != results[-1]["result"] or results[0]["violated"] != results[-1]["violated"]:
         sys.exit("INCONCLUSIVE: restored baseline differs from the first baseline.")
-    if digest(SOURCE.read_bytes()) != SOURCE_SHA256:
-        sys.exit("INCONCLUSIVE: the real source changed during this run.")
     print(f"Restored baseline: {results[-1]['result']}; all three source/model mutations detected.")
     return results[-1]["exit"]
 

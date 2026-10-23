@@ -1,0 +1,9 @@
+{
+  "constants": {
+    "ApplyLocks": "FALSE"
+  },
+  "mapping": "cmd_apply lockf -> ApplyLocks (ApplyLock, ApplyUnlock)",
+  "name": "mutation-apply-no-lock",
+  "source_new": "\"$BASH\" \"$0\" apply-locked",
+  "source_old": "lockf -k -t 0 \"$switch_lock\" \"$BASH\" \"$0\" apply-locked"
+}

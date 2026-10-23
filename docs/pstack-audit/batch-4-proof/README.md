@@ -12,8 +12,11 @@ python3 docs/pstack-audit/batch-4-proof/verify.py
 ```
 
 The command returns the restored baseline's TLC exit status: **12** for the current counterexample, or 0 once a revised source and model pass.
-Otherwise it exits 1 with an INCONCLUSIVE reason, for example when the subject's hash drifts, the pinned tools do not resolve or a run ends without a pass or invariant trace.
+Otherwise it exits 1 with an INCONCLUSIVE reason, for example when the subject at the source commit does not match its reviewed hash, the pinned tools do not resolve or a run ends without a pass or invariant trace.
 With the committed source and model it returns 12.
+It reads the subject with `git show` at the source commit, never from the working tree, so it still returns 12 after the script is fixed.
+That needs the private history: in the public mirror or a shallow clone without the source commit it stops INCONCLUSIVE.
+When the working tree's script differs from that commit, it says so and records `working_tree_matches_source` in `reviewed-input.json`.
 It preserves the committed evidence and writes subsequent runs under the ignored reruns directory.
 It pins nixpkgs itself by revision and NAR hash, with empty user config and overlays, so neither the daily root `flake.lock` update nor local nixpkgs config changes its tools or result.
 It realizes the pinned TLC closure before inspecting its Java wrapper, so a fresh store or garbage collection does not prevent the first run.
@@ -79,7 +82,7 @@ The runner never executes them.
 The ancestry mutation uses the no-human diagnostic so the existing baseline race cannot masquerade as evidence that the mutation matters.
 The unchanged source passes the identical no-human diagnostic.
 The [restoration record](evidence/restoration.json) confirms that scratch source and model returned byte for byte to baseline before the final run.
-The real subject retains its original hash.
+The restored scratch source equals the subject at the source commit, byte for byte.
 
 ## Bounds and provenance
 
@@ -99,7 +102,7 @@ No registry, installation, profile mutation, rebuild, browser, container or push
 
 The model is manual and the mutation mappings are fixed reviewed pairs.
 There is no general shell-to-TLA translator.
-The automated drift guard covers the subject script, the resolved nixpkgs revision, the package version and the Java runtime; supporting source references need manual review.
+The automated guard covers the subject script at the source commit, the resolved nixpkgs revision, the package version and the Java runtime; supporting source references need manual review.
 Finite graphs, one-attempt bounds, reliable PID observations, monotonic refs, atomic file publication and successful activation semantics limit the result.
 Crashes, force-pushes, partial activation, malformed-input parsing, Git internals, Home Manager internals and arbitrary repeated schedules are not verified.
 Exact selection includes the source's newer-pushed-running-revision exception and Home Manager repair.

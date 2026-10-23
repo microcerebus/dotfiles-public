@@ -1,6 +1,6 @@
 ---
 name: verify-autoupdate-handoff
-description: "Rerun the bounded sync/apply handoff check after changes to dotfiles-autoupdate revision selection, handoff writes, or rebuild protection."
+description: "Rerun the bounded sync/apply handoff checks after changes to dotfiles-autoupdate revision selection, handoff writes, or rebuild protection. The fixed script's check is docs/formal/autoupdate-handoff/verify.py; this batch 4 check is a frozen record of the unfixed revision."
 ---
 
 # Verify autoupdate handoff
@@ -9,6 +9,11 @@ This check models one sync, one apply, one optional human rebuild and one option
 Read the [source map and limits](../../../docs/pstack-audit/batch-4-proof/source-map.md) before using its result.
 The last source commit reviewed is `d553897cb44f482e8bfd17f760d6e196d766c5b3`.
 The generated model is a manual abstraction, not extracted code or complete implementation verification.
+
+The race this check finds is fixed: `apply` and the `rebuild` alias now share a switch lock.
+For the current script, run `python3 docs/formal/autoupdate-handoff/verify.py`, which guards the working tree's script hash and expects exit 0; read its README.
+This batch 4 check stays a record of `d553897`: it reads the subject at that commit and returns 12 whatever the working tree holds.
+Until a maintenance pass records the fix's main commit as the sync commit, the drift commands below always list the fix, so their output is no staleness signal for the current script.
 
 From the repository root, use this one rerun command:
 
@@ -24,9 +29,9 @@ It never executes the subject script or an activation command.
 Read the baseline result before the mutation results.
 TLC exit 0 means the named invariants passed within the documented finite model.
 TLC exit 12 with an invariant trace is a counterexample, including when the current source already fails.
-An error, timeout or source-drift refusal is inconclusive.
+An error, timeout or a hash mismatch at the reviewed commit is inconclusive.
 The runner returns the restored baseline's TLC exit: 12 for a counterexample, 0 for a pass.
-Otherwise it exits 1 with an INCONCLUSIVE reason, for example on drift, tool failure or a run without a pass or invariant trace.
+Otherwise it exits 1 with an INCONCLUSIVE reason, for example on a hash mismatch, tool failure or a run without a pass or invariant trace.
 Do not interpret successful mutation detection as a passing baseline.
 
 The covered code is [scripts/dotfiles-autoupdate](../../../scripts/dotfiles-autoupdate) and its `nix/autoupdate.nix` wrapper, every line under `nix/` that names the updater, every `darwin-rebuild` caller and `sync` or `apply` invocation in the repository, including the `rebuild` alias, and the `configurationRevision` setting in `flake.nix`.
@@ -47,7 +52,8 @@ Empty output from all four commands means no covered change that these patterns 
 They match names, not meaning: a caller that reaches the updater or `darwin-rebuild` through a variable or another spelling needs the maintenance reading step, so these commands do not cover all of the code listed above.
 The last command lists untracked files, which the diffs cannot see.
 The second command also reports prose and tests that mention `darwin-rebuild`; classify those as no effect in the reading step.
-Any output means the proof may be stale; the runner refuses only a changed subject script.
+Any output means the proof may be stale.
+The runner reads the subject at the reviewed commit, not the working tree, so it never refuses a changed script; it only prints a note that the working tree differs.
 The recorded result is exit 12 in [verification.exit](../../../docs/pstack-audit/batch-4-proof/verification.exit), with the baseline trace in [the baseline output](../../../docs/pstack-audit/batch-4-proof/evidence/baseline/tlc.txt); a rerun writes its baseline output under the reruns directory.
 Compare the two traces from the proof directory, ignoring the state-count line:
 
@@ -59,7 +65,7 @@ For covered changes made without this skill, read and follow `maintain-formal-ve
 
 When source changes, compare its diff with the recorded source snapshot and every affected source-map row.
 Also review the supporting rebuild alias and configurationRevision setting named in the source map.
-The runner's drift guard checks the subject script and the nixpkgs pin, not those supporting files or semantic correspondence.
+The runner's guard checks the subject at the reviewed commit and the nixpkgs pin, not those supporting files or semantic correspondence.
 Keep reads, guard checks, writes and activation separate where the shell allows interleaving.
 Revise the corresponding model actions manually, document the reasoning and update the reviewed source hash and commit only after that comparison.
 Record a commit that is already on main; a branch commit's SHA changes when the branch is rebased.
@@ -77,4 +83,4 @@ Do not mutate the real subject.
 
 Report pass, counterexample or no-verifier with the bounds, source revision, trace interpretation and exclusions.
 The initial check expects a counterexample to protection of a human rebuild that completes after apply sampled the running revision.
-Confirm that trace against the source before proposing a separate fix.
+Confirm that trace against the source at the reviewed commit; the fix for it is already in place, so do not propose another.

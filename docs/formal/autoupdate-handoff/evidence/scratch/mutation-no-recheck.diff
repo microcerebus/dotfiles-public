@@ -1,0 +1,16 @@
+--- scripts/dotfiles-autoupdate
++++ scratch/mutation-no-recheck.sh
+@@ -486,13 +486,6 @@
+   # A darwin-rebuild run without `rebuild` takes no lock, so just before the
+   # switch, look again for one (or for a rebuild waiting on this lock), and
+   # for a system that changed since the decision.
+-  pgrep -qf darwin-rebuild && return 0
+-  local now_running
+-  now_running=$(system_revision)
+-  if [ "$now_running" != "$running" ]; then
+-    log "the running system changed to ${now_running:-no revision} after the check; the next tick decides again"
+-    return 0
+-  fi
+   mark_running
+   log "=== switching to ${want:0:12} (running: $running)"
+   # Nix opens the repo through libgit2, which lets root read a repo another

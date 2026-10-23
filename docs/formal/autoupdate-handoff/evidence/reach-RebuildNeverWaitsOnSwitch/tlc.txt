@@ -1,0 +1,568 @@
+TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
+Running breadth-first search Model-Checking with fp 0 and seed 1 with 1 worker on 12 cores with 8192MB heap and 64MB offheap memory (Mac OS X 26.7.1 aarch64, Azul Systems, Inc. 1.8.0_492 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file /Users/myuser/.t3/worktrees/dotfiles/fix-autoupdate-rollback-race/docs/formal/autoupdate-handoff/evidence/reach-RebuildNeverWaitsOnSwitch/Handoff.tla
+Parsing file /private/var/folders/87/l57bxt9d4wnb521lw1187z8c0000gn/T/Naturals.tla
+Semantic processing of module Naturals
+Semantic processing of module Handoff
+Starting... (2026-10-22 14:06:52)
+Computing initial states...
+Computed 2 initial states...
+Computed 4 initial states...
+Computed 8 initial states...
+Computed 16 initial states...
+Computed 32 initial states...
+Computed 64 initial states...
+Computed 128 initial states...
+Computed 256 initial states...
+Finished computing initial states: 384 distinct states generated at 2026-10-22 14:06:53.
+Progress(9) at 2026-10-22 14:06:56: 236,857 states generated (236,857 s/min), 91,722 distinct states found (91,722 ds/min), 22,252 states left on queue.
+Error: Invariant RebuildNeverWaitsOnSwitch is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ a = [ pc |-> "checkHuman",
+  target |-> "None",
+  sampled |-> "None",
+  want |-> "None",
+  newer |-> FALSE,
+  originRead |-> "None",
+  invoked |-> FALSE,
+  request |-> "None",
+  applied |-> FALSE,
+  before |-> "None",
+  built |-> "None" ]
+/\ g = [ origin |-> "B",
+  handoff |-> "A",
+  installed |-> "A",
+  head |-> "A",
+  dirty |-> FALSE,
+  hm |-> FALSE,
+  syncDir |-> FALSE,
+  syncPid |-> FALSE,
+  switching |-> FALSE,
+  switchLock |-> "none" ]
+/\ h = "idle"
+/\ s = [ pc |-> "acquire",
+  fetched |-> "None",
+  temp |-> "None",
+  marker |-> FALSE,
+  mainHead |-> "None",
+  published |-> FALSE,
+  sent |-> "None" ]
+/\ refMoved = FALSE
+
+State 2: <ApplyCheckHuman line 135, col 5 to line 137, col 38 of module Handoff>
+/\ a = [ pc |-> "checkSync",
+  target |-> "None",
+  sampled |-> "None",
+  want |-> "None",
+  newer |-> FALSE,
+  originRead |-> "None",
+  invoked |-> FALSE,
+  request |-> "None",
+  applied |-> FALSE,
+  before |-> "None",
+  built |-> "None" ]
+/\ g = [ origin |-> "B",
+  handoff |-> "A",
+  installed |-> "A",
+  head |-> "A",
+  dirty |-> FALSE,
+  hm |-> FALSE,
+  syncDir |-> FALSE,
+  syncPid |-> FALSE,
+  switching |-> FALSE,
+  switchLock |-> "none" ]
+/\ h = "idle"
+/\ s = [ pc |-> "acquire",
+  fetched |-> "None",
+  temp |-> "None",
+  marker |-> FALSE,
+  mainHead |-> "None",
+  published |-> FALSE,
+  sent |-> "None" ]
+/\ refMoved = FALSE
+
+State 3: <ApplyCheckSync line 140, col 5 to line 142, col 38 of module Handoff>
+/\ a = [ pc |-> "lock",
+  target |-> "None",
+  sampled |-> "None",
+  want |-> "None",
+  newer |-> FALSE,
+  originRead |-> "None",
+  invoked |-> FALSE,
+  request |-> "None",
+  applied |-> FALSE,
+  before |-> "None",
+  built |-> "None" ]
+/\ g = [ origin |-> "B",
+  handoff |-> "A",
+  installed |-> "A",
+  head |-> "A",
+  dirty |-> FALSE,
+  hm |-> FALSE,
+  syncDir |-> FALSE,
+  syncPid |-> FALSE,
+  switching |-> FALSE,
+  switchLock |-> "none" ]
+/\ h = "idle"
+/\ s = [ pc |-> "acquire",
+  fetched |-> "None",
+  temp |-> "None",
+  marker |-> FALSE,
+  mainHead |-> "None",
+  published |-> FALSE,
+  sent |-> "None" ]
+/\ refMoved = FALSE
+
+State 4: <ApplyLock line 146, col 5 to line 155, col 35 of module Handoff>
+/\ a = [ pc |-> "readTarget",
+  target |-> "None",
+  sampled |-> "None",
+  want |-> "None",
+  newer |-> FALSE,
+  originRead |-> "None",
+  invoked |-> FALSE,
+  request |-> "None",
+  applied |-> FALSE,
+  before |-> "None",
+  built |-> "None" ]
+/\ g = [ origin |-> "B",
+  handoff |-> "A",
+  installed |-> "A",
+  head |-> "A",
+  dirty |-> FALSE,
+  hm |-> FALSE,
+  syncDir |-> FALSE,
+  syncPid |-> FALSE,
+  switching |-> FALSE,
+  switchLock |-> "apply" ]
+/\ h = "idle"
+/\ s = [ pc |-> "acquire",
+  fetched |-> "None",
+  temp |-> "None",
+  marker |-> FALSE,
+  mainHead |-> "None",
+  published |-> FALSE,
+  sent |-> "None" ]
+/\ refMoved = FALSE
+
+State 5: <ApplyReadTarget line 158, col 5 to line 160, col 38 of module Handoff>
+/\ a = [ pc |-> "readRunning",
+  target |-> "A",
+  sampled |-> "None",
+  want |-> "None",
+  newer |-> FALSE,
+  originRead |-> "None",
+  invoked |-> FALSE,
+  request |-> "None",
+  applied |-> FALSE,
+  before |-> "None",
+  built |-> "None" ]
+/\ g = [ origin |-> "B",
+  handoff |-> "A",
+  installed |-> "A",
+  head |-> "A",
+  dirty |-> FALSE,
+  hm |-> FALSE,
+  syncDir |-> FALSE,
+  syncPid |-> FALSE,
+  switching |-> FALSE,
+  switchLock |-> "apply" ]
+/\ h = "idle"
+/\ s = [ pc |-> "acquire",
+  fetched |-> "None",
+  temp |-> "None",
+  marker |-> FALSE,
+  mainHead |-> "None",
+  published |-> FALSE,
+  sent |-> "None" ]
+/\ refMoved = FALSE
+
+State 6: <ApplyReadRunning line 163, col 5 to line 165, col 38 of module Handoff>
+/\ a = [ pc |-> "validate",
+  target |-> "A",
+  sampled |-> "A",
+  want |-> "None",
+  newer |-> FALSE,
+  originRead |-> "None",
+  invoked |-> FALSE,
+  request |-> "None",
+  applied |-> FALSE,
+  before |-> "None",
+  built |-> "None" ]
+/\ g = [ origin |-> "B",
+  handoff |-> "A",
+  installed |-> "A",
+  head |-> "A",
+  dirty |-> FALSE,
+  hm |-> FALSE,
+  syncDir |-> FALSE,
+  syncPid |-> FALSE,
+  switching |-> FALSE,
+  switchLock |-> "apply" ]
+/\ h = "idle"
+/\ s = [ pc |-> "acquire",
+  fetched |-> "None",
+  temp |-> "None",
+  marker |-> FALSE,
+  mainHead |-> "None",
+  published |-> FALSE,
+  sent |-> "None" ]
+/\ refMoved = FALSE
+
+State 7: <ApplyValidate line 168, col 5 to line 173, col 38 of module Handoff>
+/\ a = [ pc |-> "checkNewer",
+  target |-> "A",
+  sampled |-> "A",
+  want |-> "A",
+  newer |-> FALSE,
+  originRead |-> "None",
+  invoked |-> FALSE,
+  request |-> "None",
+  applied |-> FALSE,
+  before |-> "None",
+  built |-> "None" ]
+/\ g = [ origin |-> "B",
+  handoff |-> "A",
+  installed |-> "A",
+  head |-> "A",
+  dirty |-> FALSE,
+  hm |-> FALSE,
+  syncDir |-> FALSE,
+  syncPid |-> FALSE,
+  switching |-> FALSE,
+  switchLock |-> "apply" ]
+/\ h = "idle"
+/\ s = [ pc |-> "acquire",
+  fetched |-> "None",
+  temp |-> "None",
+  marker |-> FALSE,
+  mainHead |-> "None",
+  published |-> FALSE,
+  sent |-> "None" ]
+/\ refMoved = FALSE
+
+State 8: <ApplyCheckNewer line 176, col 5 to line 180, col 38 of module Handoff>
+/\ a = [ pc |-> "same",
+  target |-> "A",
+  sampled |-> "A",
+  want |-> "A",
+  newer |-> FALSE,
+  originRead |-> "None",
+  invoked |-> FALSE,
+  request |-> "None",
+  applied |-> FALSE,
+  before |-> "None",
+  built |-> "None" ]
+/\ g = [ origin |-> "B",
+  handoff |-> "A",
+  installed |-> "A",
+  head |-> "A",
+  dirty |-> FALSE,
+  hm |-> FALSE,
+  syncDir |-> FALSE,
+  syncPid |-> FALSE,
+  switching |-> FALSE,
+  switchLock |-> "apply" ]
+/\ h = "idle"
+/\ s = [ pc |-> "acquire",
+  fetched |-> "None",
+  temp |-> "None",
+  marker |-> FALSE,
+  mainHead |-> "None",
+  published |-> FALSE,
+  sent |-> "None" ]
+/\ refMoved = FALSE
+
+State 9: <ApplySame line 196, col 5 to line 199, col 38 of module Handoff>
+/\ a = [ pc |-> "checkHM",
+  target |-> "A",
+  sampled |-> "A",
+  want |-> "A",
+  newer |-> FALSE,
+  originRead |-> "None",
+  invoked |-> FALSE,
+  request |-> "None",
+  applied |-> FALSE,
+  before |-> "None",
+  built |-> "None" ]
+/\ g = [ origin |-> "B",
+  handoff |-> "A",
+  installed |-> "A",
+  head |-> "A",
+  dirty |-> FALSE,
+  hm |-> FALSE,
+  syncDir |-> FALSE,
+  syncPid |-> FALSE,
+  switching |-> FALSE,
+  switchLock |-> "apply" ]
+/\ h = "idle"
+/\ s = [ pc |-> "acquire",
+  fetched |-> "None",
+  temp |-> "None",
+  marker |-> FALSE,
+  mainHead |-> "None",
+  published |-> FALSE,
+  sent |-> "None" ]
+/\ refMoved = FALSE
+
+State 10: <ApplyHM line 202, col 5 to line 204, col 38 of module Handoff>
+/\ a = [ pc |-> "retry",
+  target |-> "A",
+  sampled |-> "A",
+  want |-> "A",
+  newer |-> FALSE,
+  originRead |-> "None",
+  invoked |-> FALSE,
+  request |-> "None",
+  applied |-> FALSE,
+  before |-> "None",
+  built |-> "None" ]
+/\ g = [ origin |-> "B",
+  handoff |-> "A",
+  installed |-> "A",
+  head |-> "A",
+  dirty |-> FALSE,
+  hm |-> FALSE,
+  syncDir |-> FALSE,
+  syncPid |-> FALSE,
+  switching |-> FALSE,
+  switchLock |-> "apply" ]
+/\ h = "idle"
+/\ s = [ pc |-> "acquire",
+  fetched |-> "None",
+  temp |-> "None",
+  marker |-> FALSE,
+  mainHead |-> "None",
+  published |-> FALSE,
+  sent |-> "None" ]
+/\ refMoved = FALSE
+
+State 11: <ApplyRetry line 212, col 5 to line 215, col 38 of module Handoff>
+/\ a = [ pc |-> "mark",
+  target |-> "A",
+  sampled |-> "A",
+  want |-> "A",
+  newer |-> FALSE,
+  originRead |-> "None",
+  invoked |-> FALSE,
+  request |-> "None",
+  applied |-> FALSE,
+  before |-> "None",
+  built |-> "None" ]
+/\ g = [ origin |-> "B",
+  handoff |-> "A",
+  installed |-> "A",
+  head |-> "A",
+  dirty |-> FALSE,
+  hm |-> FALSE,
+  syncDir |-> FALSE,
+  syncPid |-> FALSE,
+  switching |-> FALSE,
+  switchLock |-> "apply" ]
+/\ h = "idle"
+/\ s = [ pc |-> "acquire",
+  fetched |-> "None",
+  temp |-> "None",
+  marker |-> FALSE,
+  mainHead |-> "None",
+  published |-> FALSE,
+  sent |-> "None" ]
+/\ refMoved = FALSE
+
+State 12: <ApplyMark line 218, col 5 to line 221, col 35 of module Handoff>
+/\ a = [ pc |-> "recheck",
+  target |-> "A",
+  sampled |-> "A",
+  want |-> "A",
+  newer |-> FALSE,
+  originRead |-> "None",
+  invoked |-> FALSE,
+  request |-> "None",
+  applied |-> FALSE,
+  before |-> "None",
+  built |-> "None" ]
+/\ g = [ origin |-> "B",
+  handoff |-> "A",
+  installed |-> "A",
+  head |-> "A",
+  dirty |-> FALSE,
+  hm |-> FALSE,
+  syncDir |-> FALSE,
+  syncPid |-> FALSE,
+  switching |-> TRUE,
+  switchLock |-> "apply" ]
+/\ h = "idle"
+/\ s = [ pc |-> "acquire",
+  fetched |-> "None",
+  temp |-> "None",
+  marker |-> FALSE,
+  mainHead |-> "None",
+  published |-> FALSE,
+  sent |-> "None" ]
+/\ refMoved = FALSE
+
+State 13: <ApplyRecheck line 224, col 5 to line 227, col 38 of module Handoff>
+/\ a = [ pc |-> "recheckHuman",
+  target |-> "A",
+  sampled |-> "A",
+  want |-> "A",
+  newer |-> FALSE,
+  originRead |-> "None",
+  invoked |-> FALSE,
+  request |-> "None",
+  applied |-> FALSE,
+  before |-> "None",
+  built |-> "None" ]
+/\ g = [ origin |-> "B",
+  handoff |-> "A",
+  installed |-> "A",
+  head |-> "A",
+  dirty |-> FALSE,
+  hm |-> FALSE,
+  syncDir |-> FALSE,
+  syncPid |-> FALSE,
+  switching |-> TRUE,
+  switchLock |-> "apply" ]
+/\ h = "idle"
+/\ s = [ pc |-> "acquire",
+  fetched |-> "None",
+  temp |-> "None",
+  marker |-> FALSE,
+  mainHead |-> "None",
+  published |-> FALSE,
+  sent |-> "None" ]
+/\ refMoved = FALSE
+
+State 14: <ApplyRecheckHuman line 230, col 5 to line 232, col 38 of module Handoff>
+/\ a = [ pc |-> "recheckRunning",
+  target |-> "A",
+  sampled |-> "A",
+  want |-> "A",
+  newer |-> FALSE,
+  originRead |-> "None",
+  invoked |-> FALSE,
+  request |-> "None",
+  applied |-> FALSE,
+  before |-> "None",
+  built |-> "None" ]
+/\ g = [ origin |-> "B",
+  handoff |-> "A",
+  installed |-> "A",
+  head |-> "A",
+  dirty |-> FALSE,
+  hm |-> FALSE,
+  syncDir |-> FALSE,
+  syncPid |-> FALSE,
+  switching |-> TRUE,
+  switchLock |-> "apply" ]
+/\ h = "idle"
+/\ s = [ pc |-> "acquire",
+  fetched |-> "None",
+  temp |-> "None",
+  marker |-> FALSE,
+  mainHead |-> "None",
+  published |-> FALSE,
+  sent |-> "None" ]
+/\ refMoved = FALSE
+
+State 15: <ApplyRecheckRunning line 235, col 5 to line 237, col 38 of module Handoff>
+/\ a = [ pc |-> "invoke",
+  target |-> "A",
+  sampled |-> "A",
+  want |-> "A",
+  newer |-> FALSE,
+  originRead |-> "None",
+  invoked |-> FALSE,
+  request |-> "None",
+  applied |-> FALSE,
+  before |-> "None",
+  built |-> "None" ]
+/\ g = [ origin |-> "B",
+  handoff |-> "A",
+  installed |-> "A",
+  head |-> "A",
+  dirty |-> FALSE,
+  hm |-> FALSE,
+  syncDir |-> FALSE,
+  syncPid |-> FALSE,
+  switching |-> TRUE,
+  switchLock |-> "apply" ]
+/\ h = "idle"
+/\ s = [ pc |-> "acquire",
+  fetched |-> "None",
+  temp |-> "None",
+  marker |-> FALSE,
+  mainHead |-> "None",
+  published |-> FALSE,
+  sent |-> "None" ]
+/\ refMoved = FALSE
+
+State 16: <ApplyInvoke line 240, col 5 to line 243, col 38 of module Handoff>
+/\ a = [ pc |-> "complete",
+  target |-> "A",
+  sampled |-> "A",
+  want |-> "A",
+  newer |-> FALSE,
+  originRead |-> "None",
+  invoked |-> TRUE,
+  request |-> "A",
+  applied |-> FALSE,
+  before |-> "None",
+  built |-> "None" ]
+/\ g = [ origin |-> "B",
+  handoff |-> "A",
+  installed |-> "A",
+  head |-> "A",
+  dirty |-> FALSE,
+  hm |-> FALSE,
+  syncDir |-> FALSE,
+  syncPid |-> FALSE,
+  switching |-> TRUE,
+  switchLock |-> "apply" ]
+/\ h = "idle"
+/\ s = [ pc |-> "acquire",
+  fetched |-> "None",
+  temp |-> "None",
+  marker |-> FALSE,
+  mainHead |-> "None",
+  published |-> FALSE,
+  sent |-> "None" ]
+/\ refMoved = FALSE
+
+State 17: <HumanRequest line 274, col 5 to line 276, col 38 of module Handoff>
+/\ a = [ pc |-> "complete",
+  target |-> "A",
+  sampled |-> "A",
+  want |-> "A",
+  newer |-> FALSE,
+  originRead |-> "None",
+  invoked |-> TRUE,
+  request |-> "A",
+  applied |-> FALSE,
+  before |-> "None",
+  built |-> "None" ]
+/\ g = [ origin |-> "B",
+  handoff |-> "A",
+  installed |-> "A",
+  head |-> "A",
+  dirty |-> FALSE,
+  hm |-> FALSE,
+  syncDir |-> FALSE,
+  syncPid |-> FALSE,
+  switching |-> TRUE,
+  switchLock |-> "apply" ]
+/\ h = "waiting"
+/\ s = [ pc |-> "acquire",
+  fetched |-> "None",
+  temp |-> "None",
+  marker |-> FALSE,
+  mainHead |-> "None",
+  published |-> FALSE,
+  sent |-> "None" ]
+/\ refMoved = FALSE
+
+1000534 states generated, 352754 distinct states found, 49427 states left on queue.
+The depth of the complete state graph search is 17.
+The average outdegree of the complete state graph is 1 (minimum is 0, the maximum 5 and the 95th percentile is 3).
+Finished in 07s at (2026-10-22 14:06:59)

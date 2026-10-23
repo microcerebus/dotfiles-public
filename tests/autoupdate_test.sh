@@ -42,11 +42,17 @@ EOF
 # sudo -u <user> [-H] [env VAR=...] cmd: runs cmd as the caller, keeping the
 # stub PATH whatever the caller asked for. STUB_SYNC_STARTS=<pid>: a sync
 # takes its lock as pid <pid> while the daemon asks git about the repo.
+# STUB_HUMAN_SWITCH=<rev>: at that moment, after apply sampled the system,
+# a darwin-rebuild run outside `rebuild` finishes a switch to <rev>, once.
 cat >"$stubs/sudo" <<'EOF'
 #!/usr/bin/env bash
 if [ -n "${STUB_SYNC_STARTS:-}" ]; then
   mkdir -p "$AUTOUPDATE_HOME/.local/state/dotfiles-autoupdate/lock"
   echo "$STUB_SYNC_STARTS" >"$AUTOUPDATE_HOME/.local/state/dotfiles-autoupdate/lock/pid"
+fi
+if [ -n "${STUB_HUMAN_SWITCH:-}" ] && [ ! -e "$STUB_LOG/human-switched" ]; then
+  touch "$STUB_LOG/human-switched"
+  ln -sfn "$(mksystem "$STUB_HUMAN_SWITCH")" "$AUTOUPDATE_SYSTEM"
 fi
 while [ $# -gt 0 ]; do
   case $1 in -u) shift 2 ;; -H|--set-home) shift ;; *) break ;; esac
@@ -181,9 +187,15 @@ EOF
 # (exact ?rev=, or the checkout's HEAD, -dirty with tracked edits), then
 # activates a fake system built from it. STUB_HM_BROKEN leaves Home Manager
 # on its old generation, as the brew bundle abort of Aug-Oct 2026 did.
+# STUB_SWITCH_HOLD=<dir>: the switch announces itself in <dir>/started.<n>
+# and runs until <dir>/release exists, as a long build does.
 cat >"$stubs/darwin-rebuild" <<'EOF'
 #!/usr/bin/env bash
 [ "$1" = switch ] && [ "$2" = --flake ] || exit 2
+if [ -n "${STUB_SWITCH_HOLD:-}" ]; then
+  echo "$3" >"$STUB_SWITCH_HOLD/started.$(ls "$STUB_SWITCH_HOLD" | grep -c '^started')"
+  for _ in $(seq 300); do [ -e "$STUB_SWITCH_HOLD/release" ] && break; /bin/sleep 0.1; done
+fi
 ref=$3
 if [[ $ref == *'?rev='* ]]; then
   rev=${ref#*\?rev=}; rev=${rev%%#*}
@@ -229,7 +241,7 @@ fresh() {
   export AUTOUPDATE_STAMP="$s/daemon/stamp" AUTOUPDATE_SILL_APP="$s/Applications/Sill.app"
   export AUTOUPDATE_PUBLIC_SYNC="$stubs/public-sync"
   export HM_GCROOT="$home/.local/state/home-manager/gcroots/current-home"
-  unset STUB_OFFLINE STUB_REBUILD_RUNNING STUB_PNPM_FAIL STUB_PNPM_CTRL_C STUB_BREW_OUTPUT STUB_BREW_SUDO STUB_TTY STUB_BREW_KILL STUB_SWITCH_EXIT STUB_HM_BROKEN STUB_SILL_TEAM STUB_OSASCRIPT_FAIL STUB_PNPM_STARTS_REBUILD STUB_SYNC_STARTS STUB_PUBLIC_FAIL
+  unset STUB_HUMAN_SWITCH STUB_SWITCH_HOLD AUTOUPDATE_REBUILD_WAIT STUB_OFFLINE STUB_REBUILD_RUNNING STUB_PNPM_FAIL STUB_PNPM_CTRL_C STUB_BREW_OUTPUT STUB_BREW_SUDO STUB_TTY STUB_BREW_KILL STUB_SWITCH_EXIT STUB_HM_BROKEN STUB_SILL_TEAM STUB_OSASCRIPT_FAIL STUB_PNPM_STARTS_REBUILD STUB_SYNC_STARTS STUB_PUBLIC_FAIL
   at "2026-10-11 12:00"
   git init -q --bare -b main "$s/origin.git"
   git clone -q "$s/origin.git" "$s/upstream" 2>/dev/null
@@ -874,5 +886,104 @@ export STUB_PNPM_LS='[{"dependencies":{"gh-axi":{},"lavish-axi":{},"chrome-devto
 export STUB_PNPM_FAIL=1
 at "2026-10-12 05:00"; tick
 expect_alarm "a failed removal of a retired global stays in the alarm" "remove lavish-axi, update, pin "
+
+# 31. A human switch must never be rolled back by a decision made before it
+# (docs/formal/autoupdate-handoff). Apply decides and switches under the
+# switch lock, and `rebuild` switches under it too.
+# wait_for <seconds> <command>...: polls until the command succeeds.
+wait_for() {
+  local i n=$(($1 * 10)); shift
+  for ((i = 0; i < n; i++)); do "$@" && return 0; /bin/sleep 0.1; done
+  return 1
+}
+# started: how many switches the STUB_SWITCH_HOLD stub has started.
+started() { find "$s/hold" -name 'started.*' | wc -l | tr -d ' '; }
+# rebuild_bg <out>: the owner's `rebuild` of the checkout, in the background.
+rebuild_bg() {
+  as "$root_home" bash "$script" rebuild "$home/dotfiles#testhost" </dev/null >"$1" 2>&1 &
+  rebuild_pid=$!
+}
+# Apply samples A, decides to switch to the pushed C, and a darwin-rebuild of
+# unpushed L finishes before the switch: the batch 4 counterexample.
+fresh
+at "2026-10-12 01:00"; commit_local "L: unpushed"
+L=$(git -C "$home/dotfiles" rev-parse HEAD)
+at "2026-10-12 02:00"; commit_upstream "C: flake.lock bump" flake.lock
+C=$(git -C "$s/upstream" rev-parse HEAD)
+git -C "$home/dotfiles" fetch -q origin
+mkdir -p "$home/.local/state/dotfiles-autoupdate"
+echo "$C" >"$home/.local/state/dotfiles-autoupdate/revision"
+at "2026-10-12 05:10"
+STUB_HUMAN_SWITCH=$L as "$root_home" bash "$script" apply </dev/null >>"$s/log/out" 2>&1 || true
+expect_eq "the race probe switches the system after apply sampled it" "$(ls "$s/log/human-switched" 2>/dev/null)" "$s/log/human-switched"
+expect_eq "a human switch that lands after apply's decision is not rolled back" "$(running_rev) $(built)" "$L "
+at "2026-10-12 06:10"
+as "$root_home" bash "$script" apply </dev/null >>"$s/log/out" 2>&1 || true
+expect_eq "the next tick waits for the push instead" "$(running_rev) $(built)" "$L "
+expect_report "and says it waits for the push" "not on origin/main yet; waiting for push"
+
+# A daemon switch in progress makes `rebuild` say so and wait, then switch.
+fresh
+at "2026-10-12 01:00"; commit_local "L: unpushed"
+L=$(git -C "$home/dotfiles" rev-parse HEAD)
+at "2026-10-12 02:00"; commit_upstream "C: flake.lock bump" flake.lock
+C=$(git -C "$s/upstream" rev-parse HEAD)
+git -C "$home/dotfiles" fetch -q origin
+mkdir -p "$home/.local/state/dotfiles-autoupdate"
+echo "$C" >"$home/.local/state/dotfiles-autoupdate/revision"
+mkdir -p "$s/hold"; export STUB_SWITCH_HOLD="$s/hold" AUTOUPDATE_REBUILD_WAIT=60
+at "2026-10-12 05:10"
+as "$root_home" bash "$script" apply </dev/null >>"$s/log/out" 2>&1 &
+apply_pid=$!
+wait_for 10 test -e "$s/hold/started.0" || bad "the daemon switch starts" "no switch started"
+rebuild_bg "$s/rebuild.out"
+wait_for 15 grep -q "waiting up to 1 min" "$s/rebuild.out" || true
+expect_eq "rebuild says it waits for the auto-update switch" \
+  "$(grep -c '^rebuild: the hourly auto-update (pid [0-9]*) is switching this Mac to the pushed origin/main; waiting up to 1 min for it to finish, then rebuilding' "$s/rebuild.out")" 1
+expect_eq "rebuild waits, without switching, while the daemon switches" \
+  "$(started) $(kill -0 "$rebuild_pid" 2>/dev/null && echo waiting)" "1 waiting"
+touch "$s/hold/release"
+wait "$apply_pid" || true
+rebuild_code=0; wait "$rebuild_pid" || rebuild_code=$?
+expect_eq "rebuild switches after the daemon's switch, and its switch stays" \
+  "$(built | tr '\n' ' ')$(running_rev) $rebuild_code" "$C $L $L 0"
+
+# `rebuild` gives up, with a reason and what to do, rather than waiting forever.
+fresh
+mkdir -p "$s/hold"; export STUB_SWITCH_HOLD="$s/hold" AUTOUPDATE_REBUILD_WAIT=3
+# shellcheck disable=SC2016 # $1 expands in the holder's shell
+lockf -k "$AUTOUPDATE_DAEMON_DIR/switch.lock" sh -c 'touch "$1"; exec /bin/sleep 30' sh "$s/held" & held=$!
+wait_for 5 test -e "$s/held" || bad "the lock holder starts" "no lock taken"
+rebuild_bg "$s/rebuild.out"
+rebuild_code=0; wait "$rebuild_pid" || rebuild_code=$?
+expect_eq "rebuild gives up when the switch lock stays held" "$rebuild_code $(started)" "75 0"
+# shellcheck disable=SC2016 # the backquotes are literal text
+expect_eq "and says what to do" \
+  "$(grep -c '^rebuild: gave up after [0-9]* min: another switch still holds .*Nothing was rebuilt\. See /var/log/dotfiles-autoupdate.log and `dotfiles-autoupdate status`, and run rebuild again once that switch ends\. If the auto-update.s switch is stuck, `sudo pkill -f .darwin-rebuild switch --flake git\[+\]file.` stops it; its activation may still be finishing, so check `pgrep -fl activate` before rebuilding\.$' "$s/rebuild.out")" 1
+expect_eq "a lock held by no auto-update is not blamed on it" \
+  "$(grep -c '^rebuild: another switch holds the switch lock (an auto-update deciding, or a rebuild in another terminal); waiting up to 0 min' "$s/rebuild.out")" 1
+pkill -P "$held" 2>/dev/null; kill "$held" 2>/dev/null; wait "$held" 2>/dev/null || true
+
+# Apply never decides while a rebuild holds the lock: it skips at once.
+fresh
+at "2026-10-12 01:00"; commit_local "L: unpushed"
+L=$(git -C "$home/dotfiles" rev-parse HEAD)
+at "2026-10-12 02:00"; commit_upstream "C: flake.lock bump" flake.lock
+C=$(git -C "$s/upstream" rev-parse HEAD)
+git -C "$home/dotfiles" fetch -q origin
+mkdir -p "$home/.local/state/dotfiles-autoupdate"
+echo "$C" >"$home/.local/state/dotfiles-autoupdate/revision"
+mkdir -p "$s/hold"; export STUB_SWITCH_HOLD="$s/hold" AUTOUPDATE_REBUILD_WAIT=60
+at "2026-10-12 05:10"
+rebuild_bg "$s/rebuild.out"
+wait_for 10 test -e "$s/hold/started.0" || bad "the human switch starts" "no switch started"
+as "$root_home" bash "$script" apply </dev/null >>"$s/log/out" 2>&1 &
+apply_pid=$!
+if wait_for 10 sh -c "! kill -0 $apply_pid 2>/dev/null"; then ok "apply does not wait for a rebuild's lock"
+else bad "apply does not wait for a rebuild's lock" "apply still running"; fi
+touch "$s/hold/release"
+wait "$rebuild_pid" || true; wait "$apply_pid" || true
+expect_eq "apply skips while a rebuild holds the switch lock" "$(built | tr '\n' ' ')$(running_rev)" "$L $L"
+unset STUB_SWITCH_HOLD AUTOUPDATE_REBUILD_WAIT
 
 exit "$fail"

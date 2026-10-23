@@ -1,0 +1,18 @@
+{
+  "constants": {
+    "ApplyLocks": "TRUE",
+    "HumanLocks": "TRUE",
+    "Recheck": "TRUE"
+  },
+  "exit": 0,
+  "invariants": [
+    "ProtectLocalRebuild"
+  ],
+  "model_sha256": "1fee0672e3becfe5104df196992d7aac62d15cea24b3872c8cd539ceeaa53d22",
+  "name": "fixed-pre-invoke-witness",
+  "result": "pass",
+  "spec": "PreInvokeRaceSpec",
+  "states_distinct": 203890,
+  "states_generated": 409544,
+  "violated": null
+}

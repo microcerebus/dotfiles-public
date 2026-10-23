@@ -72,7 +72,7 @@ Details: [`docs/tmux-training.md`](docs/tmux-training.md).
 ## Daily commands
 
 ```sh
-rebuild            # apply the flake (alias: sudo darwin-rebuild switch --flake ~/dotfiles)
+rebuild            # apply the flake, waiting for an auto-update switch in progress (alias: sudo dotfiles-autoupdate rebuild ~/dotfiles)
 term-dojo          # daily training: 10 questions from YOUR live configs
 term-dojo drill X  # hands-on exercises (ghostty|tmux|neovim|motions|shell|git|nix|herdr|agents)
 term-dojo tutor X  # interactive tutorial (tmux|vim): do it for real, verified live

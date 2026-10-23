@@ -1,0 +1,18 @@
+{
+  "constants": {
+    "ApplyLocks": "TRUE",
+    "HumanLocks": "TRUE",
+    "Recheck": "TRUE"
+  },
+  "exit": 12,
+  "invariants": [
+    "RebuildNeverWaitsOnSwitch"
+  ],
+  "model_sha256": "1fee0672e3becfe5104df196992d7aac62d15cea24b3872c8cd539ceeaa53d22",
+  "name": "reach-RebuildNeverWaitsOnSwitch",
+  "result": "counterexample",
+  "spec": "Spec",
+  "states_distinct": 352754,
+  "states_generated": 1000534,
+  "violated": "RebuildNeverWaitsOnSwitch"
+}

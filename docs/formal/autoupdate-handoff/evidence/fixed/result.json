@@ -1,0 +1,21 @@
+{
+  "constants": {
+    "ApplyLocks": "TRUE",
+    "HumanLocks": "TRUE",
+    "Recheck": "TRUE"
+  },
+  "exit": 0,
+  "invariants": [
+    "HandoffIsFetched",
+    "ExactSelectedRevision",
+    "ProtectLocalRebuild",
+    "NoOverlappingSwitch"
+  ],
+  "model_sha256": "1fee0672e3becfe5104df196992d7aac62d15cea24b3872c8cd539ceeaa53d22",
+  "name": "fixed",
+  "result": "pass",
+  "spec": "Spec",
+  "states_distinct": 713411,
+  "states_generated": 2061102,
+  "violated": null
+}

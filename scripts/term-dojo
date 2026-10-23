@@ -168,7 +168,7 @@ SHELL_BANK = [
     ("v", "alias: open nvim"),
     ("c", "alias: clear the screen"),
     ("g", "alias: git"),
-    ("rebuild", "alias: apply the flake (sudo darwin-rebuild switch)"),
+    ("rebuild", "alias: apply the flake (sudo darwin-rebuild switch, after any auto-update switch in progress)"),
     ("dev-doctor", "scan current project for toolchain markers, suggest devShells"),
     ("dev-enable <tpl>", "copy a devShell template here + wire direnv"),
     ("direnv allow", "trust and activate this project's .envrc"),

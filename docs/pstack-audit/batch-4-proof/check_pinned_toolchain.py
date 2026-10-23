@@ -4,7 +4,9 @@
 Runs the real runner and its real subprocess calls against a fake `nix` and
 Java on PATH, with stubbed model runs. It never contacts Nix or claims a TLC
 result. Run from the repository root. VERIFY_RUNNER selects another runner copy,
-which is how the pre-fix runner was shown to fail.
+which is how the pre-fix runner was shown to fail; point it at a runner inside a
+scratch worktree of its own commit, since older runners read the subject next to
+themselves.
 """
 
 import hashlib
@@ -71,7 +73,6 @@ class PinnedToolchain(unittest.TestCase):
         for name in ("Handoff.cfg", "Handoff.tla"):
             (root / name).write_bytes((RUNNER.parent / name).read_bytes())
         mod.ROOT = mod.HERE = root
-        mod.SOURCE = REPO / "scripts/dotfiles-autoupdate"
         mod.run_case = stub_case
         environment = {"PATH": f"{bin_dir}:{os.environ['PATH']}", "FAKE_ROOT": str(root),
                        "FAKE_REVISION": mod.NIXPKGS, "FAKE_NIX_STDERR": nix_stderr}

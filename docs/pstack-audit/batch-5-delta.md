@@ -15,7 +15,7 @@ In this repository that command is the batch 4 runner, which pins its tools.
 Maintenance adds three things the batch 4 project skill lacks:
 
 - **Changes that skip the project skill.** The project skill handles an edit made while an agent uses it.
-  The runner's hash guard refuses a changed subject script, but nothing flagged a changed `rebuild` alias or `configurationRevision` setting, both of which the source map relies on.
+  The runner's hash guard refused a changed subject script (it now reads the subject at its reviewed commit instead), but nothing flagged a changed `rebuild` alias or `configurationRevision` setting, both of which the source map relies on.
   The parallel rollback-race fix is expected to change the subject script and may change the alias, so this case is close, not hypothetical.
 - **A judgment for each result.** Outcomes are in sync, updated, bug or blocked, and every covered change is classified before the model changes.
   A pass after an update must be shown to fail on a scratch break.
@@ -106,6 +106,6 @@ It stopped before model updates, so it does not demonstrate the updated or bug o
 The seven fixes postdate the exercise and were checked by review, not by a second exercise.
 The exercise ran the first commit's two-command drift check, which diffed all of `flake.nix`.
 After both reviews the check has four commands (see [checks](checks.md#batch-5-independent-review)); they were checked by scratch edits and a quiet run on this tree, not by a second exercise.
-The rollback-race fix will be the first real maintenance pass.
+The rollback-race fix landed with its own proof in `docs/formal/autoupdate-handoff` and pinned this one to its reviewed commit; recording the fix's main commit here is the first real maintenance pass, still to do.
 The drift commands match two paths, name patterns and untracked files; covered behavior that moves without those names still needs the skill's reading step.
 No Codex invocation proof ran, because Codex is usage-limited until 27 October.

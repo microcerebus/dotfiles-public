@@ -1,0 +1,9 @@
+{
+  "constants": {
+    "Recheck": "FALSE"
+  },
+  "mapping": "cmd_apply_locked recheck -> Recheck (ApplyRecheckHuman, ApplyRecheckRunning)",
+  "name": "mutation-no-recheck",
+  "source_new": "",
+  "source_old": "  pgrep -qf darwin-rebuild && return 0\n  local now_running\n  now_running=$(system_revision)\n  if [ \"$now_running\" != \"$running\" ]; then\n    log \"the running system changed to ${now_running:-no revision} after the check; the next tick decides again\"\n    return 0\n  fi\n"
+}

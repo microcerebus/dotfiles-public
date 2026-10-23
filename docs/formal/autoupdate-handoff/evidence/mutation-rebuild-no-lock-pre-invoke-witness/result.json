@@ -1,0 +1,18 @@
+{
+  "constants": {
+    "ApplyLocks": "TRUE",
+    "HumanLocks": "FALSE",
+    "Recheck": "TRUE"
+  },
+  "exit": 12,
+  "invariants": [
+    "ProtectLocalRebuild"
+  ],
+  "model_sha256": "1fee0672e3becfe5104df196992d7aac62d15cea24b3872c8cd539ceeaa53d22",
+  "name": "mutation-rebuild-no-lock-pre-invoke-witness",
+  "result": "counterexample",
+  "spec": "PreInvokeRaceSpec",
+  "states_distinct": 132468,
+  "states_generated": 265653,
+  "violated": "ProtectLocalRebuild"
+}

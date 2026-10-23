@@ -1,0 +1,11 @@
+--- scripts/dotfiles-autoupdate
++++ scratch/mutation-rebuild-no-lock.sh
+@@ -535,7 +535,7 @@
+   local code pid holder
+   # Switch at once when the lock is free; lockf prints "already locked" when
+   # it is not (75).
+-  lockf -k -t 0 "$switch_lock" darwin-rebuild switch --flake "$@"
++  darwin-rebuild switch --flake "$@"
+   code=$?
+   [ "$code" = 75 ] || return "$code"
+   pid=$(cat "$daemon_dir/switching" 2>/dev/null)

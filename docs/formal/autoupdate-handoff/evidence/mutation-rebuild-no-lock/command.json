@@ -1,0 +1,20 @@
+[
+  "nix",
+  "shell",
+  "--impure",
+  "--expr",
+  "let n = builtins.fetchTree { type = \"github\"; owner = \"NixOS\"; repo = \"nixpkgs\"; rev = \"7a6522c868711d06e3a520bbcdfafe9806f4337f\"; narHash = \"sha256-mN15cwddbOOIzzXSSwYUeRfOYeizz47Vy6y3Hzq6DuY=\"; }; p = import n { system = builtins.currentSystem; config = {}; overlays = []; }; in p.tlaplus",
+  "--command",
+  "tlc",
+  "-workers",
+  "1",
+  "-seed",
+  "1",
+  "-fp",
+  "0",
+  "-metadir",
+  "docs/formal/autoupdate-handoff/evidence/mutation-rebuild-no-lock/.tlc-states",
+  "-config",
+  "docs/formal/autoupdate-handoff/evidence/mutation-rebuild-no-lock/Handoff.cfg",
+  "docs/formal/autoupdate-handoff/evidence/mutation-rebuild-no-lock/Handoff.tla"
+]

@@ -220,7 +220,7 @@ in
     shellAliases = {
       # brew upgrade runs after the switch so one broken cask cannot block it
       # (see homebrew.onActivation in nix/host.nix).
-      rebuild = "sudo darwin-rebuild switch --flake ${dotfiles} && brew upgrade";
+      rebuild = "sudo ${autoupdate} rebuild ${dotfiles} && brew upgrade";
       # The daily dotfiles-sync run, now and in this terminal, where sudo can
       # prompt for the casks that ship a .pkg. The agent's own program
       # (nix/autoupdate.nix), not the checkout on PATH.

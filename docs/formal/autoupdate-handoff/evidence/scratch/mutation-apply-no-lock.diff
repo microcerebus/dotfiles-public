@@ -1,0 +1,11 @@
+--- scripts/dotfiles-autoupdate
++++ scratch/mutation-apply-no-lock.sh
+@@ -422,7 +422,7 @@
+   # as that command, and a crash cannot leave the lock behind. A held lock is
+   # a rebuild in flight: lockf exits 75 (EX_TEMPFAIL), and the next tick
+   # decides again.
+-  lockf -k -t 0 "$switch_lock" "$BASH" "$0" apply-locked
++  "$BASH" "$0" apply-locked
+   local code=$?
+   [ "$code" = 75 ] || return "$code"
+   log "the switch lock is held (a rebuild in flight); the next tick decides again"

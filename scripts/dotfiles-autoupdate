@@ -15,6 +15,8 @@
 #   apply    the root launchd daemon (nix/host.nix). Hourly: switches the
 #            system to exactly the handed-over revision, never the working
 #            tree, and never rolls back a system built from unpushed work.
+#   rebuild  the owner's `rebuild` alias (nix/user.nix), under sudo: the same
+#            switch, holding the switch lock apply decides and switches under.
 #   status   the one reader of the status files, used by the zsh banner, the
 #            agent board and the SessionStart hook. Prints alarms, info and
 #            the last success of each runner, and alarms on a flake.lock on
@@ -34,12 +36,14 @@ daemon_dir=${AUTOUPDATE_DAEMON_DIR:-/var/db/dotfiles-autoupdate}
 system=${AUTOUPDATE_SYSTEM:-/run/current-system}
 sync_log=$home/Library/Logs/dotfiles-sync.log
 daemon_log=/var/log/dotfiles-autoupdate.log
+switch_lock=$daemon_dir/switch.lock
 
 stale_after=$((36 * 3600))    # no successful run for this long is an alarm
 running_after=$((2 * 3600))   # a run unfinished for this long was killed
 push_after=$((2 * 3600))      # waiting for push this long alarms and notifies
 macos_after=$((7 * 86400))    # a same-major macOS update pending this long
 retry_after=86400             # a failed revision is retried at most daily
+rebuild_wait=${AUTOUPDATE_REBUILD_WAIT:-1800} # rebuild waits this long for apply's switch
 
 terminal=  # set when sync runs in a terminal (autoupdate-now)
 
@@ -410,10 +414,27 @@ cmd_apply() {
   # brew upgrade: try next hour.
   pgrep -qf darwin-rebuild && return 0
   kill -0 "$(cat "$sync_dir/lock/pid" 2>/dev/null)" 2>/dev/null && return 0
+  # Decide and switch under the switch lock, which `rebuild` holds for the
+  # whole of a human's switch (cmd_rebuild). Without it, a rebuild of
+  # unpushed work could finish between the decision below and its switch,
+  # and the switch rolled it back (docs/formal/autoupdate-handoff). lockf
+  # holds a kernel lock for as long as one command runs, so the decision runs
+  # as that command, and a crash cannot leave the lock behind. A held lock is
+  # a rebuild in flight: lockf exits 75 (EX_TEMPFAIL), and the next tick
+  # decides again.
+  lockf -k -t 0 "$switch_lock" "$BASH" "$0" apply-locked
+  local code=$?
+  [ "$code" = 75 ] || return "$code"
+  log "the switch lock is held (a rebuild in flight); the next tick decides again"
+}
 
+cmd_apply_locked() {
+  local host=${AUTOUPDATE_HOST:?set AUTOUPDATE_HOST to the darwinConfigurations name}
+  status=$daemon_dir/status
+  now=$(date +%s)
   local target running
   target=$(head -c 64 "$sync_dir/revision" 2>/dev/null | tr -d '\n')
-  running=$(sed -n 's/.*"configurationRevision": *"\([^"]*\)".*/\1/p' "$system/darwin-version.json" 2>/dev/null)
+  running=$(system_revision)
 
   if [ -z "$target" ]; then
     note handoff 0 "no revision from dotfiles-sync yet"
@@ -462,6 +483,16 @@ cmd_apply() {
   echo $$ >"$daemon_dir/switching"
   trap 'rm -f "$daemon_dir/switching"' EXIT
   kill -0 "$(cat "$sync_dir/lock/pid" 2>/dev/null)" 2>/dev/null && return 0
+  # A darwin-rebuild run without `rebuild` takes no lock, so just before the
+  # switch, look again for one (or for a rebuild waiting on this lock), and
+  # for a system that changed since the decision.
+  pgrep -qf darwin-rebuild && return 0
+  local now_running
+  now_running=$(system_revision)
+  if [ "$now_running" != "$running" ]; then
+    log "the running system changed to ${now_running:-no revision} after the check; the next tick decides again"
+    return 0
+  fi
   mark_running
   log "=== switching to ${want:0:12} (running: $running)"
   # Nix opens the repo through libgit2, which lets root read a repo another
@@ -469,7 +500,7 @@ cmd_apply() {
   # the owner's read-only sudo check of 11 Oct says whether root needs it here.
   SUDO_UID=$(stat -f %u "$repo") darwin-rebuild switch --flake "git+file://$repo?rev=$want#$host"
   local code=$?
-  running=$(sed -n 's/.*"configurationRevision": *"\([^"]*\)".*/\1/p' "$system/darwin-version.json" 2>/dev/null)
+  running=$(system_revision)
   if [ "$code" != 0 ]; then
     fail "switch to ${want:0:12} failed (exit $code); see $daemon_log"
   elif [ "$running" != "$want" ]; then
@@ -484,6 +515,48 @@ cmd_apply() {
     log "=== switched to ${want:0:12}"
   fi
   finish
+}
+
+system_revision() { sed -n 's/.*"configurationRevision": *"\([^"]*\)".*/\1/p' "$system/darwin-version.json" 2>/dev/null; }
+
+# ── rebuild: the owner's switch ─────────────────────────────────────────────────
+# rebuild <flake> [darwin-rebuild options]: the `rebuild` alias, as root
+# under sudo. It switches under the switch lock, so apply never decides on a
+# system that a rebuild is about to replace. A held lock is apply deciding,
+# which takes a moment, or switching to the pushed origin/main, which can
+# take minutes: rebuild says so and waits, then switches, so the owner's switch
+# lands last.
+cmd_rebuild() {
+  if [ $# = 0 ]; then
+    echo "usage: dotfiles-autoupdate rebuild <flake> [darwin-rebuild options]" >&2
+    return 2
+  fi
+  mkdir -p "$daemon_dir" || return 1
+  local code pid holder
+  # Switch at once when the lock is free; lockf prints "already locked" when
+  # it is not (75).
+  lockf -k -t 0 "$switch_lock" darwin-rebuild switch --flake "$@"
+  code=$?
+  [ "$code" = 75 ] || return "$code"
+  pid=$(cat "$daemon_dir/switching" 2>/dev/null)
+  if [ -n "$pid" ] && ps -p "$pid" >/dev/null 2>&1; then
+    holder="the hourly auto-update (pid $pid) is switching this Mac to the pushed origin/main"
+  else
+    holder="another switch holds the switch lock (an auto-update deciding, or a rebuild in another terminal)"
+  fi
+  echo "rebuild: $holder; waiting up to $((rebuild_wait / 60)) min for it to finish, then rebuilding." \
+    "The auto-update's log: $daemon_log" >&2
+  lockf -k -t "$rebuild_wait" "$switch_lock" darwin-rebuild switch --flake "$@"
+  code=$?
+  if [ "$code" = 75 ]; then
+    # A stuck activation holds the lock until its darwin-rebuild ends;
+    # stopping that process fails the auto-update's switch and frees it.
+    echo "rebuild: gave up after $((rebuild_wait / 60)) min: another switch still holds $switch_lock." \
+      "Nothing was rebuilt. See $daemon_log and \`dotfiles-autoupdate status\`, and run rebuild again once that switch ends." \
+      "If the auto-update's switch is stuck, \`sudo pkill -f 'darwin-rebuild switch --flake git[+]file'\` stops it;" \
+      "its activation may still be finishing, so check \`pgrep -fl activate\` before rebuilding." >&2
+  fi
+  return "$code"
 }
 
 # Root asks git questions about myuser's repo as myuser, never as itself: a
@@ -611,6 +684,8 @@ cmd_status() {
 case ${1:-} in
   sync) shift; cmd_sync "$@" ;;
   apply) shift; cmd_apply "$@" ;;
+  apply-locked) cmd_apply_locked ;; # cmd_apply runs it under the switch lock
+  rebuild) shift; cmd_rebuild "$@" ;;
   status) shift; cmd_status "$@" ;;
-  *) echo "usage: dotfiles-autoupdate sync [--now] | apply | status [--alarms]" >&2; exit 2 ;;
+  *) echo "usage: dotfiles-autoupdate sync [--now] | apply | rebuild <flake> | status [--alarms]" >&2; exit 2 ;;
 esac

@@ -1,0 +1,196 @@
+[
+  {
+    "constants": {
+      "ApplyLocks": "TRUE",
+      "HumanLocks": "TRUE",
+      "Recheck": "TRUE"
+    },
+    "exit": 0,
+    "expected": "pass",
+    "invariants": [
+      "HandoffIsFetched",
+      "ExactSelectedRevision",
+      "ProtectLocalRebuild",
+      "NoOverlappingSwitch"
+    ],
+    "model_sha256": "1fee0672e3becfe5104df196992d7aac62d15cea24b3872c8cd539ceeaa53d22",
+    "name": "fixed",
+    "result": "pass",
+    "spec": "Spec",
+    "states_distinct": 713411,
+    "states_generated": 2061102,
+    "violated": null
+  },
+  {
+    "constants": {
+      "ApplyLocks": "TRUE",
+      "HumanLocks": "TRUE",
+      "Recheck": "TRUE"
+    },
+    "exit": 0,
+    "expected": "pass",
+    "invariants": [
+      "ProtectLocalRebuild"
+    ],
+    "model_sha256": "1fee0672e3becfe5104df196992d7aac62d15cea24b3872c8cd539ceeaa53d22",
+    "name": "fixed-pre-invoke-witness",
+    "result": "pass",
+    "spec": "PreInvokeRaceSpec",
+    "states_distinct": 203890,
+    "states_generated": 409544,
+    "violated": null
+  },
+  {
+    "constants": {
+      "ApplyLocks": "TRUE",
+      "HumanLocks": "FALSE",
+      "Recheck": "TRUE"
+    },
+    "exit": 12,
+    "expected": "counterexample",
+    "invariants": [
+      "ProtectLocalRebuild"
+    ],
+    "model_sha256": "1fee0672e3becfe5104df196992d7aac62d15cea24b3872c8cd539ceeaa53d22",
+    "name": "mutation-rebuild-no-lock",
+    "result": "counterexample",
+    "spec": "Spec",
+    "states_distinct": 271512,
+    "states_generated": 883262,
+    "violated": "ProtectLocalRebuild"
+  },
+  {
+    "constants": {
+      "ApplyLocks": "TRUE",
+      "HumanLocks": "FALSE",
+      "Recheck": "TRUE"
+    },
+    "exit": 12,
+    "expected": "counterexample",
+    "invariants": [
+      "ProtectLocalRebuild"
+    ],
+    "model_sha256": "1fee0672e3becfe5104df196992d7aac62d15cea24b3872c8cd539ceeaa53d22",
+    "name": "mutation-rebuild-no-lock-pre-invoke-witness",
+    "result": "counterexample",
+    "spec": "PreInvokeRaceSpec",
+    "states_distinct": 132468,
+    "states_generated": 265653,
+    "violated": "ProtectLocalRebuild"
+  },
+  {
+    "constants": {
+      "ApplyLocks": "FALSE",
+      "HumanLocks": "TRUE",
+      "Recheck": "TRUE"
+    },
+    "exit": 12,
+    "expected": "counterexample",
+    "invariants": [
+      "ProtectLocalRebuild"
+    ],
+    "model_sha256": "1fee0672e3becfe5104df196992d7aac62d15cea24b3872c8cd539ceeaa53d22",
+    "name": "mutation-apply-no-lock",
+    "result": "counterexample",
+    "spec": "Spec",
+    "states_distinct": 539025,
+    "states_generated": 1676238,
+    "violated": "ProtectLocalRebuild"
+  },
+  {
+    "constants": {
+      "ApplyLocks": "TRUE",
+      "HumanLocks": "TRUE",
+      "Recheck": "FALSE"
+    },
+    "exit": 0,
+    "expected": "pass",
+    "invariants": [
+      "HandoffIsFetched",
+      "ExactSelectedRevision",
+      "ProtectLocalRebuild",
+      "NoOverlappingSwitch"
+    ],
+    "model_sha256": "1fee0672e3becfe5104df196992d7aac62d15cea24b3872c8cd539ceeaa53d22",
+    "name": "mutation-no-recheck",
+    "result": "pass",
+    "spec": "Spec",
+    "states_distinct": 705547,
+    "states_generated": 2042922,
+    "violated": null
+  },
+  {
+    "constants": {},
+    "exit": 12,
+    "expected": "counterexample",
+    "invariants": [
+      "HandoffIsFetched",
+      "ExactSelectedRevision",
+      "ProtectLocalRebuild"
+    ],
+    "model_sha256": "af2f1e94e78d563c252f2c50a1bc253052e0f55663bbfe90cf65ef70090eaf7a",
+    "name": "unfixed-batch-4",
+    "result": "counterexample",
+    "spec": "Spec",
+    "states_distinct": 175540,
+    "states_generated": 540021,
+    "violated": "ProtectLocalRebuild"
+  },
+  {
+    "constants": {
+      "ApplyLocks": "TRUE",
+      "HumanLocks": "TRUE",
+      "Recheck": "TRUE"
+    },
+    "exit": 12,
+    "expected": "counterexample",
+    "invariants": [
+      "ApplyNeverSwitches"
+    ],
+    "model_sha256": "1fee0672e3becfe5104df196992d7aac62d15cea24b3872c8cd539ceeaa53d22",
+    "name": "reach-ApplyNeverSwitches",
+    "result": "counterexample",
+    "spec": "Spec",
+    "states_distinct": 352752,
+    "states_generated": 1000532,
+    "violated": "ApplyNeverSwitches"
+  },
+  {
+    "constants": {
+      "ApplyLocks": "TRUE",
+      "HumanLocks": "TRUE",
+      "Recheck": "TRUE"
+    },
+    "exit": 12,
+    "expected": "counterexample",
+    "invariants": [
+      "RebuildNeverWaitsOnSwitch"
+    ],
+    "model_sha256": "1fee0672e3becfe5104df196992d7aac62d15cea24b3872c8cd539ceeaa53d22",
+    "name": "reach-RebuildNeverWaitsOnSwitch",
+    "result": "counterexample",
+    "spec": "Spec",
+    "states_distinct": 352754,
+    "states_generated": 1000534,
+    "violated": "RebuildNeverWaitsOnSwitch"
+  },
+  {
+    "constants": {
+      "ApplyLocks": "TRUE",
+      "HumanLocks": "TRUE",
+      "Recheck": "TRUE"
+    },
+    "exit": 12,
+    "expected": "counterexample",
+    "invariants": [
+      "HumanNeverFollowsApply"
+    ],
+    "model_sha256": "1fee0672e3becfe5104df196992d7aac62d15cea24b3872c8cd539ceeaa53d22",
+    "name": "reach-HumanNeverFollowsApply",
+    "result": "counterexample",
+    "spec": "Spec",
+    "states_distinct": 539026,
+    "states_generated": 1579653,
+    "violated": "HumanNeverFollowsApply"
+  }
+]
