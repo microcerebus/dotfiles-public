@@ -31,6 +31,16 @@
 # owner in agent worktrees. Closing it would take a VM. Unix sockets and
 # world-readable files outside the owner's home keep their own modes (a few
 # sockets in /tmp are world-writable).
+# Switches: a switch that changes the runner's plist does not reload a
+# running runner, which would kill its job. Activation installs the plist and
+# leaves the reload pending (/var/run/github-runner-reload.pending, which a
+# reboot clears); the github-runner-firewall daemon reloads the runner once
+# two of its polls at least a minute apart found no job running. A reload
+# that fails, or one still pending after 2 hours, is an alarm in
+# `dotfiles-autoupdate status` (/var/lib/github-runner/reload.status). A
+# runner that is not loaded is loaded at once, as before. The daemon leaves a
+# runner stopped by hand stopped, but nix-darwin still loads it (`launchctl
+# load -w`) at the next switch that changes its plist.
 # Firewall off by hand, if it ever gets in the owner's way:
 #   sudo pfctl -a com.apple/github-runner -F rules
 #
@@ -41,7 +51,7 @@
 # tests/github_runner_test.sh.
 #
 # Logs: /var/log/github-runner/{github-runner,firewall}.log (readable by admin users).
-{ lib, pkgs, username, hostname, ... }:
+{ config, lib, pkgs, username, hostname, ... }:
 
 let
   user = "_github-runner";
@@ -50,6 +60,7 @@ let
   inbox = "${root}/inbox";
   evidence = "${root}/evidence";
   logDir = "/var/log/github-runner";
+  label = "com.${username}.github-runner";
   # The runner's default (work/_tool), set explicitly so the hook and the
   # runner agree. Inside work, so every job's wipe clears it.
   toolCache = "${root}/work/_tool";
@@ -96,6 +107,11 @@ let
     anchor=com.apple/github-runner
     rules=${pfRules}
     loaded=/var/run/github-runner-firewall.loaded
+    user=${user}
+    label=${label}
+    plist=/Library/LaunchDaemons/${label}.plist
+    reload=/var/run/github-runner-reload
+    reload_status=${root}/reload.status
   '';
   script = pkgs.writeShellScript "github-runner" (builtins.readFile ../scripts/github-runner);
   # The runner runs hooks as `bash -e <file>`, and only files named *.sh.
@@ -158,6 +174,10 @@ in
     /bin/chmod -a "$ace" /Users/${username} 2>/dev/null || true
     /bin/chmod +a "$ace" /Users/${username} \
       || echo "warning: could not deny ${user} the home directory; the runner's check will refuse jobs if it can enter it" >&2
+    # Before nix-darwin's launchd step below, which would reload the runner
+    # straight away. If this fails, that step reloads it as it always did.
+    ${script} activate ${conf} ${config.system.build.launchd}/Library/LaunchDaemons/${label}.plist \
+      || echo "warning: could not defer the runner's reload; nix-darwin reloads it now" >&2
   '';
 
   launchd.daemons.github-runner = {
@@ -183,7 +203,7 @@ in
       RUNNER_TOOL_CACHE = toolCache;
     };
     serviceConfig = {
-      Label = "com.${username}.github-runner";
+      Label = label;
       UserName = user;
       GroupName = user;
       RunAtLoad = true;
@@ -200,9 +220,10 @@ in
     };
   };
 
-  # As root, every minute: load nix/github-runner.pf into its anchor and keep
-  # pf enabled, so a reboot, a flush or `pfctl -d` heals within a minute.
-  # Logs only what it changes.
+  # As root, every minute: reload the runner if a switch left a reload
+  # pending and it is idle, load nix/github-runner.pf into its anchor and
+  # keep pf enabled, so a reboot, a flush or `pfctl -d` heals within a
+  # minute. Logs only what it changes.
   launchd.daemons.github-runner-firewall = {
     command = "${script} firewall ${conf}";
     path = [ "/usr/bin" "/bin" "/usr/sbin" "/sbin" ];

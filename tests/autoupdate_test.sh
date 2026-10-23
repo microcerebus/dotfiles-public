@@ -267,7 +267,8 @@ fresh() {
   export AUTOUPDATE_USER=testuser AUTOUPDATE_HOST=testhost AUTOUPDATE_HOME="$home"
   export AUTOUPDATE_SYSTEM="$s/current-system" AUTOUPDATE_DAEMON_DIR="$s/daemon"
   export AUTOUPDATE_STAMP="$s/daemon/stamp" AUTOUPDATE_SILL_APP="$s/Applications/Sill.app"
-  export AUTOUPDATE_PUBLIC_SYNC="$stubs/public-sync"
+  export AUTOUPDATE_PUBLIC_SYNC="$stubs/public-sync" AUTOUPDATE_RUNNER_STATUS="$s/runner-reload.status"
+  export AUTOUPDATE_RUNNER_RELOAD="$s/run/github-runner-reload"
   export HM_GCROOT="$home/.local/state/home-manager/gcroots/current-home"
   unset STUB_HUMAN_SWITCH STUB_SWITCH_HOLD AUTOUPDATE_REBUILD_WAIT STUB_OFFLINE STUB_REBUILD_RUNNING STUB_PNPM_FAIL STUB_PNPM_CTRL_C STUB_BREW_OUTPUT STUB_BREW_SUDO STUB_TTY STUB_BREW_KILL STUB_SWITCH_EXIT STUB_HM_BROKEN STUB_SILL_TEAM STUB_OSASCRIPT_FAIL STUB_PNPM_STARTS_REBUILD STUB_SYNC_STARTS STUB_PUBLIC_FAIL
   at "2026-10-11 12:00"
@@ -500,7 +501,7 @@ expect_alarm "an old flake.lock raises an alarm" \
   "^dotfiles auto-update: routine: flake.lock on origin/main was last updated 4 days ago; is the cloud update routine running\? \(claude\.ai/code/routines\)$"
 expect_report "an old flake.lock does not fail the sync" "^ok: sync: last good run 0 min ago$"
 legacy=$(env -i HOME="$home" TZ="$TZ" PATH="$stubs:/usr/bin:/bin" FAKE_NOW="$FAKE_NOW" \
-  AUTOUPDATE_HOME="$home" AUTOUPDATE_DAEMON_DIR="$AUTOUPDATE_DAEMON_DIR" AUTOUPDATE_SILL_APP="$AUTOUPDATE_SILL_APP" \
+  AUTOUPDATE_HOME="$home" AUTOUPDATE_DAEMON_DIR="$AUTOUPDATE_DAEMON_DIR" AUTOUPDATE_SILL_APP="$AUTOUPDATE_SILL_APP" AUTOUPDATE_RUNNER_STATUS="$AUTOUPDATE_RUNNER_STATUS" AUTOUPDATE_RUNNER_RELOAD="$AUTOUPDATE_RUNNER_RELOAD" \
   /bin/bash "$script" status)
 expect_eq "the flake.lock alarm reads the same under macOS's bash 3.2" "$legacy" "$(report)"
 at "2026-10-16 05:10"; commit_upstream "C: flake.lock bump" flake.lock
@@ -585,7 +586,7 @@ expect_eq "status --alarms is the banner and SessionStart text" "$(alarms)" \
 "dotfiles auto-update: daily: brew upgrade failed for karabiner-elements; run autoupdate-now in a terminal, where sudo can prompt; see $home/Library/Logs/dotfiles-sync.log
   details: dotfiles-autoupdate status"
 legacy=$(env -i HOME="$home" TZ="$TZ" PATH="$stubs:/usr/bin:/bin" FAKE_NOW="$FAKE_NOW" \
-  AUTOUPDATE_HOME="$home" AUTOUPDATE_DAEMON_DIR="$AUTOUPDATE_DAEMON_DIR" AUTOUPDATE_SILL_APP="$AUTOUPDATE_SILL_APP" \
+  AUTOUPDATE_HOME="$home" AUTOUPDATE_DAEMON_DIR="$AUTOUPDATE_DAEMON_DIR" AUTOUPDATE_SILL_APP="$AUTOUPDATE_SILL_APP" AUTOUPDATE_RUNNER_STATUS="$AUTOUPDATE_RUNNER_STATUS" AUTOUPDATE_RUNNER_RELOAD="$AUTOUPDATE_RUNNER_RELOAD" \
   /bin/bash "$script" status)
 expect_eq "status reads the same under macOS's bash 3.2" "$legacy" "$(report)"
 
@@ -730,7 +731,7 @@ STUB_SILL_TEAM=ABCDE12345 expect_alarm "Sill signed by another team alarms with 
 STUB_SILL_TEAM="not set" expect_alarm "an ad hoc signed Sill alarms" "sill: .* is signed by no Developer ID, not"
 expect_alarm "an unsigned Sill alarms" "sill: .* is signed by no Developer ID, not"
 legacy=$(env -i HOME="$home" TZ="$TZ" PATH="$stubs:/usr/bin:/bin" FAKE_NOW="$FAKE_NOW" STUB_SILL_TEAM=ABCDE12345 \
-  AUTOUPDATE_HOME="$home" AUTOUPDATE_DAEMON_DIR="$AUTOUPDATE_DAEMON_DIR" AUTOUPDATE_SILL_APP="$AUTOUPDATE_SILL_APP" \
+  AUTOUPDATE_HOME="$home" AUTOUPDATE_DAEMON_DIR="$AUTOUPDATE_DAEMON_DIR" AUTOUPDATE_SILL_APP="$AUTOUPDATE_SILL_APP" AUTOUPDATE_RUNNER_STATUS="$AUTOUPDATE_RUNNER_STATUS" AUTOUPDATE_RUNNER_RELOAD="$AUTOUPDATE_RUNNER_RELOAD" \
   /bin/bash "$script" status)
 expect_eq "the Sill alarm reads the same under macOS's bash 3.2" "$legacy" "$(STUB_SILL_TEAM=ABCDE12345 report)"
 
@@ -1154,5 +1155,65 @@ rollback_bg "$s/rollback.out"; rollback_code=0; wait "$rollback_pid" || rollback
 at "2026-10-12 05:10"; tick
 expect_eq "a rollback to an unpushed generation stays through the hourly apply" "$(running_rev) $rollback_code" "$L 0"
 expect_eq "with the waiting-for-push note" "$(report | grep -c "${L:0:12}, which is not on origin/main yet; waiting for push")" 1
+
+# 33. The runner's firewall daemon records each poll in its own status file
+# (scripts/github-runner reload_when_idle), which status reads like the
+# updater's: quiet when good, an alarm on a failed deferred reload. Before
+# the first switch creates it there is nothing to read and nothing to say,
+# so a push does not alarm until the switch. A pending reload is read from
+# its marker, not the daemon's status, so it alarms after 2 hours even when
+# the daemon stopped polling. Only a running system whose activation has the
+# runner's activate step reads them.
+runner_step() { # runner_step: give the running system the runner's activate step
+  printf '%s\n' "/nix/store/x-github-runner activate /nix/store/x-github-runner.conf /nix/store/x-launchd/Library/LaunchDaemons/x.plist \\" \
+    "  || echo warning" >"$(readlink "$AUTOUPDATE_SYSTEM")/activate"
+}
+fresh
+at "2026-10-12 05:00"; tick
+runner_step
+expect_no_alarm "no runner status before the first switch is no alarm"
+runner_poll() { # runner_poll <line>...: the daemon's latest poll, at the fake time
+  printf 'installed\t%s\n' $((FAKE_NOW - 86400)) >"$AUTOUPDATE_RUNNER_STATUS"
+  printf '%s\n' "$@" >>"$AUTOUPDATE_RUNNER_STATUS"
+}
+runner_poll "ok	$FAKE_NOW" "ran	$FAKE_NOW"
+expect_no_alarm "a good runner poll is no alarm"
+expect_report "a good runner poll reports a success, worded as the daemon's poll and not CI" \
+  "^ok: runner-reload: last good poll 0 min ago$"
+runner_poll "ok	$((FAKE_NOW - 120))" "ran	$FAKE_NOW" "fail	deferred reload failed: launchd has not loaded /Library/LaunchDaemons/x.plist"
+expect_alarm "a failed deferred reload alarms, pointing at the runner's log" \
+  "^dotfiles auto-update: runner-reload: deferred reload failed: launchd has not loaded /Library/LaunchDaemons/x.plist; see /var/log/github-runner/firewall.log$"
+waiting="the runner restarts on its new config once no job is running"
+runner_poll "ok	$FAKE_NOW" "ran	$FAKE_NOW"
+mkdir -p "${AUTOUPDATE_RUNNER_RELOAD%/*}"
+echo "$((FAKE_NOW - 3600)) /nix/store/x-launchd/Library/LaunchDaemons/x.plist" >"$AUTOUPDATE_RUNNER_RELOAD.pending"
+expect_no_alarm "a reload pending for an hour is no alarm"
+expect_report "a reload pending for an hour is reported" "^info: runner-reload: $waiting \(switched 1 h ago\)$"
+echo "$((FAKE_NOW - 7200)) /nix/store/x-launchd/Library/LaunchDaemons/x.plist" >"$AUTOUPDATE_RUNNER_RELOAD.pending"
+expect_alarm "a reload pending for 2 hours alarms" \
+  "^dotfiles auto-update: runner-reload: $waiting, but it has waited 2 h since the switch; see /var/log/github-runner/firewall.log$"
+rm -f "$AUTOUPDATE_RUNNER_STATUS"
+expect_alarm "a reload pending for 2 hours alarms with no daemon status at all" "^dotfiles auto-update: runner-reload: $waiting, but it has waited 2 h"
+rm -f "$AUTOUPDATE_RUNNER_RELOAD.pending"
+runner_poll "ran	$FAKE_NOW"
+at "2026-10-13 18:00"
+expect_alarm "a runner daemon with no good poll for 36 hours alarms" "runner-reload: no successful poll for"
+
+# A system without the runner's activate step, after a rollback or a push
+# that reverted it, switched the runner itself and runs a firewall daemon
+# that neither clears the marker nor writes the status. What the step left
+# behind is no alarm and no report.
+fresh
+at "2026-10-12 05:00"; tick
+mkdir -p "${AUTOUPDATE_RUNNER_RELOAD%/*}"
+echo "$((FAKE_NOW - 3 * 86400)) /nix/store/x.plist" >"$AUTOUPDATE_RUNNER_RELOAD.pending"
+printf 'installed\t%s\nok\t%s\nran\t%s\nfail\tdeferred reload failed: x\n' \
+  $((FAKE_NOW - 4 * 86400)) $((FAKE_NOW - 3 * 86400)) $((FAKE_NOW - 3 * 86400)) >"$AUTOUPDATE_RUNNER_STATUS"
+expect_no_alarm "a system without the runner's activate step ignores the reload marker and status it left"
+got_report=$(report)
+expect_eq "a system without the runner's activate step reports nothing about the runner's reload" \
+  "$(grep -c runner-reload <<<"$got_report")" 0
+runner_step
+expect_alarm "the same files alarm once the running system has the step again" "runner-reload: "
 
 exit "$fail"

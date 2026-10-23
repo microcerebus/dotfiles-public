@@ -141,19 +141,27 @@ const SIGNALS = { SIGINT: 2, SIGTERM: 15, SIGHUP: 1 };
 // Declare a session owned by this process, tell the owner, run fn(env), tell him it ended.
 // A signal ends the run through spec.onSignal(signal, count, stop) (the CLI
 // forwards it to its child); without one, or when onSignal calls stop, the run
-// is reported stopped and the process exits.
+// is reported stopped and the process exits once the done notice is out.
+// Inside a session that already covers this process, the outer one does the
+// telling, but signals still go to onSignal: a terminal's Ctrl-C reaches every
+// process in the group, and the Playwright runner must close its tab first.
 async function withSession(spec, fn, deps = defaults) {
   checkSpec(spec);
   const dir = deps.dir();
-  if (current(process.env, dir)) return fn(process.env);
-  const declaration = { id: randomUUID(), what: spec.what.trim(), minutes: spec.minutes, foreground: Boolean(spec.foreground), pid: process.pid, started: deps.now() };
-  const file = write(dir, declaration);
+  const nested = Boolean(current(process.env, dir));
+  const declaration = nested ? null : { id: randomUUID(), what: spec.what.trim(), minutes: spec.minutes, foreground: Boolean(spec.foreground), pid: process.pid, started: deps.now() };
+  const file = declaration && write(dir, declaration);
   let outcome = "stopped";
-  const finish = async () => {
-    const owned = claim(file);
-    if (!owned) return;
-    await tell(deps, doneMessage(declaration, outcome, deps.now()));
-    fs.rmSync(owned, { force: true });
+  // One ending, which a stop during the done notice waits for.
+  let ending;
+  const finish = () => {
+    ending ??= (async () => {
+      const owned = file && claim(file);
+      if (!owned) return;
+      await tell(deps, doneMessage(declaration, outcome, deps.now()));
+      fs.rmSync(owned, { force: true });
+    })();
+    return ending;
   };
   let signals = 0;
   const stop = (signal) => finish().finally(() => process.exit(128 + SIGNALS[signal]));
@@ -167,6 +175,7 @@ async function withSession(spec, fn, deps = defaults) {
     return [signal, handler];
   });
   try {
+    if (nested) return await fn(process.env);
     await tell(deps, startMessage(declaration));
     const result = await fn({ ...process.env, [ENV]: declaration.id });
     outcome = spec.outcome ? spec.outcome(result) : "finished";
@@ -175,8 +184,11 @@ async function withSession(spec, fn, deps = defaults) {
     outcome = signals || error.name === "AbortError" ? "stopped" : "failed";
     throw error;
   } finally {
-    for (const [signal, handler] of handlers) process.off(signal, handler);
-    await finish();
+    // The handlers stay until the done notice is out, so a signal in between
+    // cannot kill the process before it.
+    try { await finish(); } finally {
+      for (const [signal, handler] of handlers) process.off(signal, handler);
+    }
   }
 }
 
@@ -258,14 +270,23 @@ async function main(args, deps = defaults) {
   const [command, ...rest] = spec.command;
   let child;
   let pending;
+  // Nested, the outer session forwards each signal as well, so a second one is
+  // usually the same Ctrl-C, and only the outer session SIGKILLs. It kills
+  // only its own child, this session, so a command here that ignores a real
+  // second Ctrl-C keeps running; once the outer session has ended, the gate
+  // closes that command's connections to the agent Chrome.
+  const nested = Boolean(current(process.env, deps.dir()));
   const code = await withSession({
     ...spec,
     // A signal during the start notice means the command never starts; a
-    // second one kills a child that ignored the first.
+    // second one kills a child that ignored the first. A Playwright runner
+    // that is still creating its tab when that SIGKILL comes leaves the tab
+    // open.
     onSignal: (signal, count, stop) => {
       if (!child && count > 1) stop(signal);
       else if (!child) pending = signal;
-      else child.kill(count > 1 ? "SIGKILL" : signal);
+      else if (count === 1) child.kill(signal);
+      else if (!nested) child.kill("SIGKILL");
     },
     outcome: (status) => (status === 0 ? "finished" : status > 128 ? "stopped" : `failed (exit ${status})`),
   }, (env) => new Promise((resolve) => {
@@ -280,7 +301,7 @@ async function main(args, deps = defaults) {
   return code;
 }
 
-module.exports = { ENV, stateDir, parseArgs, isLive, declarations, current, withSession, lease, endLease, adopt, sweep, startMessage, doneMessage, main };
+module.exports = { ENV, SIGNALS, stateDir, parseArgs, isLive, declarations, current, withSession, lease, endLease, adopt, sweep, startMessage, doneMessage, main };
 if (require.main === module) {
   main(process.argv.slice(2)).then((code) => { process.exitCode = code; }, (error) => {
     process.stderr.write(`agent-chrome-session: ${error.message}${error.message.endsWith("\n") ? "" : "\n"}`);

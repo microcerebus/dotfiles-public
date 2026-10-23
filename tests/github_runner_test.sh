@@ -75,6 +75,42 @@ case "$*" in
   *) exit 2 ;;
 esac
 EOF
+# launchctl keeps the runner's job in STUB_LOG: launchctl.loaded is the plist
+# launchd loaded, absent when the runner is not loaded. Every call is logged.
+# STUB_LOAD_PENDING=<file>: a load also writes <file>, as a switch that
+# installs a newer plist during the reload would. STUB_UNLOAD_KILL=before or
+# after kills the caller just before or just after the unload takes effect,
+# as a daemon killed in the middle of a reload would be.
+cat >"$stubs/launchctl" <<'EOF'
+#!/usr/bin/env bash
+echo "$*" >>"$STUB_LOG/launchctl.calls"
+case "$1" in
+  print) [ -e "$STUB_LOG/launchctl.loaded" ] ;;
+  unload)
+    # Like launchctl, a failed unload can still exit 0.
+    [ "${STUB_UNLOAD_FAIL:-0}" = 1 ] && { echo "Unload failed: 5: Input/output error" >&2; exit 0; }
+    [ "${STUB_UNLOAD_KILL:-}" != before ] || { kill -KILL "$PPID"; exit 0; }
+    rm -f "$STUB_LOG/launchctl.loaded"
+    [ "${STUB_UNLOAD_KILL:-}" != after ] || kill -KILL "$PPID" ;;
+  load)
+    [ "${STUB_LOAD_FAIL:-0}" = 1 ] && { echo "Load failed: 5: Input/output error" >&2; exit 0; }
+    [ -z "${STUB_LOAD_PENDING:-}" ] || echo "9 newer" >"$STUB_LOAD_PENDING"
+    cp "${@: -1}" "$STUB_LOG/launchctl.loaded" ;;
+  *) exit 2 ;;
+esac
+EOF
+# date +%s reads the test's clock, STUB_LOG/now, so a test and the script it
+# runs agree on the time to the second; every other date is the real one.
+cat >"$stubs/date" <<'EOF'
+#!/usr/bin/env bash
+if [ "$*" = +%s ] && [ -s "${STUB_LOG:-}/now" ]; then cat "$STUB_LOG/now"; else exec /bin/date "$@"; fi
+EOF
+# pgrep exits as pgrep.code says: 0 a job's worker runs, 1 none (the default).
+cat >"$stubs/pgrep" <<'EOF'
+#!/usr/bin/env bash
+echo "$*" >>"$STUB_LOG/pgrep.calls"
+exit "$(cat "$STUB_LOG/pgrep.code" 2>/dev/null || echo 1)"
+EOF
 # nc is the real one, except that it sends any 100.x and fd7a: address to
 # loopback, so a tailnet listener answers or refuses as fast as a local one.
 cat >"$stubs/nc" <<'EOF'
@@ -113,6 +149,9 @@ b = socket.socket(socket.AF_INET6); b.bind(("::1", 0))
 print(a.getsockname()[1], b.getsockname()[1])
 ')
 
+# The runner's launchd label, as activation and its plist name use it.
+label=$(nix eval --raw "$repo#darwinConfigurations.myhost.config.launchd.daemons.github-runner.serviceConfig.Label")
+
 # netstat_rows <proto local state>...: the rows as `netstat -an -p tcp` prints them.
 netstat_rows() {
   echo "Active Internet connections (including servers)"
@@ -143,6 +182,7 @@ fresh() {
   netstat_rows tcp4 "127.0.0.1.$closed4" LISTEN tcp6 "*.$closed6" LISTEN \
     tcp4 "100.99.1.2.$closed4" LISTEN tcp6 "fd7a:115c:a1e0::1.$closed6" LISTEN \
     tcp4 "127.0.0.1.$open" ESTABLISHED >"$r/log/netstat.txt"
+  /bin/date +%s >"$r/log/now"
   printf '%s\n' 'scrub-anchor "com.apple/*" all fragment reassemble' 'anchor "com.apple/*" all' >"$r/log/pf.main"
   echo "pass all" >"$r/rules.pf"
   # A tool seed as nix/github-runner.nix builds it: read-only, like the store.
@@ -168,6 +208,11 @@ protected=$r/protected
 anchor=com.apple/github-runner
 rules=$r/rules.pf
 loaded=$r/loaded
+user=_github-runner
+label=$label
+plist=$r/LaunchDaemons/$label.plist
+reload=$r/reload
+reload_status=$r/reload.status
 EOF
 }
 
@@ -498,5 +543,285 @@ else bad "activation creates the evidence store, runner-owned and readable by st
 cache=$(nix eval --raw "$repo#darwinConfigurations.myhost.config.launchd.daemons.github-runner.serviceConfig.EnvironmentVariables.RUNNER_TOOL_CACHE" 2>&1 | tail -n 1 || true)
 if [ "$cache" = /var/lib/github-runner/work/_tool ]; then ok "the runner's tool cache is inside its work dir, which every job wipes"
 else bad "the runner's tool cache is inside its work dir, which every job wipes" "RUNNER_TOOL_CACHE=$cache"; fi
+# A reboot starts the runner from the installed plist, so the deferred
+# reload's marker lives where a reboot clears it; its status must outlive one.
+# The config is the store file at the end of the firewall daemon's command.
+conf=$(nix eval --raw "$repo#darwinConfigurations.myhost.config.launchd.daemons.github-runner-firewall.command" \
+  --apply 'c: builtins.readFile (builtins.substring (builtins.stringLength c - 62) 62 c)' 2>&1 || true)
+if grep -qx 'reload=/var/run/github-runner-reload' <<<"$conf" && grep -qx 'reload_status=/var/lib/github-runner/reload.status' <<<"$conf"; then
+  ok "the pending reload's marker is in /var/run, which a reboot clears, and its status is not"
+else bad "the pending reload's marker is in /var/run, which a reboot clears, and its status is not" "$conf"; fi
+
+# ── deferred reload ────────────────────────────────────────────────────────
+# A switch that changes the runner's plist used to reload it at once and cut
+# off the job it was running. These switches run what the evaluated
+# activation runs for the runner: its own step, then nix-darwin's launchd
+# step for the runner's plist, with /Library/LaunchDaemons and the new
+# system's launchd dir moved under $r. Activation must not wait, lock or touch
+# the network: those commands fail and are logged if anything calls them.
+runner_part=$(sed -n '/setting up the GitHub Actions runner/,/setting up launchd services/p' <<<"$activation")
+darwin_part=$(awk -v t="LaunchDaemons/$label.plist' " \
+  'index($0, "if ! diff ") == 1 && index($0, t) { on = 1 } on { print } on && $0 == "fi" { exit }' <<<"$activation")
+launchd=$(grep -o "/nix/store/[^/']*-launchd" <<<"$darwin_part" | head -n 1)
+# The runner's activate command, with any continuation lines.
+activate_line=$(awk '/^[^ ]+ activate / { on = 1 } on { print; if ($0 !~ /\\$/) exit }' <<<"$runner_part")
+forbid="$tmp/forbid"
+mkdir -p "$forbid"
+for c in sleep pgrep curl git gh nc lockf flock timeout; do
+  # shellcheck disable=SC2016 # the stub expands $*, not this script
+  printf '#!/usr/bin/env bash\necho "%s $*" >>"$STUB_LOG/forbidden.calls"\nexit 1\n' "$c" >"$forbid/$c"
+done
+chmod +x "$forbid"/*
+
+# plists [loaded]: the installed plist is the old definition and the switch
+# brings a new one; with `loaded`, launchd runs the old one.
+plists() {
+  mkdir -p "$r/LaunchDaemons" "$r/new"
+  echo old >"$r/LaunchDaemons/$label.plist"
+  echo new >"$r/new/$label.plist"
+  rm -f "$r/log/launchctl.calls" "$r/log/launchctl.loaded"
+  if [ "${1:-}" = loaded ]; then echo old >"$r/log/launchctl.loaded"; fi
+}
+# switch [<dir>]: the runner's part of a switch to the system whose launchd
+# dir is <dir> (default $r/new); sets out and code. Like store paths, each
+# system's plist is a file of its own.
+switch() {
+  local s='' c='' new="${1:-$r/new}"
+  if [ -n "$activate_line" ]; then read -r s _ c _ < <(head -n 1 <<<"$activate_line"); fi
+  printf '%s\n%s\n' "$activate_line" "$darwin_part" \
+    | sed -e "s|$launchd/Library/LaunchDaemons|$new|g" -e "s|/Library/LaunchDaemons|$r/LaunchDaemons|g" \
+      ${s:+-e "s|^$s |\"$BASH\" \"$script\" |" -e "s| $c | $r/conf |"} >"$r/switch.sh"
+  code=0
+  out="$(PATH="$forbid:$stubs:/usr/bin:/bin" STUB_LOG="$r/log" "$BASH" -e "$r/switch.sh" 2>&1)" || code=$?
+}
+calls() { cat "$r/log/launchctl.calls" 2>/dev/null || true; }
+# now: the test clock, which fresh starts at the real time; tick <seconds>
+# moves it on. idle_since <seconds>: the first idle poll was that long ago.
+now() { cat "$r/log/now"; }
+tick() { echo $(($(now) + $1)) >"$r/log/now"; }
+idle_since() { echo $(($(now) - $1)) >"$r/reload.idle"; }
+field() { awk -F '\t' -v k="$1" '$1 == k { print $2; exit }' "$r/reload.status" 2>/dev/null; }
+
+if [ -n "$darwin_part" ] && [ -n "$launchd" ]; then ok "the evaluated activation has nix-darwin's step for $label.plist"
+else bad "the evaluated activation has nix-darwin's step for $label.plist" "$(head -c 400 <<<"$activation")"; fi
+before=$(grep -nF "$(head -n 1 <<<"$activate_line")" <<<"$activation" | head -n 1 | cut -d: -f1)
+after=$(grep -nF "$(head -n 1 <<<"$darwin_part")" <<<"$activation" | head -n 1 | cut -d: -f1)
+if [ -n "$activate_line" ] && [ -n "$before" ] && [ "$before" -lt "$after" ]; then
+  ok "activation installs the runner's plist itself, before nix-darwin compares it"
+else bad "activation installs the runner's plist itself, before nix-darwin compares it" "runner part:" "$runner_part"; fi
+# dotfiles-autoupdate status reads what the step leaves only on a system
+# whose activation has the step; its pattern must match the real activation.
+step_pattern=$(sed -n "s/.*grep -q -- '\([^']*\)' \"\$system\/activate\".*/\1/p" "$repo/scripts/dotfiles-autoupdate")
+if [ "$(grep -c "" <<<"$step_pattern")" = 1 ] && [ -n "$step_pattern" ] && grep -q -- "$step_pattern" <<<"$activation"; then
+  ok "dotfiles-autoupdate's activate-step pattern matches the evaluated activation"
+else bad "dotfiles-autoupdate's activate-step pattern matches the evaluated activation" "pattern: [$step_pattern]" "runner part:" "$runner_part"; fi
+if ! grep -Eq '(^|[^a-z-])(sleep|wait|wait-idle|lockf|flock|curl|gh|git|nc|pgrep)( |$)' <<<"$runner_part"; then
+  ok "the runner's activation step names no wait, lock or network command"
+else bad "the runner's activation step names no wait, lock or network command" "$runner_part"; fi
+
+fresh; plists loaded; echo 0 >"$r/log/pgrep.code"; switch
+installed="github-runner: installed the runner's new plist; the github-runner-firewall daemon reloads the runner once no job is running"
+if [ "$code" = 0 ] && [ "$out" = "$installed" ] && [ "$(calls)" = "print system/$label" ] && [ "$(cat "$r/log/launchctl.loaded")" = old ] \
+  && [ "$(cat "$r/LaunchDaemons/$label.plist")" = new ] && [ -s "$r/reload.pending" ] && [ ! -e "$r/log/forbidden.calls" ]; then
+  ok "a switch while a job runs installs the new plist and leaves the reload pending"
+else bad "a switch while a job runs installs the new plist and leaves the reload pending" "exit $code" "$out" \
+  "launchctl: $(calls | tr '\n' ';')" "loaded: $(cat "$r/log/launchctl.loaded" 2>/dev/null)" \
+  "forbidden: $(cat "$r/log/forbidden.calls" 2>/dev/null)"; fi
+if [ "$(cut -f 1 "$r/reload.status" 2>/dev/null)" = installed ]; then
+  ok "activation starts the reload status, so a daemon that never polls goes stale"
+else bad "activation starts the reload status, so a daemon that never polls goes stale" "$(cat "$r/reload.status" 2>&1)"; fi
+
+# The firewall daemon reloads only once no job has run for a minute; a job
+# starts the minute again.
+run firewall
+if [ "$(cat "$r/log/launchctl.loaded")" = old ] && [ -e "$r/reload.pending" ] \
+  && [ -n "$(field ok)" ] && ! grep -q '^fail' "$r/reload.status"; then
+  ok "a poll while a job runs does not reload the runner"
+else bad "a poll while a job runs does not reload the runner" "exit $code" "$out" "$(cat "$r/reload.status" 2>/dev/null)"; fi
+echo 1 >"$r/log/pgrep.code"; run firewall
+first=$(cat "$r/log/launchctl.loaded" 2>/dev/null || true)
+idle_since 120; echo 0 >"$r/log/pgrep.code"; run firewall
+echo 1 >"$r/log/pgrep.code"; run firewall
+second=$(cat "$r/log/launchctl.loaded" 2>/dev/null || true)
+if [ "$first" = old ] && [ "$second" = old ] && [ -e "$r/reload.pending" ]; then
+  ok "one idle poll, or idle polls with a job between them, do not reload the runner"
+else bad "one idle poll, or idle polls with a job between them, do not reload the runner" "after first idle: $first" "after idle, busy, idle: $second"; fi
+# A switch that reloads the firewall daemon makes it poll again at once.
+run firewall
+if [ "$(cat "$r/log/launchctl.loaded")" = old ] && [ -e "$r/reload.pending" ]; then
+  ok "two idle polls seconds apart do not reload the runner"
+else bad "two idle polls seconds apart do not reload the runner" "$out" "launchctl: $(calls | tr '\n' ';')"; fi
+idle_since 59; run firewall
+if [ "$(cat "$r/log/launchctl.loaded")" = old ]; then ok "59 seconds idle do not reload the runner"
+else bad "59 seconds idle do not reload the runner" "$out" "launchctl: $(calls | tr '\n' ';')"; fi
+idle_since 60; run firewall
+if [ "$code" = 0 ] && [ "$(cat "$r/log/launchctl.loaded")" = new ] && [ ! -e "$r/reload.pending" ] \
+  && [ ! -e "$r/reload.idle" ] && grep -q "reloaded" <<<"$out" \
+  && [ "$(calls | grep -v '^print' | tr '\n' ';')" = "unload $r/LaunchDaemons/$label.plist;load $r/LaunchDaemons/$label.plist;" ]; then
+  ok "an idle poll a minute after the first reloads the runner and clears the marker"
+else bad "an idle poll a minute after the first reloads the runner and clears the marker" "exit $code" "$out" \
+  "launchctl: $(calls | tr '\n' ';')" "loaded: $(cat "$r/log/launchctl.loaded" 2>/dev/null)"; fi
+grep -E '^(note|fail)' "$r/reload.status" >"$r/status.lines" || true
+if [ -n "$(field installed)" ] && [ "$(field ok)" = "$(field ran)" ] && [ ! -s "$r/status.lines" ]; then
+  ok "after the reload the status is a good run with nothing pending"
+else bad "after the reload the status is a good run with nothing pending" "$(cat "$r/reload.status" 2>/dev/null)"; fi
+: >"$r/log/launchctl.calls"; run firewall
+if [ "$code" = 0 ] && [ -z "$(calls)" ] && [ -z "$out" ]; then ok "with nothing pending the firewall daemon leaves the runner alone"
+else bad "with nothing pending the firewall daemon leaves the runner alone" "exit $code" "$out" "$(calls)"; fi
+
+# The marker is the time of the switch, then the new plist, readable by the
+# owner: dotfiles-autoupdate status reads it and alarms after 2 hours.
+fresh; plists loaded; echo 0 >"$r/log/pgrep.code"; switch; run firewall
+read -r since pending_plist <"$r/reload.pending" || true
+if [ "$since" = "$(now)" ] && [ "$pending_plist" = "$r/new/$label.plist" ] \
+  && [ "$(stat -f %Lp "$r/reload.pending")" = 644 ] && ! grep -q '^note' "$r/reload.status"; then
+  ok "a pending reload is a world-readable marker with the switch time and the new plist"
+else bad "a pending reload is a world-readable marker with the switch time and the new plist" \
+  "$(ls -l "$r/reload.pending" 2>&1)" "$(cat "$r/reload.pending" 2>/dev/null)" "$(cat "$r/reload.status" 2>/dev/null)"; fi
+# A second switch while still pending keeps the first switch's time.
+mkdir -p "$r/newer"; echo newer >"$r/newer/$label.plist"; since=$(cut -d ' ' -f 1 "$r/reload.pending" 2>/dev/null || true)
+tick 1; switch "$r/newer"
+if [ -n "$since" ] && [ "$(cat "$r/reload.pending")" = "$since $r/newer/$label.plist" ] && [ "$(cat "$r/LaunchDaemons/$label.plist")" = newer ] \
+  && [ "$(cat "$r/log/launchctl.loaded")" = old ]; then
+  ok "a second switch while a reload is pending installs its plist and keeps the pending time"
+else bad "a second switch while a reload is pending installs its plist and keeps the pending time" "$(cat "$r/reload.pending" 2>/dev/null)" "$(calls)"; fi
+
+# A marker whose plist is not the installed one was left behind: a system
+# without the runner's activate step (a rollback, or a push that reverted it)
+# installed and loaded another plist since. The next switch that defers a
+# reload starts its time and idle minute afresh.
+fresh; plists loaded; echo 0 >"$r/log/pgrep.code"; mkdir -p "$r/before"; echo before >"$r/before/$label.plist"
+echo "1 $r/before/$label.plist" >"$r/reload.pending"; echo 1 >"$r/reload.idle"; switch
+if [ "$code" = 0 ] && [ "$(cat "$r/reload.pending")" = "$(now) $r/new/$label.plist" ] && [ ! -e "$r/reload.idle" ] \
+  && [ "$(cat "$r/LaunchDaemons/$label.plist")" = new ] && [ "$(cat "$r/log/launchctl.loaded")" = old ]; then
+  ok "a switch drops a marker that a system without the runner's step left behind"
+else bad "a switch drops a marker that a system without the runner's step left behind" "exit $code" "$out" \
+  "pending: $(cat "$r/reload.pending" 2>&1)" "idle: $(cat "$r/reload.idle" 2>&1)"; fi
+
+# A reload whose load fails leaves the runner unloaded: it alarms, keeps the
+# marker and the last good poll's time, and loads the runner on the next poll.
+fresh; plists loaded; echo 0 >"$r/log/pgrep.code"; switch; echo 1 >"$r/log/pgrep.code"
+run firewall; good=$(field ok); tick 1; idle_since 60; STUB_LOAD_FAIL=1 run firewall
+if [ ! -e "$r/log/launchctl.loaded" ] && [ -e "$r/reload.pending" ] && grep -q '^fail	' "$r/reload.status" \
+  && grep -q "not loaded" <<<"$out"; then
+  ok "a failed reload is a fail line in the status and in the log"
+else bad "a failed reload is a fail line in the status and in the log" "$out" "$(cat "$r/reload.status" 2>/dev/null)"; fi
+if [ -n "$good" ] && [ "$(field ok)" = "$good" ] && [ "$(field ran)" != "$good" ]; then
+  ok "a failed poll keeps the last good poll's time"
+else bad "a failed poll keeps the last good poll's time" "before: ok $good" "$(cat "$r/reload.status" 2>/dev/null)"; fi
+echo 0 >"$r/log/pgrep.code"; run firewall
+if [ "$(cat "$r/log/launchctl.loaded" 2>/dev/null)" = new ] && [ ! -e "$r/reload.pending" ] && ! grep -q '^fail' "$r/reload.status"; then
+  ok "the next poll loads a runner a failed reload left unloaded and clears the alarm"
+else bad "the next poll loads a runner a failed reload left unloaded and clears the alarm" "$out" "$(cat "$r/reload.status" 2>/dev/null)"; fi
+
+# An unload that fails leaves the old runner running: an alarm, no load, and
+# the next idle poll tries again.
+fresh; plists loaded; echo 0 >"$r/log/pgrep.code"; switch; echo 1 >"$r/log/pgrep.code"
+run firewall; idle_since 60; : >"$r/log/launchctl.calls"; STUB_UNLOAD_FAIL=1 run firewall
+if [ "$(cat "$r/log/launchctl.loaded")" = old ] && grep -q '^fail	.*unload' "$r/reload.status" \
+  && grep -q "could not unload" <<<"$out" && ! grep -q '^load' "$r/log/launchctl.calls" && [ -e "$r/reload.pending" ]; then
+  ok "a failed unload is a fail line in the status and in the log"
+else bad "a failed unload is a fail line in the status and in the log" "$out" "launchctl: $(calls | tr '\n' ';')" "$(cat "$r/reload.status" 2>/dev/null)"; fi
+run firewall
+if [ "$(cat "$r/log/launchctl.loaded")" = new ] && [ ! -e "$r/reload.pending" ] && ! grep -q '^fail' "$r/reload.status"; then
+  ok "the next idle poll after a failed unload reloads the runner and clears the alarm"
+else bad "the next idle poll after a failed unload reloads the runner and clears the alarm" "$out" "$(cat "$r/reload.status" 2>/dev/null)"; fi
+
+# A daemon killed in the middle of a reload. Killed before the unload, it
+# leaves "unloading" with the old runner still loaded: the next poll starts
+# the idle minute again rather than call the old runner reloaded. Killed after
+# the unload, it leaves the runner unloaded: the next poll loads it.
+fresh; plists loaded; echo 0 >"$r/log/pgrep.code"; switch; echo 1 >"$r/log/pgrep.code"
+run firewall; idle_since 60; STUB_UNLOAD_KILL=before run firewall
+killed=$code; : >"$r/log/launchctl.calls"; run firewall
+if [ "$killed" != 0 ] && [ "$(cat "$r/log/launchctl.loaded")" = old ] && [ -e "$r/reload.pending" ] \
+  && [ "$(cat "$r/reload.idle" 2>/dev/null)" = "$(now)" ] && ! calls | grep -qv "^print" && ! grep -q reloaded <<<"$out"; then
+  ok "a daemon killed before the unload leaves the reload pending and starts the idle minute again"
+else bad "a daemon killed before the unload leaves the reload pending and starts the idle minute again" "killed: exit $killed" "$out" \
+  "launchctl: $(calls | tr '\n' ';')" "idle: $(cat "$r/reload.idle" 2>&1)" "pending: $(cat "$r/reload.pending" 2>&1)"; fi
+tick 60; run firewall
+if [ "$(cat "$r/log/launchctl.loaded")" = new ] && [ ! -e "$r/reload.pending" ] && [ ! -e "$r/reload.idle" ]; then
+  ok "a minute later the runner is reloaded"
+else bad "a minute later the runner is reloaded" "$out" "launchctl: $(calls | tr '\n' ';')"; fi
+fresh; plists loaded; echo 0 >"$r/log/pgrep.code"; switch; echo 1 >"$r/log/pgrep.code"
+run firewall; idle_since 60; STUB_UNLOAD_KILL=after run firewall
+killed=$code; run firewall
+if [ "$killed" != 0 ] && [ "$(cat "$r/log/launchctl.loaded" 2>/dev/null)" = new ] && [ ! -e "$r/reload.pending" ] \
+  && [ ! -e "$r/reload.idle" ] && grep -q reloaded <<<"$out"; then
+  ok "a daemon killed after the unload has the runner loaded again on the next poll"
+else bad "a daemon killed after the unload has the runner loaded again on the next poll" "killed: exit $killed" "$out" \
+  "launchctl: $(calls | tr '\n' ';')" "loaded: $(cat "$r/log/launchctl.loaded" 2>&1)"; fi
+
+# A switch that installs a newer plist while the daemon reloads keeps its
+# marker, so that plist is reloaded too.
+fresh; plists loaded; echo 0 >"$r/log/pgrep.code"; switch; echo 1 >"$r/log/pgrep.code"
+run firewall; idle_since 60; STUB_LOAD_PENDING="$r/reload.pending" run firewall
+if [ "$(cat "$r/log/launchctl.loaded")" = new ] && [ "$(cat "$r/reload.pending" 2>/dev/null)" = "9 newer" ]; then
+  ok "a marker a newer switch wrote during the reload stays"
+else bad "a marker a newer switch wrote during the reload stays" "$out" "$(cat "$r/reload.pending" 2>&1)"; fi
+
+# A runner stopped by hand while a reload is pending stays stopped, whether
+# or not an idle minute had started.
+for started in no yes; do
+  fresh; plists loaded; echo 0 >"$r/log/pgrep.code"; switch; echo 1 >"$r/log/pgrep.code"
+  [ "$started" = no ] || { run firewall; idle_since 120; }
+  rm -f "$r/log/launchctl.loaded"; : >"$r/log/launchctl.calls"; run firewall; said=$out; run firewall
+  if [ ! -e "$r/log/launchctl.loaded" ] && ! grep -q '^load' "$r/log/launchctl.calls" && [ ! -e "$r/reload.pending" ] \
+    && [ ! -e "$r/reload.idle" ] && ! grep -q '^fail' "$r/reload.status" && grep -q "stopped by hand" <<<"$said"; then
+    ok "a runner stopped by hand while a reload is pending stays stopped (idle minute started: $started)"
+  else bad "a runner stopped by hand while a reload is pending stays stopped (idle minute started: $started)" "$said" \
+    "launchctl: $(calls | tr '\n' ';')" "loaded: $(cat "$r/log/launchctl.loaded" 2>/dev/null)"; fi
+done
+
+# An idle time later than now (the clock stepped back) counts as now, so the
+# reload waits one minute, not until the clock catches up.
+fresh; plists loaded; echo 0 >"$r/log/pgrep.code"; switch; echo 1 >"$r/log/pgrep.code"
+idle_since -3600; run firewall; first=$(cat "$r/reload.idle" 2>/dev/null || true)
+tick 60; run firewall
+if [ "$first" = "$(($(now) - 60))" ] && [ "$(cat "$r/log/launchctl.loaded")" = new ] && [ ! -e "$r/reload.pending" ]; then
+  ok "an idle time in the future counts as now, and the runner is reloaded a minute later"
+else bad "an idle time in the future counts as now, and the runner is reloaded a minute later" "idle after the first poll: $first, now $(now)" \
+  "$out" "loaded: $(cat "$r/log/launchctl.loaded" 2>/dev/null)"; fi
+
+# If pgrep breaks, idle cannot be told from busy: no reload, and an alarm.
+fresh; plists loaded; echo 0 >"$r/log/pgrep.code"; switch; echo 3 >"$r/log/pgrep.code"
+run firewall; said=$out; idle_since 120; run firewall; run firewall
+if [ "$(cat "$r/log/launchctl.loaded")" = old ] && grep -q '^fail	.*pgrep' "$r/reload.status"; then
+  ok "a pgrep that fails never counts as idle and alarms"
+else bad "a pgrep that fails never counts as idle and alarms" "$out" "$(cat "$r/reload.status" 2>/dev/null)"; fi
+if grep -q "cannot tell whether a job is running" <<<"$said" && ! grep -q "cannot tell" <<<"$out"; then
+  ok "a failure is logged once, not on every poll that repeats it"
+else bad "a failure is logged once, not on every poll that repeats it" "first poll: $said" "third poll: $out"; fi
+if grep -q -- "-U _github-runner -f /Runner\[.\]Worker( |\$)" "$r/log/pgrep.calls"; then
+  ok "idle means no Runner.Worker process of the runner user"
+else bad "idle means no Runner.Worker process of the runner user" "$(sort -u "$r/log/pgrep.calls")"; fi
+
+# With no runner loaded (first switch, or a stopped runner), the switch
+# loads the new plist at once, as before, and drops any pending marker.
+fresh; plists; echo "1 $r/new/$label.plist" >"$r/reload.pending"; echo 1 >"$r/reload.idle"; switch
+if [ "$code" = 0 ] && [ "$(cat "$r/log/launchctl.loaded" 2>/dev/null)" = new ] && [ ! -e "$r/reload.pending" ] \
+  && [ ! -e "$r/reload.idle" ] && [ ! -e "$r/log/forbidden.calls" ]; then
+  ok "a switch with no runner loaded loads the new plist directly and drops the marker"
+else bad "a switch with no runner loaded loads the new plist directly and drops the marker" "exit $code" "$out" "$(calls)"; fi
+# If the plist cannot be installed, activate fails and leaves no marker, so
+# nix-darwin's step reloads the runner as it always did.
+fresh; plists loaded; chmod a-w "$r/LaunchDaemons"; code=0
+out="$(PATH="$forbid:$stubs:/usr/bin:/bin" STUB_LOG="$r/log" "$BASH" "$script" activate "$r/conf" "$r/new/$label.plist" 2>&1)" || code=$?
+chmod u+w "$r/LaunchDaemons"
+if [ "$code" != 0 ] && [ ! -e "$r/reload.pending" ] && [ "$(cat "$r/LaunchDaemons/$label.plist")" = old ]; then
+  ok "activate that cannot install the plist fails and leaves no marker"
+else bad "activate that cannot install the plist fails and leaves no marker" "exit $code" "$out"; fi
+# If the marker cannot be written, activate installs nothing and fails, and
+# nix-darwin's step reloads the runner, as the warning says.
+fresh; plists loaded; echo 0 >"$r/log/pgrep.code"; mkdir "$r/reload.pending"; switch
+if [ "$code" = 0 ] && grep -q "could not defer the runner's reload; nix-darwin reloads it now" <<<"$out" \
+  && [ "$(cat "$r/LaunchDaemons/$label.plist")" = new ] && [ "$(cat "$r/log/launchctl.loaded" 2>/dev/null)" = new ]; then
+  ok "a switch that cannot write the marker has nix-darwin reload the runner, as its warning says"
+else bad "a switch that cannot write the marker has nix-darwin reload the runner, as its warning says" "exit $code" "$out" \
+  "launchctl: $(calls | tr '\n' ';')" "loaded: $(cat "$r/log/launchctl.loaded" 2>/dev/null)"; fi
+fresh; plists loaded; cp "$r/new/$label.plist" "$r/LaunchDaemons/$label.plist"; echo new >"$r/log/launchctl.loaded"; switch
+if [ "$code" = 0 ] && [ "$(calls | grep -cv '^print')" = 0 ] && [ ! -e "$r/reload.pending" ]; then
+  ok "a switch that leaves the plist as it is touches nothing"
+else bad "a switch that leaves the plist as it is touches nothing" "exit $code" "$out" "$(calls)"; fi
 
 exit "$fail"

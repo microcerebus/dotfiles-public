@@ -2,7 +2,7 @@
 # github-runner: lifecycle of the self-hosted GitHub Actions runner that
 # nix/github-runner.nix declares for job-tracker.
 #
-# Usage: github-runner <command> <config>
+# Usage: github-runner <command> <config> [<new plist>]
 #   start          launchd entry point, as the runner user: refuse to run if
 #                  the isolation check fails, wipe all job state, register if a
 #                  token is queued, then run the listener.
@@ -17,22 +17,29 @@
 #                  reach its own servers on loopback. It only warns about the
 #                  listeners it reaches on this Mac's loopback and LAN
 #                  addresses, which pf on macOS cannot filter.
+#   activate       activation, as root, before nix-darwin's launchd step,
+#                  with the new system's plist for the runner: if launchd
+#                  runs the runner, install the plist and leave the reload
+#                  pending, so the switch does not cut off a running job.
+#                  Never waits.
 #   firewall       launchd entry point, as root, every minute: keep the pf
 #                  rules behind the tailnet part (nix/github-runner.pf) loaded
-#                  and pf enabled.
+#                  and pf enabled, then reload the runner if a reload is
+#                  pending and two polls a minute apart found it idle.
 #   register       run by the owner (github-runner-register): mint a one-hour
 #                  registration token with gh and queue it for the runner,
 #                  never printing it.
 #
 # <config> is the store file nix/github-runner.nix writes (url name labels bin
-# state work home tmp tool seed inbox protected anchor rules loaded). Paths
-# come from it, never from the environment: a job can rewrite HOME or TMPDIR
-# for later steps through GITHUB_ENV, and the completed hook must not follow
-# that.
+# state work home tmp tool seed inbox protected anchor rules loaded user
+# label plist reload reload_status). Paths come from it, never from the
+# environment: a job can rewrite HOME or TMPDIR for later steps through
+# GITHUB_ENV, and the completed hook must not follow that.
 # Tests: tests/github_runner_test.sh
 # shellcheck disable=SC2154 # url, name and the paths come from <config>
 set -euo pipefail
-[ $# = 2 ] || { echo "usage: github-runner start|job-started|job-completed|check|firewall|register <config>" >&2; exit 64; }
+[ $# = 2 ] || { [ $# = 3 ] && [ "$1" = activate ]; } \
+  || { echo "usage: github-runner start|job-started|job-completed|check|firewall|register <config>, or activate <config> <new plist>" >&2; exit 64; }
 cmd="$1"
 # shellcheck source=/dev/null
 . "$2"
@@ -266,6 +273,110 @@ seed_tools() {
   done
 }
 
+# Deferred reload. nix-darwin reloads a daemon whose plist changed in the
+# middle of the switch, and a reload kills the job the runner is running.
+# So activate installs a changed plist itself while launchd runs the runner
+# (nix-darwin then sees nothing to do) and writes $reload.pending: the time
+# of the first switch still waiting, then the new plist. The firewall daemon
+# reloads the runner from the installed plist once two of its polls at least
+# a minute apart found no job running (reload_when_idle). `dotfiles-autoupdate status` reads
+# $reload.pending itself and alarms if it is 2 hours old, so a daemon that
+# stopped polling is noticed too. Each poll is recorded in $reload_status,
+# which status also reads: a failure is an alarm at once, and so is no good
+# poll for 36 hours (activate starts the file). $reload is in /var/run,
+# which a reboot clears: launchd then starts the runner from the installed
+# plist, so nothing is pending any more.
+#
+# Idle is "no Runner.Worker process of the runner user". The listener starts
+# one worker per job and it lives exactly as long as the job, hooks
+# included, so it needs no log reading and cannot go stale the way a marker
+# the hooks wrote would after a crash. The runner keeps no local job state,
+# and GitHub's busy flag would need the network and an admin token root does
+# not have. $reload.idle holds the time of the first idle poll since the
+# last busy one; the reload waits for an idle poll at least a minute after
+# it, which rides out the gap between back-to-back jobs, and a poll right
+# after another (the daemon reloaded by a switch) is not a minute. A job
+# that starts and ends between two polls goes unseen. An idle time later
+# than now (the clock stepped back) counts as now. A job the listener takes
+# in the moment between the last poll and the reload still dies, as every
+# running job did before.
+#
+# Only a runner this daemon unloaded is loaded again: $reload.idle says
+# "unloading" from just before the unload until the load succeeds. A runner
+# found not loaded otherwise was stopped by hand and stays stopped. A runner
+# found loaded under "unloading" outlived a daemon killed before the unload:
+# its idle minute starts again.
+loaded_runner() { launchctl print "system/$label" >/dev/null 2>&1; }
+
+reload_when_idle() {
+  local now seen state busy=0 failure='' installed ok
+  now="$(date +%s)"
+  if [ -e "$reload.pending" ]; then
+    seen="$(cat "$reload.pending")"
+    state="$(cat "$reload.idle" 2>/dev/null || true)"
+    if [ "$state" = unloading ] && loaded_runner; then
+      # Killed before the unload: the old plist still runs. Start over.
+      state=''
+      rm -f "$reload.idle"
+    fi
+    if [ "$state" = unloading ]; then
+      : # the load below retries
+    elif loaded_runner; then
+      pgrep -U "$user" -f '/Runner[.]Worker( |$)' >/dev/null || busy=$?
+      case "$busy" in
+        0) rm -f "$reload.idle" ;;
+        1)
+          case "$state" in '' | *[!0-9]*) state='' ;; esac
+          if [ -z "$state" ] || [ "$state" -gt "$now" ]; then
+            state="$now"
+            echo "$state" >"$reload.idle"
+          fi
+          if [ $((now - state)) -ge 60 ]; then
+            echo unloading >"$reload.idle"
+            launchctl unload "$plist" || true
+            if loaded_runner; then
+              echo "$state" >"$reload.idle"
+              failure="deferred reload failed: launchctl could not unload the runner, which still runs its old plist; the next idle poll tries again"
+            fi
+          fi
+          ;;
+        *)
+          rm -f "$reload.idle"
+          failure="cannot tell whether a job is running (pgrep exited $busy), so the pending reload waits"
+          ;;
+      esac
+    else
+      rm -f "$reload.pending" "$reload.idle"
+      echo "$(date '+%F %T') the runner was stopped by hand, so it stays stopped; its new plist $plist is in place for the next load"
+    fi
+    if [ "$(cat "$reload.idle" 2>/dev/null || true)" = unloading ]; then
+      launchctl load "$plist" || true
+      if loaded_runner; then
+        # A switch that installed a newer plist meanwhile keeps its marker.
+        [ "$(cat "$reload.pending" 2>/dev/null)" != "$seen" ] || rm -f "$reload.pending"
+        rm -f "$reload.idle"
+        echo "$(date '+%F %T') reloaded the runner from $plist"
+      else
+        failure="deferred reload failed: launchd has not loaded $plist"
+      fi
+    fi
+  fi
+  if [ -n "$failure" ] && ! grep -qxF "fail	$failure" "$reload_status" 2>/dev/null; then
+    echo "$(date '+%F %T') $failure" >&2
+  fi
+  # The format of dotfiles-autoupdate's status files, which it reads.
+  installed="$(awk -F '\t' '$1 == "installed" { print $2; exit }' "$reload_status" 2>/dev/null || true)"
+  ok="$(awk -F '\t' '$1 == "ok" { print $2; exit }' "$reload_status" 2>/dev/null || true)"
+  [ -n "$failure" ] || ok="$now"
+  {
+    printf 'installed\t%s\n' "${installed:-$now}"
+    [ -z "$ok" ] || printf 'ok\t%s\n' "$ok"
+    printf 'ran\t%s\n' "$now"
+    [ -z "$failure" ] || printf 'fail\t%s\n' "$failure"
+  } >"$reload_status.new" && chmod 644 "$reload_status.new" && mv -f "$reload_status.new" "$reload_status" \
+    || echo "$(date '+%F %T') could not write $reload_status" >&2
+}
+
 case "$cmd" in
   start)
     echo "=== $(date '+%F %T') github-runner start"
@@ -307,6 +418,43 @@ case "$cmd" in
   check)
     check
     ;;
+  activate)
+    # No wait, lock or network here: activation runs under the switch lock.
+    new="$3"
+    if [ ! -e "$reload_status" ]; then
+      printf 'installed\t%s\n' "$(date +%s)" >"$reload_status" && chmod 644 "$reload_status" || true
+    fi
+    if cmp -s "$new" "$plist"; then
+      : # unchanged: nix-darwin has nothing to do either
+    elif [ -f "$plist" ] && loaded_runner; then
+      since='' pending_plist=''
+      { read -r since pending_plist <"$reload.pending"; } 2>/dev/null || true
+      # The marker names the plist its switch installed. If that is not the
+      # installed one, a system without this step (a rollback, or a push that
+      # reverted it) has installed and loaded another since: start afresh.
+      if [ -n "$since" ] && ! cmp -s "$pending_plist" "$plist"; then
+        since=''
+        rm -f "$reload.idle"
+      fi
+      tmp_plist="${plist%/*}/.${plist##*/}.new"
+      # Marker first: a failure either way leaves the old plist installed and
+      # no marker, so nix-darwin's step sees the change and reloads the runner.
+      if ! echo "${since:-$(date +%s)} $new" >"$reload.pending"; then
+        rm -f "$reload.pending" "$reload.idle" 2>/dev/null || true
+        echo "github-runner: could not write $reload.pending" >&2
+        exit 1
+      fi
+      if ! { cp -f "$new" "$tmp_plist" && chmod 0644 "$tmp_plist" && mv -f "$tmp_plist" "$plist"; }; then
+        rm -f "$tmp_plist" "$reload.pending" "$reload.idle"
+        echo "github-runner: could not install the runner's new plist" >&2
+        exit 1
+      fi
+      echo "github-runner: installed the runner's new plist; the github-runner-firewall daemon reloads the runner once no job is running" >&2
+    else
+      # Nothing loaded to cut off: nix-darwin's launchd step loads it next.
+      rm -f "$reload.pending" "$reload.idle"
+    fi
+    ;;
   firewall)
     # Loads the rules into $anchor, a child of the com.apple anchor that the
     # stock /etc/pf.conf evaluates, and never touches the main ruleset, which
@@ -329,6 +477,8 @@ case "$cmd" in
       pfctl -q -E
       echo "$(date '+%F %T') enabled pf"
     fi
+    # After pf, so nothing here can keep the rules from loading.
+    reload_when_idle
     ;;
   register)
     if [ ! -d "$inbox" ] || [ ! -w "$inbox" ]; then

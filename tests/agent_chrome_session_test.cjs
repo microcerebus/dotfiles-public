@@ -253,3 +253,29 @@ test("a library run that fails because it was signalled is reported stopped, not
   assert.deepEqual(seen, [["SIGTERM", 1]]);
   assert.match(notices[1], /^flow: stopped after/);
 });
+
+// Review r3 of agent-chrome-playwright-attach: the handlers went before the
+// done notice, and a stop during it found the declaration claimed and exited
+// at once, so the notice was lost and <id>.json.ending stayed behind.
+test("signals while the done notice goes out wait for it, and nothing is left behind", { timeout: 10000 }, async (t) => {
+  for (const signals of [1, 3]) {
+    const home = fs.mkdtempSync(join(tmpdir(), "agent-chrome-session-"));
+    t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+    const log = join(home, "notices");
+    const script = `
+      const fs = require("node:fs");
+      const session = require(${JSON.stringify(HELPER)});
+      session.withSession({ what: "flow", minutes: 1 }, async () => {
+        for (let i = 0; i < ${signals}; i += 1) setTimeout(() => process.kill(process.pid, "SIGINT"), 100 + 50 * i);
+      }, {
+        dir: () => session.stateDir(${JSON.stringify(home)}), now: Date.now, log: () => {},
+        notify: (message) => new Promise((resolve) => setTimeout(() => { fs.appendFileSync(${JSON.stringify(log)}, message + "\\n"); resolve(); }, message.includes("Done") ? 400 : 0)),
+      });
+    `;
+    const child = spawn(process.execPath, ["-e", script], { stdio: "ignore", env: { ...process.env, [session.ENV]: "" } });
+    t.after(() => child.kill("SIGKILL"));
+    assert.equal(await exited(child), 130, `${signals} signal(s)`);
+    assert.match(fs.readFileSync(log, "utf8"), /flow: finished after under a minute\. Done/, `${signals} signal(s)`);
+    assert.deepEqual(fs.readdirSync(session.stateDir(home)), [], `${signals} signal(s)`);
+  }
+});

@@ -40,6 +40,9 @@ system=${AUTOUPDATE_SYSTEM:-/run/current-system}
 sync_log=$home/Library/Logs/dotfiles-sync.log
 daemon_log=/var/log/dotfiles-autoupdate.log
 switch_lock=$daemon_dir/switch.lock
+# The runner's deferred reload (nix/github-runner.nix, scripts/github-runner).
+runner_status=${AUTOUPDATE_RUNNER_STATUS:-/var/lib/github-runner/reload.status}
+runner_reload=${AUTOUPDATE_RUNNER_RELOAD:-/var/run/github-runner-reload}
 
 stale_after=$((36 * 3600))    # no successful run for this long is an alarm
 running_after=$((2 * 3600))   # a run unfinished for this long was killed
@@ -658,8 +661,8 @@ alarm() { alarm_lines="$alarm_lines$1
 info() { info_lines="$info_lines$1
 "; }
 
-read_status() { # read_status <name> <file> <log>
-  local name=$1 file=$2 logfile=$3 kind a b c d installed='' ok='' ran='' running=''
+read_status() { # read_status <name> <file> <log> [<what a run is called>]
+  local name=$1 file=$2 logfile=$3 what=${4:-run} kind a b c d installed='' ok='' ran='' running=''
   if [ ! -f "$file" ]; then
     alarm "$name: has never run ($file is missing); is its launchd job loaded?"
     return
@@ -685,13 +688,29 @@ read_status() { # read_status <name> <file> <log>
   fi
   local good=${ok:-${installed:-0}}
   if [ $((now - good)) -ge "$stale_after" ]; then
-    alarm "$name: no successful run for $(age $((now - good)))${ran:+ (last run $(age $((now - ran))) ago)}; see $logfile"
+    alarm "$name: no successful $what for $(age $((now - good)))${ran:+ (last $what $(age $((now - ran))) ago)}; see $logfile"
   elif [ -n "$ok" ]; then
-    ok_lines="${ok_lines}$name: last good run $(age $((now - ok))) ago
+    ok_lines="${ok_lines}$name: last good $what $(age $((now - ok))) ago
 "
   elif [ -z "$ran$running" ]; then
-    ok_lines="${ok_lines}$name: no run yet, installed $(age $((now - good))) ago
+    ok_lines="${ok_lines}$name: no $what yet, installed $(age $((now - good))) ago
 "
+  fi
+}
+
+# A switch that changed the runner's plist while a job ran leaves
+# $runner_reload.pending (the first such switch's time, then the plist) until
+# the github-runner-firewall daemon reloads the runner. Read here rather than
+# from the daemon's status, so a daemon that stopped polling still alarms.
+check_runner_reload() {
+  local since waiting="the runner restarts on its new config once no job is running"
+  [ -f "$runner_reload.pending" ] || return 0
+  since=$(cut -d ' ' -f 1 "$runner_reload.pending" 2>/dev/null)
+  case $since in '' | *[!0-9]*) since=$(stat -f %m "$runner_reload.pending") ;; esac
+  if [ $((now - since)) -ge 7200 ]; then
+    alarm "runner-reload: $waiting, but it has waited $(age $((now - since))) since the switch; see /var/log/github-runner/firewall.log"
+  else
+    info "runner-reload: $waiting (switched $(age $((now - since))) ago)"
   fi
 }
 
@@ -741,6 +760,13 @@ cmd_status() {
     read_status daily "$sync_dir/daily.status" "$sync_log"
   fi
   read_status switch "$daemon_dir/status" "$daemon_log"
+  # A system without the runner's activate step (a rollback, or a push that
+  # reverted it) switches the runner itself, and its firewall daemon neither
+  # clears the marker nor writes the status, so what the step left is stale.
+  if grep -q -- '-github-runner activate ' "$system/activate" 2>/dev/null; then
+    [ ! -f "$runner_status" ] || read_status runner-reload "$runner_status" /var/log/github-runner/firewall.log poll
+    check_runner_reload
+  fi
   check_flake_lock
   check_sill
   if [ "${1:-}" = --alarms ]; then
