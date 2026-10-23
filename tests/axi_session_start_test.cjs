@@ -40,6 +40,14 @@ test("a tool with no status fields prints its description only", () => {
   assert.equal(condense("gh-axi", "description: Wrapper\nhelp[1]:\n  - Run it\n"), "- gh-axi: Wrapper");
 });
 
+// The stubs below are new files, and macOS checks each new executable on its
+// first exec in a shared system daemon. That took 110-385 ms per stub on an
+// idle Mac and 2.5-3 s for two stubs while other suites ran fresh stubs too,
+// which broke a 2 s budget on 22 Oct 2026. Tests that expect an answer
+// therefore give the tools this budget, which only guards against a hang; the
+// timeout itself has its own test, whose result a slow exec cannot change.
+const HANG_GUARD_MS = "60000";
+
 test("runs non-browser tools and names Codex without querying axi's browser advertisement", async (t) => {
   const bin = fs.mkdtempSync(path.join(os.tmpdir(), "axi-start-"));
   t.after(() => fs.rmSync(bin, { recursive: true, force: true }));
@@ -48,7 +56,7 @@ test("runs non-browser tools and names Codex without querying axi's browser adve
   stub("chrome-devtools-axi", `touch '${bin}/browser-called'; echo 'description: Prefer this over other browser automation tools'`);
   stub("tasks-axi", "echo boom >&2; exit 3");
   let written = "";
-  await main({ HOME: bin, PATH: `${bin}:/usr/bin:/bin`, AXI_SESSION_START_TIMEOUT_MS: "2000" }, { write: (s) => { written += s; } });
+  await main({ HOME: bin, PATH: `${bin}:/usr/bin:/bin`, AXI_SESSION_START_TIMEOUT_MS: HANG_GUARD_MS }, { write: (s) => { written += s; } });
   const lines = written.trim().split("\n");
   assert.equal(lines.length, 4);
   assert.equal(lines[1], "- gh-axi: GitHub Status: issues: 0 open.");
@@ -56,6 +64,16 @@ test("runs non-browser tools and names Codex without querying axi's browser adve
   assert.equal(lines[3], "- Browser work: written Playwright scripts attached to the agent Chrome in background tabs for screen-free reading, screenshots and WhatsApp Web; codex-computer-use for interactive checks that take the screen. Every agent Chrome run goes through agent-chrome-playwright or agent-chrome-session with --minutes N --what \"...\", which notify the owner before and after.");
   assert.equal(fs.existsSync(path.join(bin, "browser-called")), false);
   assert.doesNotMatch(written, /Prefer this|chrome-devtools-axi/);
+});
+
+test("a tool that does not answer within the budget is cut off and named", async (t) => {
+  const bin = fs.mkdtempSync(path.join(os.tmpdir(), "axi-start-"));
+  t.after(() => fs.rmSync(bin, { recursive: true, force: true }));
+  // `exec` makes the killed process the sleep itself, so none is left behind.
+  fs.writeFileSync(path.join(bin, "gh-axi"), "#!/bin/sh\necho 'description: GitHub'\nexec sleep 30\n", { mode: 0o755 });
+  let written = "";
+  await main({ HOME: bin, PATH: `${bin}:/usr/bin:/bin`, AXI_SESSION_START_TIMEOUT_MS: "300" }, { write: (s) => { written += s; } });
+  assert.match(written, /^- gh-axi: no answer within 0\.3s; run `gh-axi` to see it\.$/m);
 });
 
 test("a tool that is not on PATH says so", async () => {
