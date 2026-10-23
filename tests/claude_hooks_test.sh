@@ -24,6 +24,10 @@ check "blocks orb in subshell"       2 bash_guard.py "$(bash_cmd 'echo $(orb lis
 check "blocks open -a OrbStack"      2 bash_guard.py "$(bash_cmd 'open -a OrbStack')"
 check "blocks sudo podman"           2 bash_guard.py "$(bash_cmd 'sudo podman ps')"
 check "blocks env-prefixed docker"   2 bash_guard.py "$(bash_cmd 'FOO=1 docker ps')"
+check "blocks docker after x+=1"      2 bash_guard.py "$(bash_cmd 'x+=1 docker run x')"
+check "blocks docker after a[0]=1"    2 bash_guard.py "$(bash_cmd 'a[0]=1 docker run x')"
+check "blocks env x+=1 docker"        2 bash_guard.py "$(bash_cmd 'env x+=1 docker run x')"
+check "allows x+=1 echo docker"       0 bash_guard.py "$(bash_cmd 'x+=1 echo docker')"
 check "blocks docker on a later line" 2 bash_guard.py "$(bash_cmd $'cd x\ndocker compose up -d')"
 check "blocks bare orb"              2 bash_guard.py "$(bash_cmd 'orb')"
 check "allows docker --version"      0 bash_guard.py "$(bash_cmd 'docker --version')"
@@ -123,12 +127,158 @@ check "blocks a switch after a quoted -EOF heredoc" 2 bash_guard.py "$(bash_cmd 
 check "blocks after a heredoc whose delimiter starts with a space" 2 bash_guard.py "$(bash_cmd $'cat <<\' EOF\' >n.md\nhello\n EOF\ndocker run x')"
 check "blocks after a heredoc whose delimiter ends with a space"   2 bash_guard.py "$(bash_cmd $'cat <<\'EOF \' >n.md\nhello\nEOF \ndocker run x')"
 check "allows the body of a heredoc whose delimiter has a space"  0 bash_guard.py "$(bash_cmd $'cat <<\' EOF\' >n.md\ndocker run x\n EOF')"
+# The shell removes quotes and backslashes from a delimiter word, so these end at EOF, EOFx or E"F.
+check "blocks after a <<E\"OF\" heredoc"            2 bash_guard.py "$(bash_cmd $'cat <<E"OF" >n.md\nhello\nEOF\ndocker run x')"
+check "blocks after a <<'E'OF heredoc"             2 bash_guard.py "$(bash_cmd $'cat <<\'E\'OF >n.md\nhello\nEOF\ndocker run x')"
+check "blocks after a <<\"EOF\"x heredoc"           2 bash_guard.py "$(bash_cmd $'cat <<"EOF"x >n.md\nhello\nEOFx\ndocker run x')"
+check "blocks after a <<EOF\"x\" heredoc"           2 bash_guard.py "$(bash_cmd $'cat <<EOF"x" >n.md\nhello\nEOFx\ndocker run x')"
+check "blocks after a <<E\\OF heredoc"             2 bash_guard.py "$(bash_cmd $'cat <<E\\OF >n.md\nhello\nEOF\ndocker run x')"
+check "blocks after a <<\\E\\OF heredoc"           2 bash_guard.py "$(bash_cmd $'cat <<\\E\\OF >n.md\nhello\nEOF\ndocker run x')"
+check "blocks after a <<\"E\\\"F\" heredoc"          2 bash_guard.py "$(bash_cmd $'cat <<"E\\"F" >n.md\nhello\nE"F\ndocker run x')"
+check "blocks after a delimiter split by backslash-newline" 2 bash_guard.py "$(bash_cmd $'cat <<EO\\\nF >n.md\nhello\nEOF\ndocker run x')"
+check "allows the body of a <<E\"OF\" heredoc"      0 bash_guard.py "$(bash_cmd $'cat <<E"OF" >n.md\ndocker run x\nEOF')"
+# Only a line equal to the delimiter ends a body; an indented one is body text whose
+# apostrophe must not open a quote that hides the command after the real end.
+check "blocks after a doc with an indented EOF line"  2 bash_guard.py "$(bash_cmd $'cat >README.md <<\'EOF\'\nExample:\n\n    cat <<EOF\n    hi\n    EOF\n\nIt\'s done.\nEOF\ndocker run x')"
+check "blocks after a commit body with an indented MSG line" 2 bash_guard.py "$(bash_cmd $'git commit -F- <<\'MSG\'\nfix: x\n\n  MSG\nit\'s fine\nMSG\ndocker run x')"
+check "blocks after a spaced delimiter with a bare EOF line" 2 bash_guard.py "$(bash_cmd $'cat <<\' EOF\' >n.md\nEOF\ndon\'t\n EOF\ndocker run x')"
+check "allows a body with an indented delimiter line" 0 bash_guard.py "$(bash_cmd $'cat >n.md <<\'EOF\'\n    EOF\ndocker run x\nEOF')"
+check "allows a body continued past an EOF line"   0 bash_guard.py "$(bash_cmd $'cat >n.md <<EOF\nx\\\nEOF\ndocker run x\nEOF')"
+# bash ends a heredoc in $( ) at a line starting with the delimiter and holding a ),
+# bash 3.2 at a ) its matcher closes the $( ) with, and both at a backtick that closes `...`.
+check "blocks after a \$( ) heredoc ended by EOF)"   2 bash_guard.py "$(bash_cmd $'x=$(cat <<EOF\nhello\nEOF)\ndocker run x')"
+check "blocks a command bash 3.2 runs after a ) in a \$( ) body" 2 bash_guard.py "$(bash_cmd $'x=$(cat <<EOF\nsmile :)\ndocker run x\nEOF\n)')"
+check "blocks after a backtick heredoc ended by EOF\`" 2 bash_guard.py "$(bash_cmd $'x=`cat <<EOF\nhello\nEOF`\ndocker run x')"
+check "allows a commit body with a ) line in \"\$( )\"" 0 bash_guard.py "$(bash_cmd $'git commit -m "$(cat <<\'EOF\'\nfix: x\n\n1) docker run is blocked\nEOF\n)"')"
+check "blocks after a <<1 heredoc"                 2 bash_guard.py "$(bash_cmd $'cat >n.md <<1\nIt\'s\n1\ndocker run x')"
+check "allows a <<1 heredoc body"                  0 bash_guard.py "$(bash_cmd $'cat >n.md <<1\ndocker run x\n1')"
+# shellcheck disable=SC2016 # $[1<<n] is the command text under test
+check "blocks after a \$[ ] shift"                 2 bash_guard.py "$(bash_cmd $'echo $[1<<n]\ndocker run x')"
+# A delimiter word the guard cannot read ($"...", $'...', ${...}, $(...), a backtick) blocks the
+# call, because the guard cannot tell where its body ends.
+check "blocks an unread \$\"EOF\" delimiter"          2 bash_guard.py "$(bash_cmd $'cat >n.md <<$"EOF"\nIt\'s\nEOF\ndocker run x')"
+check "blocks an unread \"\$(x)\" delimiter"          2 bash_guard.py "$(bash_cmd $'cat <<"$(x)"\nit\'s\n$(x)\ndocker run x\necho \'y\'')"
+check "blocks an unread \${X} delimiter"             2 bash_guard.py "$(bash_cmd $'cat <<${X}\nhi\n${X}')"
 # shellcheck disable=SC2016 # the arithmetic is the command text under test
 check "blocks after a shift by a variable"         2 bash_guard.py "$(bash_cmd $'x=$((1<<n))\ndocker run y')"
 check "blocks after a spaced (( )) shift"          2 bash_guard.py "$(bash_cmd $'(( x = 1 << n ))\nsudo darwin-rebuild switch --flake .')"
 # shellcheck disable=SC2016 # the arithmetic is the command text under test
 check "allows a heredoc after a closed shift"      0 bash_guard.py "$(bash_cmd $'echo $((1<<n)); cat <<EOF >n.md\ndocker run x\nEOF')"
 check "allows a heredoc after a quoted (("        0 bash_guard.py "$(bash_cmd $'echo "(("; cat <<EOF >n.md\ndocker run x\nEOF')"
+# A << inside ${ }, quoted or not, or inside an a[ ] subscript opens no heredoc.
+check "blocks after \${x#<<}"                     2 bash_guard.py "$(bash_cmd $'x=1; echo ${x#<<}\ndocker run x')"
+check "blocks after \${line##*<<}"                2 bash_guard.py "$(bash_cmd $'line=\'cat <<EOF\'; d=${line##*<<}\ndocker run x')"
+check "blocks after \${x//<</y}"                  2 bash_guard.py "$(bash_cmd $'x=1; echo ${x//<</y}\ndocker run x')"
+check "blocks after \${x:-<<}"                    2 bash_guard.py "$(bash_cmd $'echo ${x:-<<}\ndocker run x')"
+check "blocks after \"\${x#\"<<\"}\""              2 bash_guard.py "$(bash_cmd $'echo "${x#"<<"}"\ndocker run x')"
+check "blocks after an a[1<<2]=3 subscript"        2 bash_guard.py "$(bash_cmd $'a[1<<2]=3\ndocker run x')"
+check "allows a heredoc body inside \${x:-\$( )}"   0 bash_guard.py "$(bash_cmd $'echo ${x:-$(cat <<EOF\ndocker run x\nEOF\n)}')"
+# A backslash-newline after << is skipped before the delimiter word, as in the shell.
+check "blocks after a <<\\<newline> EOF heredoc"   2 bash_guard.py "$(bash_cmd $'cat <<\\\n  EOF\nbody\nEOF\ndocker run x')"
+check "allows a <<\\<newline> EOF heredoc body"    0 bash_guard.py "$(bash_cmd $'cat <<\\\n  EOF\ndocker run x\nEOF')"
+# bash 3.2 matches the ) of a $( ) before it reads heredocs, skipping quotes, escapes and
+# comments, and its open quotes carry past the body end.
+check "blocks a command bash 3.2 runs after a quoted ( in a body"  2 bash_guard.py "$(bash_cmd $'x=$(cat <<\'EOF\'\n\'(\' ); docker run x; echo \\(\nEOF\n)')"
+check "blocks a command bash 3.2 runs after a commented ( in a body" 2 bash_guard.py "$(bash_cmd $'x=$(cat <<\'EOF\'\n# (\n); docker run x; echo \\(\nEOF\n)')"
+check "blocks a command bash 3.2 runs after a quote left open in a body" 2 bash_guard.py "$(bash_cmd $'x=$(cat <<\'EOF\'\nit\'s\nEOF\nx\' )\ndocker run x\necho \'')"
+check "allows a 1) line after an apostrophe in a \$( ) body" 0 bash_guard.py "$(bash_cmd $'msg=$(cat <<\'EOF\'\nIt\'s simple: 1) run tests\ndocker run x is blocked\nEOF\n)')"
+# Commands inside "$( )" and "${ }" count, and quotes nested in them do not hide later ones.
+# shellcheck disable=SC2016 # the $( ) is the command text under test
+check "blocks docker in \"\$( )\""                 2 bash_guard.py "$(bash_cmd 'echo "a $(docker run x) b"')"
+# shellcheck disable=SC2016 # the $( ) is the command text under test
+check "blocks docker in \"\${x:-\$( )}\""           2 bash_guard.py "$(bash_cmd 'echo "${x:-$(docker run x)}"')"
+check "blocks after nested quotes in \"\$( )\""     2 bash_guard.py "$(bash_cmd $'echo "$(echo \'a "b\')"; docker run x')"
+check "allows nested quotes in \"\$( )\""          0 bash_guard.py "$(bash_cmd $'eval "$(sed -n \'/^echo "main/p\' f)"')"
+# zsh reads ' and $' inside "${ }" as literal characters; bash reads them as quotes.
+check "blocks after \"\${1:-don't know}\" in zsh"    2 bash_guard.py "$(bash_cmd $'msg="${1:-don\'t know}"\ndocker run x\necho \'ok\'')"
+check "blocks after \"\${x/'/}\" in zsh"              2 bash_guard.py "$(bash_cmd $'echo "${x/\'/}"; docker run x; echo \'a\'')"
+check "blocks after \"\${x:-\$'a}\" in zsh"           2 bash_guard.py "$(bash_cmd $'echo "${x:-$\'a}"; docker run x; echo \'b\'')"
+# Only $( ) and backticks inside "${ }" are commands; the rest is text.
+# shellcheck disable=SC2016 # the "${ }" is the command text under test
+check "allows \"\${docker}\""                       0 bash_guard.py "$(bash_cmd 'echo "${docker}"')"
+# bash reads name[ as a subscript only at the start of a command word; zsh never does.
+check "blocks after s/a[ before a heredoc"          2 bash_guard.py "$(bash_cmd $'sed s/a[/b/ <<\'EOF\'\nit\'s\nEOF\ndocker run x\necho \'y\'')"
+check "blocks after cat x[ before a heredoc"        2 bash_guard.py "$(bash_cmd $'cat x[ <<\'EOF\'\nit\'s\nEOF\ndocker run x\necho \'y\'')"
+check "blocks after a[1<<EOF]=3 read as a heredoc by zsh" 2 bash_guard.py "$(bash_cmd $'a[1<<EOF]=3\nit\'s\nEOF]=3\ndocker run x\necho \'y\'')"
+check "blocks a << after a[ it cannot place"        2 bash_guard.py "$(bash_cmd $'>f a[1<<EOF]=3\nhi\nEOF]=3')"
+# bash skips time's -p and -- before an a[ ] assignment, and bash 5 reads one after coproc too.
+check "blocks after time -p a[1<<EOF]=3"            2 bash_guard.py "$(bash_cmd $'time -p a[1<<EOF]=3\ndocker run x\nEOF]=3')"
+check "blocks after time -p -- a[1<<EOF]=3"         2 bash_guard.py "$(bash_cmd $'time -p -- a[1<<EOF]=3\ndocker run x\nEOF]=3')"
+check "blocks after coproc a[1<<EOF]=3"             2 bash_guard.py "$(bash_cmd $'coproc a[1<<EOF]=3\ndocker run x\nEOF]=3')"
+check "blocks after coproc foo a[1<<EOF]=3"         2 bash_guard.py "$(bash_cmd $'coproc foo a[1<<EOF]=3\ndocker run x\nEOF]=3')"
+check "allows time -p a[1<<2]=3"                    0 bash_guard.py "$(bash_cmd 'time -p a[1<<2]=3')"
+check "allows time -p with a heredoc"               0 bash_guard.py "$(bash_cmd $'time -p cat <<\'EOF\'\nhi\nEOF')"
+# bash 5.3 runs ${ cmd; } and ${| cmd; } as commands; the guard does not read them.
+check "blocks a heredoc in bash 5.3 \${ cmd; }"     2 bash_guard.py "$(bash_cmd $'x=${ cat <<\'EOF\'\nit\'s\nEOF\n}\ndocker run x\necho \'y\'')"
+# shellcheck disable=SC2016 # the ${ } is the command text under test
+check "blocks bash 5.3 \${ docker run x; }"         2 bash_guard.py "$(bash_cmd 'echo ${ docker run x; }')"
+# Process substitution reads like $( ); backticks are commands too, quoted or not.
+check "blocks a command bash 3.2 runs after a ) in a <( ) body" 2 bash_guard.py "$(bash_cmd $'cat <(cat <<\'EOF\'\n) ; docker run x\nEOF\n)')"
+check "blocks a command bash runs after EOF) in a <( ) body"    2 bash_guard.py "$(bash_cmd $'cat <(cat <<\'EOF\'\nEOF) ; docker run x\nEOF\n)')"
+# shellcheck disable=SC2016 # the backticks are the command text under test
+check "blocks docker in backticks"                  2 bash_guard.py "$(bash_cmd 'echo `docker run x`')"
+# shellcheck disable=SC2016 # the backticks are the command text under test
+check "blocks docker in quoted backticks"           2 bash_guard.py "$(bash_cmd 'echo "`docker run x`"')"
+# The shell cuts out `...` before it reads a # comment inside, so the comment ends at the backtick.
+# shellcheck disable=SC2016 # the backticks are the command text under test
+check "blocks after a # comment in quoted backticks" 2 bash_guard.py "$(bash_cmd 'echo "`echo a # b`"; docker run x')"
+# shellcheck disable=SC2016 # the backticks are the command text under test
+check "blocks after two # comments in quoted backticks" 2 bash_guard.py "$(bash_cmd 'echo "`echo # a` and `echo # b`"; docker run x')"
+# shellcheck disable=SC2016 # the backticks are the command text under test
+check "blocks after a # comment in backticks"     2 bash_guard.py "$(bash_cmd 'echo `echo a # b`; docker run x')"
+# shellcheck disable=SC2016 # the backticks are the command text under test
+check "blocks after x=\`git log -1 # latest\`"   2 bash_guard.py "$(bash_cmd 'x=`git log -1 # latest`; docker run x')"
+# shellcheck disable=SC2016 # the backticks are the command text under test
+check "blocks an em dash after #12 in backticks"  2 bash_guard.py "$(bash_cmd 'git commit -q -m "fix: close `#12` a '"${em}"' b"')"
+# shellcheck disable=SC2016 # the backticks are the command text under test
+check "blocks a backslash in a # comment in backticks" 2 bash_guard.py "$(bash_cmd 'echo `echo # a \` b`; docker run x')"
+# shellcheck disable=SC2016 # the backticks are the command text under test
+check "allows a # comment in backticks"          0 bash_guard.py "$(bash_cmd 'echo `git log -1 --format=%h # latest`')"
+# shellcheck disable=SC2016 # the backticks are the command text under test
+check "allows #12 in backticks in a commit"      0 bash_guard.py "$(bash_cmd 'git commit -m "fix: close `#12` a - b"')"
+# A heredoc opened inside $( ) is read before one opened earlier outside it.
+check "blocks after an outer heredoc read after a \$( ) one" 2 bash_guard.py "$(bash_cmd $'cat <<A; x=$(cat <<B\nb\nB\n)\na\nA\ndocker run x')"
+# A heredoc whose $( ) closes on its own line has no body in zsh and bash 3.2; bash 5 reads
+# it before the outer one.
+check "blocks a command zsh runs after a heredoc in a closed \$( )" 2 bash_guard.py "$(bash_cmd $'x=$(cat <<B)\ndocker run x\nB')"
+check "blocks after a heredoc in a closed \$( ) read first by bash" 2 bash_guard.py "$(bash_cmd $'cat <<A; x=$(cat <<B)\nB\nA\ndocker run x\nB')"
+# Inside backticks, and inside $( ) for bash 3.2, a backslash-newline joins body lines even
+# after a quoted delimiter.
+check "blocks after a joined EOF line in a backtick heredoc" 2 bash_guard.py "$(bash_cmd $'x=`cat <<\'EOF\'\nEO\\\nF\ndocker run x\nEOF\n`')"
+check "blocks after a joined EOF line in a \$( ) heredoc"   2 bash_guard.py "$(bash_cmd $'x=$(cat <<\'EOF\'\nEO\\\nF\ndocker run x\nEOF\n)')"
+# The ) after a case pattern closes no $( ) in zsh and bash; bash 3.2 closes it there.
+# shellcheck disable=SC2016 # the $( ) is the command text under test
+check "blocks case inside \"\$( )\""                 2 bash_guard.py "$(bash_cmd 'echo "$(case x in x) docker run x;; esac)"')"
+# bash 3.2's matcher reads ' and " inside a double-quoted ${ } as quotes.
+check "blocks a command bash 3.2 runs after \"\${y:-'\"'}\" in a body" 2 bash_guard.py "$(bash_cmd $'x=$(cat <<\'EOF\'\n"${y:-\'"\'}" ) ; docker run x\nEOF\n)')"
+# A lone trailing backslash is a literal; $'...' ends at its first unescaped quote.
+# shellcheck disable=SC1003 # the trailing backslash is the command text under test
+check "blocks docker before a trailing backslash"  2 bash_guard.py "$(bash_cmd 'docker run x \')"
+check "blocks a bash -c script with a trailing backslash" 2 bash_guard.py "$(bash_cmd "bash -c 'docker run x \\'")"
+check "blocks after \$'it\\'s'"                    2 bash_guard.py "$(bash_cmd $'echo $\'it\\\'s\'; docker run x; echo \'bye\'')"
+# Many unclosed quotes, or a long command that needs many passes: the guard gives up and blocks
+# well inside the 5 s hook timeout. check_cpu measures the guard's CPU time, which a busy machine
+# does not stretch the way it stretches wall time.
+check_cpu() { # check_cpu <name> <max-cpu-seconds> <stderr-text> <json>
+  local name="$1" max="$2" text="$3" json="$4" got cpu
+  read -r got cpu < <(printf '%s' "$json" | python3 -I -c '
+import resource, subprocess, sys
+p = subprocess.run([sys.executable, "-I", sys.argv[1]], stdout=subprocess.DEVNULL, stderr=open(sys.argv[2], "w"))
+r = resource.getrusage(resource.RUSAGE_CHILDREN)
+print(p.returncode, round(r.ru_utime + r.ru_stime, 2))' "$hooks/bash_guard.py" "$tmp/err")
+  if [ "$got" = 2 ] && grep -qF "$text" "$tmp/err" && awk -v c="$cpu" -v m="$max" 'BEGIN { exit !(c <= m) }'; then
+    echo "ok   $name"
+  else
+    echo "FAIL $name: exit $got after $cpu s of CPU, want 2 within $max s saying '$text'"; cat "$tmp/err"; fail=1
+  fi
+}
+# shellcheck disable=SC2016 # the $( is the command text under test
+many=$(python3 -I -c 'print("echo " + "\"$( " * 3000 + "\ndocker run x")')
+check_cpu "blocks 3000 unclosed \"\$( within 1 s of CPU" 1 'too many unclosed quotes' "$(bash_cmd "$many")"
+# About 2.1 s of CPU on Python 3.9 and 1.1 s on 3.14: the work budget's whole allowance.
+# shellcheck disable=SC2016 # the $( is the command text under test
+big=$(python3 -I -c 'print("echo " + "\"$( " * 31 + "a " * 100000)')
+check_cpu "blocks 31 unclosed \"\$( in 200 KB within 4 s of CPU" 4 'too long or too tangled' "$(bash_cmd "$big")"
 # Em dashes in commit messages.
 check "blocks em dash commit"        2 bash_guard.py "$(bash_cmd "git commit -m 'feat: a ${em} b'")"
 check "allows plain commit"          0 bash_guard.py "$(bash_cmd "git commit -m 'feat: a - b'")"
@@ -139,6 +289,10 @@ check "blocks em dash in -am"         2 bash_guard.py "$(bash_cmd "git commit -a
 check "blocks em dash in --message="  2 bash_guard.py "$(bash_cmd "git -C repo commit --message='fix: a ${em} b'")"
 check "blocks em dash in -F heredoc"  2 bash_guard.py "$(bash_cmd $'git commit -F - <<EOF\nfeat: a '"${em}"$' b\nEOF')"
 check "blocks em dash in cat heredoc" 2 bash_guard.py "$(bash_cmd $'git commit -m "$(cat <<\'EOF\'\nfeat: a '"${em}"$' b\nEOF\n)"')"
+# shellcheck disable=SC2016 # the $( ) is the command text under test
+check "blocks em dash in -m \"\$(printf ...)\"" 2 bash_guard.py "$(bash_cmd "git commit -q -m \"\$(printf 'fix: a ${em} b')\"")"
+# shellcheck disable=SC2016 # the ${ } is the command text under test
+check "blocks em dash in -m \"\${MSG:-...}\""   2 bash_guard.py "$(bash_cmd "git commit -q -m \"\${MSG:-fix: a ${em} b}\"")"
 printf 'feat: a %s b\n' "$em" >"$tmp/msg.txt"
 check "blocks em dash in -F file"     2 bash_guard.py "$(bash_cmd "git commit -F $tmp/msg.txt")"
 mkdir -p "$tmp/home/.claude" && echo $(( $(date +%s) + 3600 )) >"$tmp/home/.claude/containers-approved-until"
@@ -164,6 +318,8 @@ check "flags still-hosts in orchestrator log" 2 write_guard.py "{\"tool_input\":
 check "passes still-hosts in other docs" 0 write_guard.py "{\"tool_input\":{\"file_path\":\"/x/docs/a.md\",\"content\":\"the box still hosts the site\"}}"
 check "blocks still-hosts heredoc into .resume" 2 bash_guard.py "$(bash_cmd $'cat >> .resume/trail.md <<\'EOF\'\n- '"$c6"$'\nEOF')"
 check "blocks still-running-in echo into resume" 2 bash_guard.py "$(bash_cmd "echo '- review still running in coordinator 6' >> ~/orchestrator/orchestrator-resume-x.md")"
+# shellcheck disable=SC2016 # the $( ) is the command text under test
+check "blocks still-hosted printf in \"\$( )\" into .resume" 2 bash_guard.py "$(bash_cmd 'echo "$(printf '"'worker still hosted in thread x'"')" > .resume/note.md')"
 check "allows grep for still hosts"  0 bash_guard.py "$(bash_cmd "grep -rn 'still hosts' .resume/ ~/orchestrator")"
 
 # HTML must not let tables split ordinary words. The body rule is the 11 Oct design review page's
