@@ -68,6 +68,8 @@ Independent review, reproduction, evidence and merge gates stay required at eith
 This guideline follows the [17 October matched replay](claude-process/opus-effort-replay-2026-10-17.md), which found equal aggregate blind scores with less elapsed time and fewer provider output tokens at High.
 It is a small-sample operating guideline, not proof that the two efforts are equivalent for long implementation, real tool use or UI design.
 Track review findings and fix rounds in actual use, and revise this guideline when they show a quality difference.
+The first real-use check, a job-tracker trial from 15 to 17 Oct (8 merged PRs at High against 16 at Extra High the week before), showed no saving per merged PR: output cost rose 23%, and more PRs needed a second-round review (5 of 8 against 7 of 16).
+With so few PRs and a different PR mix, that is noise-prone, so the guideline stands; the numbers are in `~/orchestrator/references/usage/effort-trial-2026-10-15.md` under "Result".
 Do not interrupt uncommitted work or change existing threads merely to match a new guideline; apply it at a safe task boundary.
 
 ## T3 Code fallback routing
