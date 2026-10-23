@@ -116,6 +116,19 @@ check "allows a MSG.txt heredoc body"         0 bash_guard.py "$(bash_cmd $'cat 
 check "blocks a switch after an END.x heredoc" 2 bash_guard.py "$(bash_cmd $'cat <<END.x\nfoo\nEND.x\nsudo darwin-rebuild switch')"
 # shellcheck disable=SC2016 # $((1<<2)) is the command text under test
 check "blocks a switch after an arithmetic shift" 2 bash_guard.py "$(bash_cmd $'echo $((1<<2))\nsudo darwin-rebuild switch --flake .')"
+check "allows a quoted -EOF heredoc body"          0 bash_guard.py "$(bash_cmd $'cat <<\'-EOF\' > n.md\ndocker run x\n-EOF')"
+check "allows a quoted @@ heredoc body"            0 bash_guard.py "$(bash_cmd $'cat >n.md <<"@@"\nsudo darwin-rebuild switch --flake .\n@@')"
+check "allows a <<\\1 heredoc body"               0 bash_guard.py "$(bash_cmd $'cat >n.md <<\\1\ndocker run x\n1')"
+check "blocks a switch after a quoted -EOF heredoc" 2 bash_guard.py "$(bash_cmd $'cat <<\'-EOF\' > n.md\nfoo\n-EOF\ndocker run x')"
+check "blocks after a heredoc whose delimiter starts with a space" 2 bash_guard.py "$(bash_cmd $'cat <<\' EOF\' >n.md\nhello\n EOF\ndocker run x')"
+check "blocks after a heredoc whose delimiter ends with a space"   2 bash_guard.py "$(bash_cmd $'cat <<\'EOF \' >n.md\nhello\nEOF \ndocker run x')"
+check "allows the body of a heredoc whose delimiter has a space"  0 bash_guard.py "$(bash_cmd $'cat <<\' EOF\' >n.md\ndocker run x\n EOF')"
+# shellcheck disable=SC2016 # the arithmetic is the command text under test
+check "blocks after a shift by a variable"         2 bash_guard.py "$(bash_cmd $'x=$((1<<n))\ndocker run y')"
+check "blocks after a spaced (( )) shift"          2 bash_guard.py "$(bash_cmd $'(( x = 1 << n ))\nsudo darwin-rebuild switch --flake .')"
+# shellcheck disable=SC2016 # the arithmetic is the command text under test
+check "allows a heredoc after a closed shift"      0 bash_guard.py "$(bash_cmd $'echo $((1<<n)); cat <<EOF >n.md\ndocker run x\nEOF')"
+check "allows a heredoc after a quoted (("        0 bash_guard.py "$(bash_cmd $'echo "(("; cat <<EOF >n.md\ndocker run x\nEOF')"
 # Em dashes in commit messages.
 check "blocks em dash commit"        2 bash_guard.py "$(bash_cmd "git commit -m 'feat: a ${em} b'")"
 check "allows plain commit"          0 bash_guard.py "$(bash_cmd "git commit -m 'feat: a - b'")"

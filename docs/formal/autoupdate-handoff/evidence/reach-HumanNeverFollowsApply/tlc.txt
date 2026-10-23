@@ -1,10 +1,10 @@
 TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
 Running breadth-first search Model-Checking with fp 0 and seed 1 with 1 worker on 12 cores with 8192MB heap and 64MB offheap memory (Mac OS X 26.7.1 aarch64, Azul Systems, Inc. 1.8.0_492 x86_64, MSBDiskFPSet, DiskStateQueue).
-Parsing file /private/tmp/c9-u4-fix-r2/formal/docs/formal/autoupdate-handoff/evidence/reach-HumanNeverFollowsApply/Handoff.tla
+Parsing file /Users/myuser/.t3/worktrees/dotfiles/fix-rollback-interrupt-hold/docs/formal/autoupdate-handoff/evidence/reach-HumanNeverFollowsApply/Handoff.tla
 Parsing file /private/var/folders/87/l57bxt9d4wnb521lw1187z8c0000gn/T/Naturals.tla
 Semantic processing of module Naturals
 Semantic processing of module Handoff
-Starting... (2026-10-23 13:03:08)
+Starting... (2026-10-23 18:26:13)
 Computing initial states...
 Computed 2 initial states...
 Computed 4 initial states...
@@ -14,8 +14,8 @@ Computed 32 initial states...
 Computed 64 initial states...
 Computed 128 initial states...
 Computed 256 initial states...
-Finished computing initial states: 384 distinct states generated at 2026-10-23 13:03:08.
-Progress(17) at 2026-10-23 13:03:11: 1,028,140 states generated (1,028,140 s/min), 361,327 distinct states found (361,327 ds/min), 49,058 states left on queue.
+Finished computing initial states: 384 distinct states generated at 2026-10-23 18:26:13.
+Progress(16) at 2026-10-23 18:26:16: 939,606 states generated (939,606 s/min), 333,541 distinct states found (333,541 ds/min), 50,479 states left on queue.
 Error: Invariant HumanNeverFollowsApply is violated.
 Error: The behavior up to this point is:
 State 1: <Initial predicate>
@@ -725,4 +725,4 @@ State 22: <HumanComplete line 292, col 5 to line 299, col 35 of module Handoff>
 1579653 states generated, 539026 distinct states found, 31457 states left on queue.
 The depth of the complete state graph search is 22.
 The average outdegree of the complete state graph is 1 (minimum is 0, the maximum 5 and the 95th percentile is 3).
-Finished in 04s at (2026-10-23 13:03:13)
+Finished in 05s at (2026-10-23 18:26:18)

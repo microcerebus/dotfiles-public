@@ -1,10 +1,10 @@
 TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
 Running breadth-first search Model-Checking with fp 0 and seed 1 with 1 worker on 12 cores with 8192MB heap and 64MB offheap memory (Mac OS X 26.7.1 aarch64, Azul Systems, Inc. 1.8.0_492 x86_64, MSBDiskFPSet, DiskStateQueue).
-Parsing file /private/tmp/c9-u4-fix-r2/formal/docs/formal/autoupdate-handoff/evidence/fixed/Handoff.tla
+Parsing file /Users/myuser/.t3/worktrees/dotfiles/fix-rollback-interrupt-hold/docs/formal/autoupdate-handoff/evidence/fixed/Handoff.tla
 Parsing file /private/var/folders/87/l57bxt9d4wnb521lw1187z8c0000gn/T/Naturals.tla
 Semantic processing of module Naturals
 Semantic processing of module Handoff
-Starting... (2026-10-23 13:02:28)
+Starting... (2026-10-23 18:25:30)
 Computing initial states...
 Computed 2 initial states...
 Computed 4 initial states...
@@ -14,8 +14,8 @@ Computed 32 initial states...
 Computed 64 initial states...
 Computed 128 initial states...
 Computed 256 initial states...
-Finished computing initial states: 384 distinct states generated at 2026-10-23 13:02:28.
-Progress(17) at 2026-10-23 13:02:31: 1,049,171 states generated (1,049,171 s/min), 367,606 distinct states found (367,606 ds/min), 48,636 states left on queue.
+Finished computing initial states: 384 distinct states generated at 2026-10-23 18:25:30.
+Progress(16) at 2026-10-23 18:25:34: 978,567 states generated (978,567 s/min), 345,903 distinct states found (345,903 ds/min), 50,307 states left on queue.
 Model checking completed. No error has been found.
   Estimates of the probability that TLC did not check all reachable states
   because two distinct states had the same fingerprint:
@@ -24,4 +24,4 @@ Model checking completed. No error has been found.
 2061102 states generated, 713411 distinct states found, 0 states left on queue.
 The depth of the complete state graph search is 38.
 The average outdegree of the complete state graph is 1 (minimum is 0, the maximum 5 and the 95th percentile is 3).
-Finished in 05s at (2026-10-23 13:02:34)
+Finished in 06s at (2026-10-23 18:25:36)

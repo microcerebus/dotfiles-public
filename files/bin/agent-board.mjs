@@ -758,16 +758,22 @@ function updatesSection(u) {
 
 const SGT = (options) => new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Singapore', ...options });
 
-// 14:05 today, Tue 14:05 this week, 9 Oct before that.
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']; // en-GB says "Sept"
+
+// 14:05 today, 9 Oct 14:05 any day before: one form for every past day, so two dates side by side compare at a glance.
+// A date from about a year back carries its year, 9 Oct 2025 14:05, so it never passes for this October.
 function when(at, now) {
   const day = (ms) => Math.floor((ms + SGT_MS) / 86_400_000);
   const hm = SGT({ hour: '2-digit', minute: '2-digit' }).format(at);
   if (day(at) === day(now)) return hm;
-  if (day(now) - day(at) < 7) return `${SGT({ weekday: 'short' }).format(at)} ${hm}`;
-  return SGT({ day: 'numeric', month: 'short' }).format(at);
+  const p = Object.fromEntries(SGT({ day: 'numeric', month: 'numeric', year: 'numeric' }).formatToParts(at).map((x) => [x.type, x.value]));
+  return `${Number(p.day)} ${MONTHS[p.month - 1]}${day(now) - day(at) > 300 ? ` ${p.year}` : ''} ${hm}`;
 }
 
 const tone = (cls, text) => `<span class="${cls}">${escape(text)}</span>`;
+// A date with the word before it, "since 9 Oct 14:05", kept on one line: a phone never leaves "since" or "14:05" alone.
+// Ordinary spaces, so a copied date still matches a search for "9 Oct".
+const stamp = (word, at, now) => tone('kept', `${word} ${when(at, now)}`);
 
 // Both pages share the header, so threads and map are one tap apart. The clock stays on a phone too: it is how
 // the owner sees that the page is current.
@@ -830,14 +836,15 @@ function actLinks(u, lane) {
 }
 
 // What a waiting unit's line says about the wait: its owner's input card if it has one, else how long it has waited.
+// HTML: the date phrase is kept whole.
 function unitWait(item, now) {
-  if (item.thread) return `${item.thread.ask}${item.thread.askedAt ? ` · asked ${when(item.thread.askedAt, now)}` : ''}`;
-  return item.unit.sinceAt ? `since ${when(item.unit.sinceAt, now)}` : null;
+  if (item.thread) return `${escape(item.thread.ask)}${item.thread.askedAt ? ` · ${stamp('asked', item.thread.askedAt, now)}` : ''}`;
+  return item.unit.sinceAt ? stamp('since', item.unit.sinceAt, now) : null;
 }
 
 function unitCard(item, snap) {
   const u = item.unit;
-  const meta = [u.lane, item.blocker ?? u.note, item.thread?.title, unitWait(item, snap.now)].filter(Boolean).map(escape);
+  const meta = [...[u.lane, item.blocker ?? u.note, item.thread?.title].filter(Boolean).map(escape), unitWait(item, snap.now)].filter(Boolean);
   const lane = snap.lanes.lanes.find((l) => l.name === u.lane);
   return `<div class="t needs"><div class="name">${escape(u.id)}</div><div class="sub"><span class="state peach">you</span> · ${[...meta, ...actLinks(u, lane)].join(' · ')}</div></div>`;
 }
@@ -863,9 +870,10 @@ ${alarmed ? updates : ''}${threads || '<p class="more">No open T3 threads.</p>'}
 
 // ---- /map ----
 
-const STALL_MS = 8 * 3600_000; // review rule, 10 Oct: open 8 hours of work is stalled
-const STALE_MS = 2 * 3600_000; // a running coordinator with no lane file change for this long
-const LANE_STALE_MS = 24 * 3600_000; // no lane file change for a day: the lane says "stale since <date>" whoever runs it
+// The map's flags each say what they measured, so none reads like the row state "stale" (a landed needs-myuser row).
+const STALL_MS = 8 * 3600_000; // review rule, 10 Oct: a unit in flight over 8 hours turns yellow, "in flight 2 d, since <date>"
+const STALE_MS = 2 * 3600_000; // a running coordinator with no lane file change for this long: "no update for 3 h"
+const LANE_STALE_MS = 24 * 3600_000; // no lane file change for a day: "no update since <date>" whoever runs it
 const SHOWN = { queued: 'grey', 'in-flight': 'green', you: 'peach', 'then you': 'peach', stale: 'yellow', paused: 'yellow', done: 'grey' };
 const PR_TONE = { merged: 'grey', closed: 'grey', draft: 'overlay', open: 'subtext', ready: 'green', blocked: 'red' };
 
@@ -893,8 +901,9 @@ function ownerLine(u, snap) {
 function sinceLine(u, now) {
   if (u.sinceAt === undefined) return tone('yellow', `since "${u.since}" unreadable`);
   if (!u.sinceAt || !['in-flight', 'needs-myuser'].includes(u.state)) return null;
-  if (u.state !== 'needs-myuser' && now - u.sinceAt > STALL_MS) return tone('yellow', `stalled since ${when(u.sinceAt, now)}`);
-  return `since ${when(u.sinceAt, now)}`;
+  // Two phrases, each kept whole: a phone may break between them but never inside "in flight 2 d".
+  if (u.state !== 'needs-myuser' && now - u.sinceAt > STALL_MS) return `<span class="yellow">${tone('kept', `in flight ${ago(now - u.sinceAt)}`)}, ${stamp('since', u.sinceAt, now)}</span>`;
+  return stamp('since', u.sinceAt, now);
 }
 
 // The chip at the row's right: the PR number, linked, with its GitHub state when the board has it, else the ledger's
@@ -931,7 +940,7 @@ function prBlock(u, lane, now) {
   if (g) {
     const facts = [];
     if (g.blockers.length && (g.state === 'blocked' || g.state === 'draft')) facts.push(tone('red', `blocked on: ${g.blockers.join('; ')}`));
-    else if (g.state === 'merged') facts.push(`merged${g.mergedAt ? ` ${when(g.mergedAt, now)}` : ''}`);
+    else if (g.state === 'merged') facts.push(g.mergedAt ? stamp('merged', g.mergedAt, now) : 'merged');
     else if (g.checksPending) facts.push(tone('yellow', `${g.checksPending} check${g.checksPending === 1 ? '' : 's'} running`));
     if (g.behind && g.state !== 'merged') facts.push(`behind ${escape(g.base)}`);
     facts.push(`head <code>${escape(g.head)}</code>`);
@@ -1032,9 +1041,9 @@ function laneSection(lane, snap) {
   else head.push(`${escape(t.title)} <span class="kept">${live(t, snap.now, true)}</span>`);
   // Short time phrases are kept on one line, so "ago" never wraps alone.
   if (lane.updatedAt) {
-    const updated = `updated ${ago(snap.now - lane.updatedAt)} ago`;
-    if (snap.now - lane.updatedAt > LANE_STALE_MS) head.push(tone('yellow kept', `stale since ${SGT({ day: 'numeric', month: 'short' }).format(lane.updatedAt)}`));
-    else head.push(t?.state === 'running' && snap.now - lane.updatedAt > STALE_MS ? tone('yellow kept', `stale, ${updated}`) : tone('kept', updated));
+    const quiet = snap.now - lane.updatedAt;
+    if (quiet > LANE_STALE_MS) head.push(tone('yellow kept', `no update since ${when(lane.updatedAt, snap.now)}`));
+    else head.push(t?.state === 'running' && quiet > STALE_MS ? tone('yellow kept', `no update for ${ago(quiet)}`) : tone('kept', `updated ${ago(quiet)} ago`));
   }
   if (lane.prs.size || lane.prError) head.push(lane.prError ? tone('yellow', `GitHub: ${lane.prError}`) : tone('kept', `PRs ${ago(snap.now - lane.prsAt)} ago`));
   // Milestones in the order of their first unit, so the coordinator orders them by writing them.
@@ -1083,11 +1092,11 @@ function needsRow(item, snap) {
     + `${ask.length ? `<span class="ask">${ask.join(' · ')}</span>` : ''}<span class="tag">${escape(tag ?? '')}</span></div>`;
   if (!item.unit) {
     const t = item.thread;
-    return todo(t.title, [t.ask, t.askedAt && `asked ${when(t.askedAt, snap.now)}`, t.branch].filter(Boolean).map(escape), t.project);
+    return todo(t.title, [t.ask && escape(t.ask), t.askedAt && stamp('asked', t.askedAt, snap.now), t.branch && escape(t.branch)].filter(Boolean), t.project);
   }
   const u = item.unit;
   const lane = snap.lanes.lanes.find((l) => l.name === u.lane);
-  const ask = [item.blocker ?? u.note, item.thread?.title, unitWait(item, snap.now)].filter(Boolean).map(escape);
+  const ask = [...[item.blocker ?? u.note, item.thread?.title].filter(Boolean).map(escape), unitWait(item, snap.now)].filter(Boolean);
   return todo(u.id, [...ask, ...actLinks(u, lane)], u.lane);
 }
 
@@ -1123,7 +1132,7 @@ main{max-width:720px;margin:0 auto;min-width:0}main.wide{max-width:1040px}
 header{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:baseline;gap:4px 12px;padding:18px 4px 6px}
 h1{font-size:17px;color:var(--lavender)}h1 span{color:var(--overlay1);font-weight:400}
 ::selection{background:var(--surface1);color:var(--text)}a:focus-visible,.check:focus-visible{outline:2px solid var(--lavender);outline-offset:2px;border-radius:3px}
-h1 a{color:inherit;text-decoration:none}h1 u{color:var(--text);text-decoration-color:var(--lavender);text-underline-offset:4px}
+a{color:inherit;text-decoration:none}a b{font-weight:500;color:var(--blue)}h1 u{color:var(--text);text-decoration-color:var(--lavender);text-underline-offset:4px}
 header small{font-size:12px;color:var(--overlay1)}
 .kept{white-space:nowrap}
 h2{font-size:11.5px;letter-spacing:.6px;text-transform:uppercase;color:var(--overlay1);margin:16px 4px 7px;font-weight:500}
@@ -1148,12 +1157,12 @@ h2.attn{color:var(--peach)}
 .u.done{opacity:.62}.u.blocked{border-color:#5a3a48}.u.warn{background:#2a2a28;border-color:#5a5340}
 .todo{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 8px;padding:6px 12px;margin-bottom:5px;font-size:12px;color:var(--subtext)}
 .todo .state{font-weight:500}.todo .id{font-size:13px;color:var(--text);overflow-wrap:anywhere}.todo .tag{margin-left:auto;color:var(--overlay1)}
-.ask{min-width:0;overflow-wrap:anywhere}.ask a{color:inherit;text-decoration:none}.ask a b{font-weight:500;color:var(--blue)}
+.ask{min-width:0;overflow-wrap:anywhere}
 .row{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:baseline;gap:2px 10px;min-width:0}
 .id{font-weight:700;font-size:13px;min-width:0;overflow-wrap:anywhere}
 .id .state{font-weight:500;margin-right:7px;white-space:nowrap}
 .pr{font-size:12px;color:var(--subtext);min-width:0;overflow-wrap:anywhere;margin-left:auto}
-.pr b{font-weight:500}.pr a{color:inherit;text-decoration:none}.pr a b{color:var(--blue)}
+.pr b{font-weight:500}
 .title{font-size:13px;color:var(--text);margin-top:3px;overflow-wrap:anywhere}
 .summary{font-size:12px;color:var(--subtext);margin-top:2px;overflow-wrap:anywhere}
 .unit-note{font-size:12px;color:var(--overlay2);margin-top:3px;overflow-wrap:anywhere}

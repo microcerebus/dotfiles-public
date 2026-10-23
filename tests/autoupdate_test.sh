@@ -197,12 +197,24 @@ EOF
 # darwin-rebuild --rollback / --switch-generation <n>: activates the fake
 # generation before the running one, or generation <n> (counted from 1 in
 # build order), and records its revision.
+# darwin-rebuild --list-generations: lists them as nix-env does, the running
+# one marked (current). STUB_LIST=<file>: prints that file instead.
 cat >"$stubs/darwin-rebuild" <<'EOF'
 #!/usr/bin/env bash
 case $1 in
   switch) [ "$2" = --flake ] || exit 2 ;;
   --rollback) [ $# = 1 ] || exit 2 ;;
   --switch-generation) [ $# = 2 ] || exit 2 ;;
+  --list-generations)
+    [ $# = 1 ] || exit 2
+    if [ -n "${STUB_LIST:-}" ]; then cat "$STUB_LIST"; exit 0; fi
+    n=0
+    for g in $(ls "$SYSTEMS" | grep -- '-darwin-system$' | sort -n); do
+      n=$((n + 1))
+      [ "$g" = "$(basename "$(readlink "$AUTOUPDATE_SYSTEM")")" ] && c='(current)' || c=''
+      printf '%4d   2026-10-11 12:00:00   %s\n' "$n" "$c"
+    done
+    exit 0 ;;
   *) exit 2 ;;
 esac
 if [ -n "${STUB_SWITCH_HOLD:-}" ]; then
@@ -270,7 +282,7 @@ fresh() {
   export AUTOUPDATE_PUBLIC_SYNC="$stubs/public-sync" AUTOUPDATE_RUNNER_STATUS="$s/runner-reload.status"
   export AUTOUPDATE_RUNNER_RELOAD="$s/run/github-runner-reload"
   export HM_GCROOT="$home/.local/state/home-manager/gcroots/current-home"
-  unset STUB_HUMAN_SWITCH STUB_SWITCH_HOLD AUTOUPDATE_REBUILD_WAIT STUB_OFFLINE STUB_REBUILD_RUNNING STUB_PNPM_FAIL STUB_PNPM_CTRL_C STUB_BREW_OUTPUT STUB_BREW_SUDO STUB_TTY STUB_BREW_KILL STUB_SWITCH_EXIT STUB_HM_BROKEN STUB_SILL_TEAM STUB_OSASCRIPT_FAIL STUB_PNPM_STARTS_REBUILD STUB_SYNC_STARTS STUB_PUBLIC_FAIL
+  unset STUB_HUMAN_SWITCH STUB_SWITCH_HOLD AUTOUPDATE_REBUILD_WAIT STUB_OFFLINE STUB_REBUILD_RUNNING STUB_PNPM_FAIL STUB_PNPM_CTRL_C STUB_BREW_OUTPUT STUB_BREW_SUDO STUB_TTY STUB_BREW_KILL STUB_SWITCH_EXIT STUB_HM_BROKEN STUB_SILL_TEAM STUB_OSASCRIPT_FAIL STUB_PNPM_STARTS_REBUILD STUB_SYNC_STARTS STUB_PUBLIC_FAIL STUB_LIST
   at "2026-10-11 12:00"
   git init -q --bare -b main "$s/origin.git"
   git clone -q "$s/origin.git" "$s/upstream" 2>/dev/null
@@ -1030,26 +1042,42 @@ rollback_bg() {
   as "$root_home" env -u AUTOUPDATE_USER SUDO_USER=testuser bash "$script" rollback "$@" </dev/null >"$out" 2>&1 &
   rollback_pid=$!
 }
+# expect_clean <name>: the last rollback left no scratch file in the daemon
+# dir and printed no shell error.
+expect_clean() {
+  expect_eq "$1" "$(find "$AUTOUPDATE_DAEMON_DIR" -name 'rollback.*' | wc -l | tr -d ' ') $(grep -c 'unbound variable' "$s/rollback.out")" "0 0"
+}
 fresh
 at "2026-10-12 01:00"; commit_local "L: unpushed"
 L=$(git -C "$home/dotfiles" rev-parse HEAD)
 as "$root_home" bash "$script" rebuild "$home/dotfiles#testhost" </dev/null >"$s/rebuild.out" 2>&1 || true
 rollback_bg "$s/rollback.out"; rollback_code=0; wait "$rollback_pid" || rollback_code=$?
 expect_eq "rollback switches back to the previous generation" "$(built | tr '\n' ' ')$(running_rev) $rollback_code" "$L $A $A 0"
+expect_clean "and leaves no scratch file or shell error"
 expect_eq "and says the auto-update may switch forward again" \
   "$(grep -c "^rollback: this Mac now runs $A\. If that revision is on origin/main, the hourly auto-update switches forward to origin/main again; to stay on it, push a revert to main\.$" "$s/rollback.out")" 1
 rollback_bg "$s/rollback.out" 2; rollback_code=0; wait "$rollback_pid" || rollback_code=$?
 expect_eq "rollback <n> switches to generation n" "$(running_rev) $rollback_code" "$L 0"
 rollback_bg "$s/rollback.out" latest; rollback_code=0; wait "$rollback_pid" || rollback_code=$?
 expect_eq "rollback refuses a generation that is not a number" "$(running_rev) $rollback_code $(grep -c '^usage: dotfiles-autoupdate rollback \[generation\]$' "$s/rollback.out")" "$L 2 1"
+# rollback-locked runs as root and runs its arguments, so it takes only a
+# darwin-rebuild --switch-generation.
+locked_code=0
+# shellcheck disable=SC2016 # $1 expands in the refused command's shell
+as "$root_home" bash "$script" rollback-locked "$s/locked.result" sh -c 'touch "$1"' sh "$s/locked.ran" </dev/null >/dev/null 2>&1 || locked_code=$?
+expect_eq "rollback-locked refuses any other command" "$locked_code $([ -e "$s/locked.ran" ] && echo ran) $(running_rev)" "2  $L"
 
 # A daemon switch in progress makes `rollback` say so and wait, then roll
-# back, so the rollback lands last.
+# back, so the rollback lands last. "Previous" means the generation before
+# the one the Mac ran when the owner typed `rollback`, not before the one the
+# daemon's switch adds while he waits.
 fresh
+at "2026-10-12 01:00"; commit_upstream "B: notes"
+B=$(git -C "$s/upstream" rev-parse HEAD)
+at "2026-10-12 01:10"; tick
 at "2026-10-12 02:00"; commit_upstream "C: flake.lock bump" flake.lock
 C=$(git -C "$s/upstream" rev-parse HEAD)
 git -C "$home/dotfiles" fetch -q origin
-mkdir -p "$home/.local/state/dotfiles-autoupdate"
 echo "$C" >"$home/.local/state/dotfiles-autoupdate/revision"
 mkdir -p "$s/hold"; export STUB_SWITCH_HOLD="$s/hold" AUTOUPDATE_REBUILD_WAIT=60
 at "2026-10-12 05:10"
@@ -1058,29 +1086,42 @@ apply_pid=$!
 wait_for 10 test -e "$s/hold/started.0" || bad "the daemon switch starts" "no switch started"
 rollback_bg "$s/rollback.out"
 wait_for 15 grep -q "waiting up to 1 min" "$s/rollback.out" || true
-expect_eq "rollback says it waits for the auto-update switch" \
-  "$(grep -c '^rollback: the hourly auto-update (pid [0-9]*) is switching this Mac to the pushed origin/main; waiting up to 1 min for it to finish, then rolling back' "$s/rollback.out")" 1
-expect_eq "rollback waits, without switching, while the daemon switches" \
-  "$(started) $(kill -0 "$rollback_pid" 2>/dev/null && echo waiting)" "1 waiting"
+expect_eq "rollback says it waits for the auto-update switch, and where it goes after" \
+  "$(grep -c '^rollback: the hourly auto-update (pid [0-9]*) is switching this Mac to the pushed origin/main; waiting up to 1 min for it to finish, then rolling back to generation 1\.' "$s/rollback.out")" 1
+expect_eq "rollback waits, without switching or holding anything, while the daemon switches" \
+  "$(started) $(kill -0 "$rollback_pid" 2>/dev/null && echo waiting) $(cat "$AUTOUPDATE_DAEMON_DIR/attempt" 2>/dev/null)" "1 waiting "
+# sync and apply look for a switch with `pgrep -f darwin-rebuild`.
+# shellcheck disable=SC2009 # the full command line, as pgrep -f matches it
+expect_eq "and its waiting command line names darwin-rebuild, for pgrep -f to find" \
+  "$(ps -ax -o args= | grep -F -- "$AUTOUPDATE_DAEMON_DIR/rollback." | grep -c -- ' darwin-rebuild --switch-generation 1$')" 1
 touch "$s/hold/release"
 wait "$apply_pid" || true
 rollback_code=0; wait "$rollback_pid" || rollback_code=$?
-expect_eq "rollback lands after the daemon's switch" \
-  "$(built | tr '\n' ' ')$(running_rev) $rollback_code" "$C $A $A 0"
+expect_eq "rollback lands after the daemon's switch, on the generation before the one it left" \
+  "$(built | tr '\n' ' ')$(running_rev) $rollback_code" "$B $C $A $A 0"
+expect_eq "and holds off the revision the daemon switched to, not the one it read before waiting" \
+  "$(cat "$AUTOUPDATE_DAEMON_DIR/attempt" 2>/dev/null)" "$C $FAKE_NOW"
+expect_eq "and says so" \
+  "$(grep -c "^rollback: this Mac now runs $A\\. The hourly auto-update will not switch back to ${C:0:12} before Tue 13 Oct 05:10;" "$s/rollback.out")" 1
+at "2026-10-12 06:10"; tick
+expect_eq "so the next tick keeps the rollback" "$(running_rev) $(built | wc -l | tr -d ' ')" "$A 3"
 
 # `rollback` gives up, with a reason and what to do, rather than waiting forever.
 fresh
+at "2026-10-12 01:00"; commit_local "L: unpushed"
+L=$(git -C "$home/dotfiles" rev-parse HEAD)
+as "$root_home" bash "$script" rebuild "$home/dotfiles#testhost" </dev/null >/dev/null 2>&1 || true
 mkdir -p "$s/hold"; export STUB_SWITCH_HOLD="$s/hold" AUTOUPDATE_REBUILD_WAIT=3
 # shellcheck disable=SC2016 # $1 expands in the holder's shell
 lockf -k "$AUTOUPDATE_DAEMON_DIR/switch.lock" sh -c 'touch "$1"; exec /bin/sleep 30' sh "$s/held" & held=$!
 wait_for 5 test -e "$s/held" || bad "the lock holder starts" "no lock taken"
 rollback_bg "$s/rollback.out"
 rollback_code=0; wait "$rollback_pid" || rollback_code=$?
-expect_eq "rollback gives up when the switch lock stays held" "$rollback_code $(started) $(running_rev)" "75 0 $A"
+expect_eq "rollback gives up when the switch lock stays held" "$rollback_code $(started) $(running_rev)" "75 0 $L"
 expect_eq "and leaves no hold" "$(cat "$AUTOUPDATE_DAEMON_DIR/attempt" 2>/dev/null)" ""
 # shellcheck disable=SC2016 # the backquotes are literal text
 expect_eq "and says nothing was rolled back" \
-  "$(grep -c '^rollback: gave up after [0-9]* min: another switch still holds .*Nothing was rolled back\. See /var/log/dotfiles-autoupdate.log and `dotfiles-autoupdate status`, and run rollback again once that switch ends\. .* before rolling back\.$' "$s/rollback.out")" 1
+  "$(grep -c '^rollback: gave up after [0-9]* min: another switch still holds .*Nothing was rolled back\. See /var/log/dotfiles-autoupdate.log and `dotfiles-autoupdate status`, and run rollback again once that switch ends\. .* before rolling back to generation 1\.$' "$s/rollback.out")" 1
 # pkill ends lockf too, so the kill can find it gone.
 pkill -P "$held" 2>/dev/null || true; kill "$held" 2>/dev/null || true; wait "$held" 2>/dev/null || true
 unset STUB_SWITCH_HOLD AUTOUPDATE_REBUILD_WAIT
@@ -1102,8 +1143,8 @@ at "2026-10-12 06:10"; tick
 expect_eq "the hourly apply holds off that revision, with no alarm" "$(running_rev) $(alarms | wc -l | tr -d ' ')" "$A 0"
 at "2026-10-13 05:20"; tick
 expect_eq "and switches forward to it a day later" "$(running_rev)" "$C"
-# The hold is in place before the rollback's switch ends, so no apply can
-# decide between the two.
+# The hold goes in once the switch lands, under the same switch lock, so no
+# apply decides between the two.
 fresh
 at "2026-10-12 02:00"; commit_upstream "C: flake.lock bump" flake.lock
 C=$(git -C "$s/upstream" rev-parse HEAD)
@@ -1111,11 +1152,13 @@ at "2026-10-12 05:10"; tick
 mkdir -p "$s/hold"; export STUB_SWITCH_HOLD="$s/hold"
 rollback_bg "$s/rollback.out"
 wait_for 10 test -e "$s/hold/started.0" || bad "the rollback's switch starts" "no switch started"
-expect_eq "the hold is recorded while the rollback switches" "$(cut -d' ' -f1 "$AUTOUPDATE_DAEMON_DIR/attempt" 2>/dev/null)" "$C"
+as "$root_home" bash "$script" apply </dev/null >>"$s/log/out" 2>&1 || true
+expect_eq "no hold before the rollback's switch lands, and no apply decides meanwhile" \
+  "$(cat "$AUTOUPDATE_DAEMON_DIR/attempt" 2>/dev/null) $(started)" " 1"
 touch "$s/hold/release"
 rollback_code=0; wait "$rollback_pid" || rollback_code=$?
 unset STUB_SWITCH_HOLD
-expect_eq "and stays once it lands" "$(running_rev) $rollback_code $(cut -d' ' -f1 "$AUTOUPDATE_DAEMON_DIR/attempt")" "$A 0 $C"
+expect_eq "and the hold is there once it lands" "$(running_rev) $rollback_code $(cut -d' ' -f1 "$AUTOUPDATE_DAEMON_DIR/attempt")" "$A 0 $C"
 # A rollback that fails from C takes its new record out again, and puts
 # back the one that was there.
 held_at=$(cat "$AUTOUPDATE_DAEMON_DIR/attempt")
@@ -1123,6 +1166,7 @@ ln -sfn "$(PATH="$stubs:$PATH" mksystem "$C")" "$AUTOUPDATE_SYSTEM"
 at "2026-10-12 05:30"
 rollback_bg "$s/rollback.out" 99; rollback_code=0; wait "$rollback_pid" || rollback_code=$?
 expect_eq "a failed rollback puts back the record that was there" "$(running_rev) $rollback_code $(cat "$AUTOUPDATE_DAEMON_DIR/attempt")" "$C 1 $held_at"
+expect_clean "and leaves no scratch file or shell error"
 rm -f "$AUTOUPDATE_DAEMON_DIR/attempt"
 rollback_bg "$s/rollback.out" 99; rollback_code=0; wait "$rollback_pid" || rollback_code=$?
 expect_eq "and with none, leaves none" "$(running_rev) $rollback_code $(cat "$AUTOUPDATE_DAEMON_DIR/attempt" 2>/dev/null)" "$C 1 "
@@ -1155,6 +1199,34 @@ rollback_bg "$s/rollback.out"; rollback_code=0; wait "$rollback_pid" || rollback
 at "2026-10-12 05:10"; tick
 expect_eq "a rollback to an unpushed generation stays through the hourly apply" "$(running_rev) $rollback_code" "$L 0"
 expect_eq "with the waiting-for-push note" "$(report | grep -c "${L:0:12}, which is not on origin/main yet; waiting for push")" 1
+
+# A rollback to an older generation of the running revision (a Home Manager
+# repair rebuilds it) leaves nothing for apply to undo, so it holds nothing.
+fresh
+at "2026-10-12 02:00"; commit_upstream "C: flake.lock bump" flake.lock
+C=$(git -C "$s/upstream" rev-parse HEAD)
+at "2026-10-12 05:10"; tick
+ln -sfn "$s/elsewhere" "$HM_GCROOT"
+at "2026-10-12 06:10"; tick
+rollback_bg "$s/rollback.out"; rollback_code=0; wait "$rollback_pid" || rollback_code=$?
+expect_eq "a rollback to an older generation of the same revision switches and holds nothing" \
+  "$(built | grep -c "$C") $(running_rev) $rollback_code $(cat "$AUTOUPDATE_DAEMON_DIR/attempt" 2>/dev/null)" "3 $C 0 "
+expect_clean "and leaves no scratch file or shell error"
+
+# A generation list rollback cannot read stops it, with a reason.
+fresh
+printf 'Generation 1   2026-10-11\nGeneration 2   2026-10-12   (current)\n' >"$s/list"
+export STUB_LIST="$s/list"
+rollback_bg "$s/rollback.out"; rollback_code=0; wait "$rollback_pid" || rollback_code=$?
+unset STUB_LIST
+expect_eq "rollback stops on a generation list it cannot read, and says so" \
+  "$(running_rev) $rollback_code $(grep -c '^rollback: could not read the generation list' "$s/rollback.out")" "$A 1 1"
+
+# rollback with no older generation says so, and waits for no lock.
+fresh
+rollback_bg "$s/rollback.out"; rollback_code=0; wait "$rollback_pid" || rollback_code=$?
+expect_eq "rollback with no older generation switches nothing" \
+  "$(running_rev) $rollback_code $(grep -c '^rollback: there is no generation before the current one (1)\.' "$s/rollback.out")" "$A 1 1"
 
 # 33. The runner's firewall daemon records each poll in its own status file
 # (scripts/github-runner reload_when_idle), which status reads like the
@@ -1215,5 +1287,45 @@ expect_eq "a system without the runner's activate step reports nothing about the
   "$(grep -c runner-reload <<<"$got_report")" 0
 runner_step
 expect_alarm "the same files alarm once the running system has the step again" "runner-reload: "
+
+# 34. Ctrl-C, or a TERM or HUP, while `rollback` waits for the switch lock
+# stops it before it switches, and leaves no hold: the hourly apply goes on
+# applying origin/main. A terminal signals its foreground job's whole
+# process group, so each run here gets its own group (set -m).
+fresh
+at "2026-10-12 02:00"; commit_upstream "C: flake.lock bump" flake.lock
+C=$(git -C "$s/upstream" rev-parse HEAD)
+at "2026-10-12 05:10"; tick
+mkdir -p "$s/hold"; export STUB_SWITCH_HOLD="$s/hold" AUTOUPDATE_REBUILD_WAIT=60
+# shellcheck disable=SC2016 # $1 expands in the holder's shell
+lockf -k "$AUTOUPDATE_DAEMON_DIR/switch.lock" sh -c 'touch "$1"; exec /bin/sleep 60' sh "$s/held" & held=$!
+wait_for 5 test -e "$s/held" || bad "the lock holder starts" "no lock taken"
+# A suite started with `&` from a non-interactive shell starts with INT
+# ignored, and no child can catch it again, so the INT run cannot pass.
+# shellcheck disable=SC2016 # $$ expands in the probe's shell
+set -m; bash -c 'kill -INT $$; echo ignored' >"$s/int-probe" 2>/dev/null & set +m
+wait "$!" 2>/dev/null || true
+for sig in INT TERM HUP; do
+  if [ "$sig" = INT ] && [ -s "$s/int-probe" ]; then
+    bad "a INT while rollback waits for the lock stops it, switches nothing and holds nothing" \
+      "this suite started with SIGINT ignored (run with & from a non-interactive shell?), so INT cannot reach rollback; run it in the foreground"
+    continue
+  fi
+  set -m; rollback_bg "$s/rollback.out"; set +m
+  wait_for 15 grep -q "waiting up to 1 min" "$s/rollback.out" \
+    || bad "rollback waits for the lock before the $sig" "$(cat "$s/rollback.out")"
+  kill -"$sig" -- "-$rollback_pid"
+  rollback_code=0; wait "$rollback_pid" 2>/dev/null || rollback_code=$?
+  expect_eq "a $sig while rollback waits for the lock stops it, switches nothing and holds nothing" \
+    "$([ "$rollback_code" -gt 128 ] && echo stopped) $(started) $(running_rev) $(cat "$AUTOUPDATE_DAEMON_DIR/attempt" 2>/dev/null)" "stopped 0 $C "
+done
+pkill -P "$held" 2>/dev/null || true; kill "$held" 2>/dev/null || true; wait "$held" 2>/dev/null || true
+unset STUB_SWITCH_HOLD AUTOUPDATE_REBUILD_WAIT
+expect_eq "and leaves no scratch file" "$(find "$AUTOUPDATE_DAEMON_DIR" -name 'rollback.*' | wc -l | tr -d ' ')" 0
+# The cost of a stray hold: Home Manager drifts, and the next tick must
+# apply it again.
+ln -sfn "$s/elsewhere" "$HM_GCROOT"
+at "2026-10-12 06:10"; tick
+expect_eq "so the next tick still repairs Home Manager" "$(running_rev) $(built | grep -c "$C")" "$C 2"
 
 exit "$fail"

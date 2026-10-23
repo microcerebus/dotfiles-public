@@ -4,6 +4,6 @@
   },
   "mapping": "switch_locked lockf (rebuild and rollback) -> HumanLocks (HumanRequest, HumanStart, HumanComplete)",
   "name": "mutation-rebuild-no-lock",
-  "source_new": "darwin-rebuild \"$@\"",
-  "source_old": "lockf -k -t 0 \"$switch_lock\" darwin-rebuild \"$@\""
+  "source_new": "\"$@\"",
+  "source_old": "lockf -k -t 0 \"$switch_lock\" \"$@\""
 }

@@ -45,7 +45,7 @@ A file without a `unit` or `state` header is rejected whole.
 | `pr` | A PR number, or a short word for things that are not PRs (`push`, `rebuild`, `docs`). Numbers get the ledger's newest verdict and a link to GitHub. For a `needs-myuser` unit that waits on a rebuild after its branch lands, write `rebuild`; write `push` when the owner's turn is the push. |
 | `milestone` (optional) | A milestone id. Titles come from `lane.json` `milestones`. Milestones appear in the order of their first unit in the file. |
 | `after` (optional) | Comma-separated unit ids this unit waits for. Use `lane/unit` for a unit in another lane. |
-| `since` (optional) | When the unit entered its state: `HH:MM` (today, SGT) or an ISO timestamp. In-flight units past 8 hours read "stalled". |
+| `since` (optional) | When the unit entered its state: `HH:MM` (today, SGT) or an ISO timestamp. An in-flight unit past 8 hours turns yellow and says how long: "in flight 2 d, since 21 Oct 16:31". |
 | `note` (optional) | One short line on what is happening. For `needs-myuser`, what the owner has to do. |
 
 Every row has exactly as many fields as the header.

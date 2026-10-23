@@ -22,9 +22,11 @@ One switch lock, `/var/db/dotfiles-autoupdate/switch.lock`, held through macOS's
   It then switches, so the owner's switch lands last.
   If the lock is held by something else (an auto-update still deciding, or a rebuild in another terminal), the message says that instead.
   If the lock is still held after 30 minutes, it stops with exit 75, says nothing was rebuilt, points to the log and `dotfiles-autoupdate status`, and names the `pkill` that stops a stuck auto-update switch (its activation may still be finishing); `brew upgrade` does not run.
-- `rollback` runs `sudo dotfiles-autoupdate rollback`, which runs `darwin-rebuild --rollback` (or `--switch-generation <n>`) through the same `switch_locked` code as `rebuild`, with the same wait and messages.
+- `rollback` runs `sudo dotfiles-autoupdate rollback`, which runs `darwin-rebuild --switch-generation <n>` through the same `switch_locked` code as `rebuild`, with the same wait and messages.
+  Without a number it takes the generation before the current one, read before it waits, so a daemon switch that lands meanwhile does not change where it goes.
   A rollback to a generation built from unpushed work stays, as a rebuild of it would.
-  A rollback to a pushed revision lasts until the next hourly apply, which switches forward to origin/main; `rollback` says so and points to pushing a revert.
+  A rollback from a pushed revision records that revision as a failed attempt once the switch lands, still under the lock, so the hourly apply holds off switching back to it for a day; `rollback` says until when and points to pushing a revert.
+  A rollback stopped (Ctrl-C, TERM, HUP) or failed before its switch lands records nothing.
 - Just before invoking darwin-rebuild, `apply` checks again for a darwin-rebuild process and for a running revision that differs from its sample.
   This only catches a darwin-rebuild run outside `rebuild` and `rollback` that finished before that check; the lock is what closes the race.
 
@@ -63,11 +65,12 @@ Each mutation removes one part of the fix from a scratch copy of the real source
   "apply does not wait for a rebuild's lock" and "apply skips while a rebuild holds the switch lock" hold a `rebuild` switch open and check that apply skips at once.
 - "rebuild gives up when the switch lock stays held", "and says what to do" and "a lock held by no auto-update is not blamed on it": the 30-minute limit, set to 3 seconds in the test.
 
-Case 32 holds `rollback` to the same checks: "rollback waits, without switching, while the daemon switches", "rollback lands after the daemon's switch" and "rollback gives up when the switch lock stays held".
+Case 32 holds `rollback` to the same checks: "rollback waits, without switching or holding anything, while the daemon switches", "rollback lands after the daemon's switch, on the generation before the one it left" and "rollback gives up when the switch lock stays held".
 Every case 32 check fails on cb9c321, which had no `rollback` and left only a bare `darwin-rebuild --rollback`.
-Its last checks pin what the hourly apply does after a rollback: from a pushed revision, the rollback records that revision as a failed attempt before it switches, so apply holds off switching back to it for a day; a generation built from unpushed work stays with the waiting-for-push note.
+Its last checks pin what the hourly apply does after a rollback: from a pushed revision, the rollback records that revision as a failed attempt once its switch lands, before it releases the lock, so apply holds off switching back to it for a day; a generation built from unpushed work stays with the waiting-for-push note.
 They run `rollback` as the alias does, with `SUDO_USER` set and no `AUTOUPDATE_USER`, against a sudo stub that refuses any user but the repo's owner.
-A failed rollback puts back the record that was there, and a fresh record of a failed daemon switch stays, so apply does not retry that revision at once.
+A failed rollback leaves the record that was there, and a fresh record of a failed daemon switch stays, so apply does not retry that revision at once.
+Case 33 signals a `rollback` waiting for the lock with INT, TERM and HUP, as a terminal does its foreground job's process group, and checks that it switches and records nothing, so the next tick still repairs Home Manager; on e47cc51, which recorded the hold before waiting, those checks fail.
 
 On 817f7a9 every check in case 31 fails except the race probe's own setup check, "the race probe switches the system after apply sampled it".
 The whole suite passes with the fix.

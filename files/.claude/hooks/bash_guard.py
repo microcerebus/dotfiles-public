@@ -32,8 +32,27 @@ CONTAINER_CMDS = {'docker', 'docker-compose', 'podman', 'colima', 'limactl', 'li
                   'multipass', 'vagrant'}
 HARMLESS_ARGS = {'--version', '-v', 'version', '--help', '-h', 'help'}
 APPROVAL = os.path.expanduser('~/.claude/containers-approved-until')
-# A delimiter may hold - and . (<<'END-NOTES'); it starts with a letter so $((1<<2)) is no heredoc.
-HEREDOC = re.compile(r"(?<!<)<<(?!<)-?\s*\\?(['\"]?)([A-Za-z_][^\s'\"<>;&|()]*)\1")
+# A delimiter may hold - and . (<<'END-NOTES'). A quoted or escaped one may start with
+# anything (<<'-EOF', <<\1); a bare one starts with a letter, so $((1<<2)) is no heredoc.
+# Inside (( )) a << is always a shift, also before a letter: see in_arithmetic().
+HEREDOC = re.compile(r"(?<!<)<<(?!<)-?\s*(?:(['\"])([^'\"\n]+)\1|\\([^\s'\"<>;&|()]+)|([A-Za-z_][^\s'\"<>;&|()]*))")
+QUOTED = re.compile(r"'[^']*'|\"[^\"]*\"")
+
+
+def heredoc_end(m):
+    """The delimiter a HEREDOC match waits for, stripped like the lines it is compared with.
+
+    The shell ends a heredoc only on a line equal to its delimiter (<<- drops leading tabs
+    first), and every such line strips to the stripped delimiter. So the guard ends a body at
+    the shell's own end or earlier, never later, and no command after it hides in the body
+    (<<' EOF'). Refusing spaced delimiters instead would read the body as commands."""
+    return (m.group(2) or m.group(3) or m.group(4)).strip()
+
+
+def in_arithmetic(line_before):
+    """Whether a << after this text on its line is inside (( )) or $(( )), where it shifts."""
+    code = QUOTED.sub('', line_before)
+    return code.count('((') > code.count('))')
 STILL_HOSTED = re.compile(r'(?i)\bstill (?:hosts|hosted (?:by|in)|running in)\b')  # same as write_guard.py
 HANDOFF_TARGET = re.compile(r'>\s*\S*(?:/\.resume/|\.resume/|resume[^/\s]*$|resume[^/\s]*\s|/orchestrator/)')
 
@@ -77,8 +96,9 @@ def shell_code(cmd):
             j = cmd.find('\n', i)
             i = n if j < 0 else j
             continue
-        elif c == '<' and (m := HEREDOC.match(cmd, i)):
-            pending.append(m.group(2))
+        elif c == '<' and (m := HEREDOC.match(cmd, i)) \
+                and not in_arithmetic(cmd[cmd.rfind('\n', 0, i) + 1:i]):
+            pending.append(heredoc_end(m))
             out.append(m.group(0))
             i, word_start = m.end(), True
             continue
@@ -277,12 +297,12 @@ def heredoc_bodies(cmd):
     """Yield (opening line, body) for each heredoc."""
     lines, i = cmd.split('\n'), 0
     while i < len(lines):
-        m = HEREDOC.search(lines[i])
+        m = next((m for m in HEREDOC.finditer(lines[i]) if not in_arithmetic(lines[i][:m.start()])), None)
         if not m:
             i += 1
             continue
         j = i + 1
-        while j < len(lines) and lines[j].strip() != m.group(2):
+        while j < len(lines) and lines[j].strip() != heredoc_end(m):
             j += 1
         yield lines[i], '\n'.join(lines[i + 1:j])
         i = j + 1

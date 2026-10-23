@@ -22,7 +22,7 @@ ROOT = HERE.parents[2]
 SOURCE = ROOT / "scripts/dotfiles-autoupdate"
 # The reviewed fixed source. A change to the script stops the run until the
 # source map and model are reviewed against it (README.md, "Rerunning").
-SOURCE_SHA256 = "f4cabb7fcbab3dcf87b0040864c7f55b4b1cd5436ed433ea399401a01ff879c0"
+SOURCE_SHA256 = "f5e0c0a26e5c03f8a046f12ec0b762e16430c3399030d826ab0b54dee3a5141c"
 UNFIXED_MODEL = ROOT / "docs/pstack-audit/batch-4-proof/Handoff.tla"
 # Same pin as the batch 4 runner, so both results come from one TLC.
 NIXPKGS = "7a6522c868711d06e3a520bbcdfafe9806f4337f"
@@ -43,10 +43,12 @@ ANCHORS = [
     '  pgrep -qf darwin-rebuild && return 0\n  local now_running',
     'if [ "$now_running" != "$running" ]; then',
     'darwin-rebuild switch --flake "git+file://$repo?rev=$want#$host"',
-    'lockf -k -t 0 "$switch_lock" darwin-rebuild "$@"',
-    'lockf -k -t "$rebuild_wait" "$switch_lock" darwin-rebuild "$@"',
-    'switch_locked rebuild rebuilt rebuilding switch --flake "$@"',
-    'switch_locked rollback "rolled back" "rolling back" --rollback',
+    'lockf -k -t 0 "$switch_lock" "$@"',
+    'lockf -k -t "$rebuild_wait" "$switch_lock" "$@"',
+    'switch_locked rebuild rebuilt rebuilding darwin-rebuild switch --flake "$@"',
+    '"$BASH" "$0" rollback-locked "$result" darwin-rebuild --switch-generation "$gen"',
+    '  "$@" || return\n  running=$(system_revision)',
+    'echo "$record" >"$daemon_dir/attempt" && echo "$record" >"$result"',
 ]
 
 # Each pair removes one part of the fix from a scratch copy of the source and
@@ -54,8 +56,8 @@ ANCHORS = [
 MUTATIONS = [
     {
         "name": "mutation-rebuild-no-lock",
-        "source_old": 'lockf -k -t 0 "$switch_lock" darwin-rebuild "$@"',
-        "source_new": 'darwin-rebuild "$@"',
+        "source_old": 'lockf -k -t 0 "$switch_lock" "$@"',
+        "source_new": '"$@"',
         "constants": {"HumanLocks": "FALSE"},
         "mapping": "switch_locked lockf (rebuild and rollback) -> HumanLocks (HumanRequest, HumanStart, HumanComplete)",
     },

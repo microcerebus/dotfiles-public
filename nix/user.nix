@@ -221,8 +221,10 @@ in
       # brew upgrade runs after the switch so one broken cask cannot block it
       # (see homebrew.onActivation in nix/host.nix).
       rebuild = "sudo ${autoupdate} rebuild ${dotfiles} && brew upgrade";
-      # darwin-rebuild --rollback under the same switch lock as rebuild;
-      # `rollback <n>` switches to generation n.
+      # Switches back to the previous generation (`rollback <n>`: to generation
+      # n) under the same switch lock as rebuild, waiting for an auto-update
+      # switch to finish first. Rolling back from a pushed revision holds it off
+      # the hourly apply for a day.
       # It runs the old generation's brew bundle with --zap, so casks added since
       # then are zapped (prefs and data deleted).
       rollback = "sudo ${autoupdate} rollback";
