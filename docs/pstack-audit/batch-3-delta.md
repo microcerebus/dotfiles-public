@@ -83,4 +83,4 @@ The upstream comparison remains frozen and the audit retains all 200 original in
 The TypeScript project refresh, formal-verification adoption, schedules and external-source blockers remain outside this batch.
 No changes to OPINIONS or VOICE are proposed as a prerequisite for these ports.
 Fresh invocation evidence and final checks are recorded separately in `batch-3-route-proof.md` and `checks.md`.
-Push approval and normal activation remain separate from these local commits.
+Push approval and normal activation were separate from these local commits; both are now done, as the [current rollout status](audit.md#rollout-status) records.

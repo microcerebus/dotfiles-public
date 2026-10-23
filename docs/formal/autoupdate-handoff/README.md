@@ -83,7 +83,7 @@ A darwin-rebuild run outside `rebuild` and `rollback` (including `setup/mac.sh`'
 Claude agents cannot start one: `files/.claude/hooks/bash_guard.py` refuses a bare darwin-rebuild switch, activation or rollback and names the locked commands.
 The lock relies on `lockf` and BSD `flock` semantics, which the tests exercise with real processes; activation, Nix and launchd behaviour remain assumptions.
 Nothing here ran a real darwin-rebuild, sudo, launchctl or activation.
-The fix goes live only after a push and the owner's `rebuild`; until the new alias is in his shell, `rebuild` still runs darwin-rebuild directly.
+The auto-updater applied the fix on 23 October (running system at 73de16f); a shell started earlier keeps the old alias until restarted.
 
 ## Rerunning
 

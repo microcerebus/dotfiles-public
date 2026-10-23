@@ -241,9 +241,9 @@
       "group": "pstack skill",
       "item": "create-formal-verification-skill",
       "status": "adapted",
-      "evidence": "nix/user.nix; create-formal-verification-skill/SKILL.md; docs/pstack-audit/batch-4-delta.md; docs/pstack-audit/batch-4-proof/README.md; docs/pstack-audit/batch-4-route-proof.md",
-      "reason": "Batch 4 adapts the generator with pinned tooling, a narrow route and no-verifier outcome. The bounded updater model finds a source-supported rollback race; two other invariants pass. Local only; no subject-code fix.",
-      "codex": "Fresh Astra proof and no-verifier route executed. Pushed; activation remains, and the discovered defect needs a separate unit."
+      "evidence": "nix/user.nix; create-formal-verification-skill/SKILL.md; docs/pstack-audit/batch-4-delta.md; docs/pstack-audit/batch-4-proof/README.md; docs/pstack-audit/batch-4-route-proof.md; docs/formal/autoupdate-handoff/README.md",
+      "reason": "Batch 4 adapts the generator with pinned tooling, a narrow route and no-verifier outcome. The bounded updater model found a source-supported rollback race; two other invariants pass. The race is fixed on main by the shared switch lock (1929b36, with the rebuild alias moved onto it in 927cab4), with its own proof in docs/formal/autoupdate-handoff.",
+      "codex": "Fresh Astra proof and no-verifier route executed. Pushed and linked live; the rollback race is fixed on main."
     },
     {
       "group": "pstack skill",
@@ -274,7 +274,7 @@
       "item": "in-your-own-words",
       "status": "adapted",
       "evidence": "nix/user.nix skill declarations; files/.claude/skills/in-your-own-words/SKILL.md",
-      "reason": "Explicit-only leaf; batch 2 added the approved goal-restatement route through poteto-mode and is pushed at 2e8783a. Rebuild confirmation remains outstanding.",
+      "reason": "Explicit-only leaf; batch 2 added the approved goal-restatement route through poteto-mode and is pushed at 2e8783a. The auto-updater has applied it; the running system was at 73de16f on 23 October.",
       "codex": "Not pending."
     },
     {
@@ -298,8 +298,8 @@
       "item": "maintain-formal-verification-skill",
       "status": "adapted",
       "evidence": "nix/user.nix; maintain-formal-verification-skill/SKILL.md; .agents/skills/verify-autoupdate-handoff/SKILL.md; docs/pstack-audit/batch-5-delta.md",
-      "reason": "Batch 5 adapts the prompt-only maintenance loop. It runs only the project runner pinned in batch 4 and Git from the locked Home Manager profile. The handoff verify skill now names its covered code and a drift command; a scratch updater edit reports the proof stale and the unchanged tree stays quiet. Local only.",
-      "codex": "Fresh-context drift exercise executed on Claude during the Codex usage limit. Push approval and activation remain; no Codex invocation proof yet."
+      "reason": "Batch 5 adapts the prompt-only maintenance loop. It runs only the project runner pinned in batch 4 and Git from the locked Home Manager profile. The handoff verify skill now names its covered code and a drift command; a scratch updater edit reports the proof stale and the unchanged tree stays quiet. The first real maintenance pass moved the drift check onto the fixed script (sync commit 73de16f).",
+      "codex": "Fresh-context drift exercise executed on Claude during the Codex usage limit. Batch 5 landed on main as 8285287 through 50b6c15 (the skill, its record and two review fixes) and is linked live; no Codex invocation proof yet."
     },
     {
       "group": "pstack skill",
@@ -338,7 +338,7 @@
       "item": "poteto-mode",
       "status": "adapted",
       "evidence": "nix/user.nix skill declarations; files/.claude/skills/poteto-mode/SKILL.md",
-      "reason": "Local router has 13 adapted playbooks plus three batch 2 routes. Batches 1 and 2 are pushed and independently verified through 2e8783a; their shared rebuild is requested but not confirmed.",
+      "reason": "Local router has 13 adapted playbooks plus three batch 2 routes. Batches 1 and 2 are pushed and independently verified through 2e8783a. The auto-updater has applied them; the running system was at 73de16f on 23 October.",
       "codex": "Not pending."
     },
     {
@@ -946,40 +946,40 @@
       "item": "Codex skill discovery",
       "status": "pending",
       "evidence": "nix/user.nix; docs/pstack-audit/codex-discovery-proof.md; docs/pstack-audit/batch-2-route-proof.md",
-      "reason": "Batch 1 declares 27 canonical aliases and invocation policies; batch 2 adds grilling for 28 aliases. Both are pushed and independently verified through 2e8783a. Fresh scratch discovery and invocation pass; the shared rebuild is requested but not confirmed.",
-      "codex": "Availability and policy blockers are resolved and push is complete; activation and broader workflow execution remain unverified."
+      "reason": "Batch 1 declares 27 canonical aliases and invocation policies; batch 2 adds grilling for 28 aliases. Both are pushed and independently verified through 2e8783a. Fresh scratch discovery and invocation pass. The auto-updater has applied them; the running system was at 73de16f on 23 October.",
+      "codex": "Availability and policy blockers are resolved, push is complete and the auto-updater has applied it; broader workflow execution remains unverified."
     },
     {
       "group": "pstack support",
       "item": "Codex role migration for installed skills",
       "status": "pending",
       "evidence": "poteto-mode/SKILL.md; how/SKILL.md; why/SKILL.md; reflect/SKILL.md; arena/references/model-families.md; docs/pstack-audit/codex-discovery-proof.md",
-      "reason": "The shared adapter and installed role instructions now use Codex; all eight policy decisions are resolved. Batch 1 is pushed unchanged; activation remains.",
-      "codex": "Availability and policy blockers are resolved and push is complete; activation and broader workflow execution remain unverified."
+      "reason": "The shared adapter and installed role instructions now use Codex; all eight policy decisions are resolved. Batch 1 is pushed unchanged. The auto-updater has applied it; the running system was at 73de16f on 23 October.",
+      "codex": "Availability and policy blockers are resolved, push is complete and the auto-updater has applied it; broader workflow execution remains unverified."
     },
     {
       "group": "pstack operation",
       "item": "ketchup automatic route",
-      "status": "pending",
+      "status": "adapted",
       "evidence": "poteto-mode/SKILL.md and references/; docs/pstack-audit/batch-2-route-proof.md",
-      "reason": "Approved route with fresh Codex invocation proof, pushed and independently verified in batch 2 at 2e8783a. One rebuild for batches 1 and 2 is requested but not confirmed.",
-      "codex": "Routing and invocation are proven and push is complete; activation confirmation remains."
+      "reason": "Approved route with fresh Codex invocation proof, pushed and independently verified in batch 2 at 2e8783a. The auto-updater has applied it; the running system was at 73de16f on 23 October.",
+      "codex": "Routing and invocation are proven on Codex, pushed and linked live by the auto-updater."
     },
     {
       "group": "pstack operation",
       "item": "in-your-own-words automatic route",
-      "status": "pending",
+      "status": "adapted",
       "evidence": "poteto-mode/SKILL.md and references/; docs/pstack-audit/batch-2-route-proof.md",
-      "reason": "Approved route with fresh Codex invocation proof, pushed and independently verified in batch 2 at 2e8783a. One rebuild for batches 1 and 2 is requested but not confirmed.",
-      "codex": "Routing and invocation are proven and push is complete; activation confirmation remains."
+      "reason": "Approved route with fresh Codex invocation proof, pushed and independently verified in batch 2 at 2e8783a. The auto-updater has applied it; the running system was at 73de16f on 23 October.",
+      "codex": "Routing and invocation are proven on Codex, pushed and linked live by the auto-updater."
     },
     {
       "group": "pstack operation",
       "item": "grilling automatic route",
-      "status": "pending",
+      "status": "adapted",
       "evidence": "poteto-mode/SKILL.md and references/; docs/pstack-audit/batch-2-route-proof.md",
-      "reason": "Approved route with fresh Codex invocation proof, pushed and independently verified in batch 2 at 2e8783a. One rebuild for batches 1 and 2 is requested but not confirmed.",
-      "codex": "Routing and invocation are proven and push is complete; activation confirmation remains."
+      "reason": "Approved route with fresh Codex invocation proof, pushed and independently verified in batch 2 at 2e8783a. The auto-updater has applied it; the running system was at 73de16f on 23 October.",
+      "codex": "Routing and invocation are proven on Codex, pushed and linked live by the auto-updater."
     },
     {
       "group": "pstack operation",
@@ -1130,7 +1130,7 @@
       "item": "grilling",
       "status": "adopted",
       "evidence": "files/.claude/skills/grilling/SKILL.md; nix/user.nix",
-      "reason": "Explicit-only leaf; batch 2 added its Codex alias and approved questioning route through poteto-mode. It is pushed at 2e8783a; rebuild confirmation remains outstanding.",
+      "reason": "Explicit-only leaf; batch 2 added its Codex alias and approved questioning route through poteto-mode. It is pushed at 2e8783a. The auto-updater has applied it; the running system was at 73de16f on 23 October.",
       "codex": "Not pending."
     },
     {
@@ -1370,8 +1370,8 @@
       "item": "Agent-agnostic workflows",
       "status": "pending",
       "evidence": "docs/workflow-north-star.md; arena/references/model-families.md; docs/pstack-audit/codex-discovery-proof.md",
-      "reason": "The adapter supports native, T3 and CLI delegation, with fresh Codex discovery and explanation proof. Batch 1 is pushed unchanged; activation and broader playbook execution remain.",
-      "codex": "Availability and policy blockers are resolved and push is complete; activation and broader workflow execution remain unverified."
+      "reason": "The adapter supports native, T3 and CLI delegation, with fresh Codex discovery and explanation proof. Batch 1 is pushed unchanged. The auto-updater has applied it; the running system was at 73de16f on 23 October. Broader playbook execution remains.",
+      "codex": "Availability and policy blockers are resolved, push is complete and the auto-updater has applied it; broader workflow execution remains unverified."
     },
     {
       "group": "Other audited source",
@@ -1618,16 +1618,16 @@
       "item": "correct",
       "status": "adapted",
       "evidence": "docs/pstack-audit/batch-3-delta.md; frozen upstream comparison 1e5c90a4...88d47514",
-      "reason": "Ported the broken-behavior and internal-refactor test-quality rule; kept its automatic correction trigger and enforcement-table workflow. Pushed in batch 3; activation confirmation remains outstanding.",
-      "codex": "Source review complete; local preparation does not claim rollout."
+      "reason": "Ported the broken-behavior and internal-refactor test-quality rule; kept its automatic correction trigger and enforcement-table workflow. Pushed in batch 3 and applied by the auto-updater; the running system was at 73de16f on 23 October.",
+      "codex": "Not pending."
     },
     {
       "group": "Upstream delta",
       "item": "ketchup",
       "status": "adapted",
       "evidence": "docs/pstack-audit/batch-3-delta.md; frozen upstream comparison 1e5c90a4...88d47514; docs/pstack-audit/batch-3-route-proof.md",
-      "reason": "Ported complete decision lists with evidence and risk, no total word cap, and explanatory visuals; kept Needs the owner first and authorization deduplication. Pushed in batch 3; activation confirmation remains outstanding.",
-      "codex": "Source review complete; local preparation does not claim rollout."
+      "reason": "Ported complete decision lists with evidence and risk, no total word cap, and explanatory visuals; kept Needs the owner first and authorization deduplication. Pushed in batch 3 and applied by the auto-updater; the running system was at 73de16f on 23 October.",
+      "codex": "Not pending."
     },
     {
       "group": "Upstream delta",
@@ -1642,8 +1642,8 @@
       "item": "interrogate",
       "status": "adapted",
       "evidence": "docs/pstack-audit/batch-3-delta.md; frozen upstream comparison 1e5c90a4...88d47514",
-      "reason": "Ported the lead-judgment trim, removing the five-finding cutoff; kept Codex reviewers and four verdict buckets. Pushed in batch 3; activation confirmation remains outstanding.",
-      "codex": "Source review complete; local preparation does not claim rollout."
+      "reason": "Ported the lead-judgment trim, removing the five-finding cutoff; kept Codex reviewers and four verdict buckets. Pushed in batch 3 and applied by the auto-updater; the running system was at 73de16f on 23 October.",
+      "codex": "Not pending."
     },
     {
       "group": "Upstream delta",
@@ -1674,16 +1674,16 @@
       "item": "sharpen",
       "status": "adapted",
       "evidence": "docs/pstack-audit/batch-3-delta.md; frozen upstream comparison 1e5c90a4...88d47514; docs/pstack-audit/batch-3-route-proof.md",
-      "reason": "Ported prompt rewriting without task execution, with primary material, concrete methods and an independent check; remains explicit-only. Pushed in batch 3; activation confirmation remains outstanding.",
-      "codex": "Source review complete; local preparation does not claim rollout."
+      "reason": "Ported prompt rewriting without task execution, with primary material, concrete methods and an independent check; remains explicit-only. Pushed in batch 3 and applied by the auto-updater; the running system was at 73de16f on 23 October.",
+      "codex": "Not pending."
     },
     {
       "group": "Upstream delta",
       "item": "swarm",
       "status": "adapted",
       "evidence": "docs/pstack-audit/batch-3-delta.md; frozen upstream comparison 1e5c90a4...88d47514",
-      "reason": "Removed duplicated report guidance; retained worktree ownership, explicit worker count, lane concurrency and Codex roles. Pushed in batch 3; activation confirmation remains outstanding.",
-      "codex": "Source review complete; local preparation does not claim rollout."
+      "reason": "Removed duplicated report guidance; retained worktree ownership, explicit worker count, lane concurrency and Codex roles. Pushed in batch 3 and applied by the auto-updater; the running system was at 73de16f on 23 October.",
+      "codex": "Not pending."
     },
     {
       "group": "Upstream delta",
@@ -1698,24 +1698,24 @@
       "item": "principle-attack-the-premise",
       "status": "adapted",
       "evidence": "docs/pstack-audit/batch-3-delta.md; frozen upstream comparison 1e5c90a4...88d47514",
-      "reason": "Ported the direct, rerunnable premise check into the bug-fix playbook; no mandatory imbalance census. Pushed in batch 3; activation confirmation remains outstanding.",
-      "codex": "Source review complete; local preparation does not claim rollout."
+      "reason": "Ported the direct, rerunnable premise check into the bug-fix playbook; no mandatory imbalance census. Pushed in batch 3 and applied by the auto-updater; the running system was at 73de16f on 23 October.",
+      "codex": "Not pending."
     },
     {
       "group": "Upstream delta",
       "item": "principle-fix-root-causes",
       "status": "adapted",
       "evidence": "docs/pstack-audit/batch-3-delta.md; frozen upstream comparison 1e5c90a4...88d47514",
-      "reason": "Ported the first-incorrect-transition and legitimate-state guard distinction into the bug-fix playbook. Pushed in batch 3; activation confirmation remains outstanding.",
-      "codex": "Source review complete; local preparation does not claim rollout."
+      "reason": "Ported the first-incorrect-transition and legitimate-state guard distinction into the bug-fix playbook. Pushed in batch 3 and applied by the auto-updater; the running system was at 73de16f on 23 October.",
+      "codex": "Not pending."
     },
     {
       "group": "Upstream delta",
       "item": "principle-make-operations-idempotent",
       "status": "adapted",
       "evidence": "docs/pstack-audit/batch-3-delta.md; frozen upstream comparison 1e5c90a4...88d47514",
-      "reason": "Ported current-state convergence and recognizable interruption leftovers into the autonomous-run playbook. Pushed in batch 3; activation confirmation remains outstanding.",
-      "codex": "Source review complete; local preparation does not claim rollout."
+      "reason": "Ported current-state convergence and recognizable interruption leftovers into the autonomous-run playbook. Pushed in batch 3 and applied by the auto-updater; the running system was at 73de16f on 23 October.",
+      "codex": "Not pending."
     },
     {
       "group": "Upstream delta",
@@ -1730,8 +1730,8 @@
       "item": "principle-test-behavior-not-implementation",
       "status": "adapted",
       "evidence": "docs/pstack-audit/batch-3-delta.md; frozen upstream comparison 1e5c90a4...88d47514",
-      "reason": "Ported observable-contract guidance into TDD, including external effects, meaningful absence and invariants; held OPINIONS stays unchanged. Pushed in batch 3; activation confirmation remains outstanding.",
-      "codex": "Source review complete; local preparation does not claim rollout."
+      "reason": "Ported observable-contract guidance into TDD, including external effects, meaningful absence and invariants; held OPINIONS stays unchanged. Pushed in batch 3 and applied by the auto-updater; the running system was at 73de16f on 23 October.",
+      "codex": "Not pending."
     },
     {
       "group": "Upstream delta",
@@ -1778,8 +1778,8 @@
       "item": "Cross-family audit operation",
       "status": "pending",
       "evidence": "arena/references/model-families.md; show-me-your-work/SKILL.md; docs/pstack-audit/codex-discovery-proof.md",
-      "reason": "Fresh Codex contexts are approved as the default, with explicit or capability/quota exceptions for Claude. Batch 1 routing is pushed unchanged; activation and a complete arena/audit run remain.",
-      "codex": "Availability and policy blockers are resolved and push is complete; activation and broader workflow execution remain unverified."
+      "reason": "Fresh Codex contexts are approved as the default, with explicit or capability/quota exceptions for Claude. Batch 1 routing is pushed unchanged. The auto-updater has applied it; the running system was at 73de16f on 23 October. A complete arena/audit run remains.",
+      "codex": "Availability and policy blockers are resolved, push is complete and the auto-updater has applied it; broader workflow execution remains unverified."
     }
   ],
   "project_typescript_pin": "23e4138daa01c42d4969f7a5465f82704e64f798",
@@ -1810,11 +1810,11 @@
     "Job-tracker coordinator 36 owns all seven order 71 rows and the later TypeScript refresh.",
     "Levers 5, 2 and 7 stay held until 22 October at 16:00 SGT and are outside this unit.",
     "the owner finalized the exact OPINIONS paragraph in `preference-wording-draft.md`; it is applied locally, with VOICE unchanged.",
-    "[Current rollout status](audit.md#rollout-status) records the confirmed pushes and outstanding rebuild confirmation.",
+    "[Current rollout status](audit.md#rollout-status) records the confirmed pushes and the applied rollout.",
     "Batch 2 closes the package comparison by retaining the local set and confirms built-in plugin enablement.",
     "Wheelhouse and Guide Part 3 remain pending on the named external evidence blockers below.",
     "Batch 3 closes all 16 assigned source reviews: 9 ported, 4 kept local and 3 skipped.",
-    "Its ports are pushed; activation confirmation remains outstanding; see batch-3-delta.md and batch-3-route-proof.md.",
+    "Its ports are pushed and applied; see batch-3-delta.md and batch-3-route-proof.md.",
     "Batch 4 adapts the formal generator and records a bounded updater counterexample; batch 5 adapts its maintenance loop locally.",
     "The subject-code fix is separate.",
     "The table is generated from audit.json by render.py."
@@ -1823,13 +1823,13 @@
     {
       "entry": "pstack skill: create-formal-verification-skill",
       "lane": "dotfiles",
-      "blocked_by": "activation",
-      "order": "4. Adopt-adapted locally. Project counterexample and no-verifier case recorded; see batch-4-delta.md. The updater fix is separate."
+      "blocked_by": "none",
+      "order": "4. Adopt-adapted locally. Project counterexample and no-verifier case recorded; see batch-4-delta.md. The updater race is fixed on main; see docs/formal/autoupdate-handoff/README.md."
     },
     {
       "entry": "pstack skill: maintain-formal-verification-skill",
       "lane": "dotfiles",
-      "blocked_by": "push approval and activation",
+      "blocked_by": "none",
       "order": "5. Adopt-adapted locally with a drift check exercised on the batch 4 proof; see batch-5-delta.md."
     },
     {
@@ -1853,19 +1853,19 @@
     {
       "entry": "pstack operation: ketchup automatic route",
       "lane": "dotfiles",
-      "blocked_by": "activation confirmation",
+      "blocked_by": "none",
       "order": "2. Pushed and independently verified at 2e8783a with a fresh Codex catch-up trigger; see batch-2-route-proof.md."
     },
     {
       "entry": "pstack operation: in-your-own-words automatic route",
       "lane": "dotfiles",
-      "blocked_by": "activation confirmation",
+      "blocked_by": "none",
       "order": "2. Pushed and independently verified at 2e8783a with a fresh Codex goal-restatement trigger; see batch-2-route-proof.md."
     },
     {
       "entry": "pstack operation: grilling automatic route",
       "lane": "dotfiles",
-      "blocked_by": "activation confirmation",
+      "blocked_by": "none",
       "order": "2. Pushed and independently verified at 2e8783a with a fresh Codex questioning trigger and explicit-only alias; see batch-2-route-proof.md."
     },
     {
@@ -2041,7 +2041,7 @@
       "order": "1. Migrate routing and prove discovery and fresh-context execution locally."
     }
   ],
-  "rollout_status": "Batches 1-4 are approved and pushed through 817f7a9. Rebuild confirmation remains outstanding. Batch 5 is local and unpushed; it changes no live skill links or system configuration.",
+  "rollout_status": "Batches 1-4 are approved and pushed through 817f7a9. Batch 5 landed on main as 8285287 through 50b6c15 (the skill, its record and two review fixes), and its maintenance skill is linked live; it changes no system configuration. The auto-updater has applied them; the running system was at 73de16f on 23 October.",
   "batch_4_outcomes": {
     "create-formal-verification-skill": "adopt-adapted"
   },

@@ -74,7 +74,7 @@ The approved batch 2 routes map catch-up requests to ketchup, requests to restat
 They precede the general review and explanation routes; ordinary plan reviews still use review.
 The leaf skills stay explicit-only in both harnesses, with Codex aliases and invocation metadata; poteto-mode reads them through its three local playbooks.
 Batch 2 was approved, pushed and independently verified at 2e8783a, and the main checkout was fast-forwarded there.
-One rebuild covering batches 1 and 2 has been requested but not confirmed.
+The auto-updater has applied batches 1 and 2; the running system was at 73de16f on 23 October.
 The batch 3 ketchup refresh lists every waiting decision with evidence and risk, without a total reply word cap.
 `/sharpen` returns an improved prompt with primary sources, concrete methods and an independent check; it does not execute the embedded task.
 Sharpen remains explicit-only.

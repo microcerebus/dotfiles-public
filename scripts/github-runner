@@ -44,56 +44,128 @@ cmd="$1"
 # shellcheck source=/dev/null
 . "$2"
 
+# unlock <path>: undo what keeps the runner user from deleting its own files
+# in and under <path>. Jobs leave read-only trees (Go, Nix), and a job can
+# lock what it leaves on purpose: the user flags uchg and uappnd (it cannot
+# set system flags), a deny ACL, a directory closed to its owner. Neither
+# this nor find -P follows a symlink: a link's own flags and ACL go, never
+# its target's. Top down: find cannot start in a directory it may not read,
+# so <path> itself is done first, by unlock_top. One node at a time where
+# order or length demands it: a directory find could not read or enter
+# (closed to its owner, or under an ACL that may deny that) is opened as
+# find reaches it, before it descends, and a path of 1000 bytes or more
+# (PATH_MAX is 1024) goes by its name relative to its directory
+# (-execdir). The rest is batched (-exec +; macOS's find runs -execdir +
+# once per directory it enters, so once per node in a tree of directories).
+# No name reaches chflags or chmod as an option: macOS's find -execdir
+# passes a bare name, so each goes as ./{}, and the batches get <path>'s
+# absolute paths. A -- goes before the flags or mode, where BSD chflags and
+# chmod stop reading options; after it they take -- for a file, and
+# chmod -N takes no -- at all.
+# Every find in the wipe runs with LC_ALL=C. The runner's plist sets
+# LANG=en_US.UTF-8, where each ? matches a character, not a byte, so a path
+# under multibyte names would pass PATH_MAX before it matched $long.
+# Errors are left to the caller, which checks what stays.
+unlock_top() {
+  if [ -L "$1" ]; then
+    /usr/bin/chflags -h nouchg,nouappnd "$1"
+    /bin/chmod -h -N "$1"
+  elif [ -e "$1" ]; then
+    /usr/bin/chflags nouchg,nouappnd "$1"
+    /bin/chmod -N "$1"
+    if [ -d "$1" ]; then /bin/chmod u+rwx "$1"; fi
+  fi 2>/dev/null || true
+}
+unlock() {
+  local long
+  long="$(printf '%1000s' '' | /usr/bin/tr ' ' '?')*"
+  unlock_top "$1"
+  LC_ALL=C /usr/bin/find -P "$1" -mindepth 1 \
+    \( \( -type d \( ! -perm -0500 -o -acl \) -o -path "$long" \) \
+      \( -flags +uchg,uappnd -execdir /usr/bin/chflags -h -- nouchg,nouappnd ./{} \; -o -true \) \
+      \( -acl -type l -execdir /bin/chmod -h -N ./{} \; -o -true \) \
+      \( -acl ! -type l -execdir /bin/chmod -N ./{} \; -o -true \) \
+      \( -type d ! -perm -0700 -execdir /bin/chmod -h -- u+rwx ./{} \; -o -true \) \) \
+    -o \( -type d \( -flags +uchg,uappnd -o ! -perm -0700 \) \
+      -exec /bin/sh -c '/usr/bin/chflags -h -- nouchg,nouappnd "$@"; /bin/chmod -h -- u+rwx "$@"' sh {} + \) \
+    -o \( -type l \( -flags +uchg,uappnd -o -acl \) \
+      -exec /bin/sh -c '/usr/bin/chflags -h -- nouchg,nouappnd "$@"; /bin/chmod -h -N "$@"' sh {} + \) \
+    -o \( ! -type d ! -type l \( -flags +uchg,uappnd -o -acl \) \
+      -exec /bin/sh -c '/usr/bin/chflags -h -- nouchg,nouappnd "$@"; /bin/chmod -N "$@"' sh {} + \) \
+    2>/dev/null || true
+}
+
+# What macOS's containermanagerd puts in the runner's home and the runner
+# user may not change, relative to the home. The wipe leaves these and the
+# directories on the way to them, and nothing else, in any job dir.
+home_keeps=(Library/ContainerManager Library/Caches/com.apple.containermanagerd)
+
 # empty <dir> [keep...]: delete everything inside <dir> except the named
-# top-level entries. Jobs leave read-only trees (Go, Nix), so make directories
-# writable first; BSD chmod -R never follows symlinks out of <dir>. What the
-# runner user may not change ("Operation not permitted") stays and is listed:
-# macOS's containermanagerd puts such directories in its home
-# (Library/ContainerManager, Library/Caches/com.apple.containermanagerd).
-# Anything else that stays is an error.
+# top-level entries, after unlocking all of <dir>, then set <dir> back to
+# 0700. What stays is listed, not guessed from rm's errors: in the home,
+# home_keeps and the directories on the way to them may stay, as real
+# directories. Anything else that stays, at any depth, fails the wipe.
 empty() {
-  local dir="$1" entry keep line path p covered errors
+  local dir="$1" keep path ok
   shift
   [ -d "$dir" ] || return 0
-  local args=() denied=() kept=() left=()
-  for keep in "$@"; do args+=(! -name "$keep"); done
-  while IFS= read -r -d '' entry; do
-    errors="$({
-      if [ -d "$entry" ] && [ ! -L "$entry" ]; then /bin/chmod -R u+rwX "$entry" || true; fi
-      /bin/rm -rf "$entry" || true
-    } 2>&1)"
-    while IFS= read -r line; do
-      case "$line" in
-        *": Operation not permitted")
-          path="${line#*: }"
-          denied+=("${path%: Operation not permitted}")
-          ;;
-      esac
-    done <<<"$errors"
-  done < <(/usr/bin/find "$dir" -mindepth 1 -maxdepth 1 ${args[@]+"${args[@]}"} -print0)
-  # Report each protected tree once, by its top.
-  for path in ${denied[@]+"${denied[@]}"}; do
-    covered=0
-    for p in ${denied[@]+"${denied[@]}"} ${kept[@]+"${kept[@]}"}; do
-      case "$path" in "$p"/*) covered=1 ;; esac
+  # find never enters the top-level keeps or home_keeps; it lists the latter.
+  local internal=(-false) may_stay=(-false) allowed=() kept=() left=() found=' '
+  for keep in "$@"; do internal+=(-o -path "./$keep"); done
+  if [ "$dir" = "$home" ]; then
+    for keep in "${home_keeps[@]}"; do
+      may_stay+=(-o -path "./$keep")
+      path="./$keep"
+      while allowed+=("$path") && path="${path%/*}" && [ "$path" != . ]; do :; done
     done
-    for p in ${kept[@]+"${kept[@]}"}; do [ "$path" = "$p" ] && covered=1; done
-    [ "$covered" = 1 ] || kept+=("$path")
-  done
-  # What stays must be a protected tree or a directory on the way to one.
-  while IFS= read -r -d '' path; do
-    covered=0
-    for p in ${kept[@]+"${kept[@]}"}; do
-      case "$p" in "$path" | "$path"/*) covered=1 ;; esac
-      case "$path" in "$p"/*) covered=1 ;; esac
-    done
-    [ "$covered" = 1 ] || left+=("$path")
-  done < <(/usr/bin/find "$dir" -mindepth 1 -maxdepth 1 ${args[@]+"${args[@]}"} -print0)
-  if [ "${#kept[@]}" != 0 ]; then echo "kept what the runner user may not change: ${kept[*]}"; fi
-  if [ "${#left[@]}" != 0 ]; then
-    echo "could not wipe: ${left[*]}" >&2
+  fi
+  unlock "$dir"
+  if [ ! -r "$dir" ] || [ ! -w "$dir" ] || [ ! -x "$dir" ]; then
+    echo "could not wipe: $dir" >&2
     return 1
   fi
+  while IFS= read -r -d '' path; do
+    /bin/rm -rf "${dir:?}/$path" 2>/dev/null || true
+  done < <(cd "$dir" && LC_ALL=C /usr/bin/find . -mindepth 1 -maxdepth 1 ! \( "${internal[@]}" \) -print0)
+  while IFS= read -r -d '' path; do
+    case "$path" in
+      ./*)
+        ok=0
+        for keep in ${allowed[@]+"${allowed[@]}"}; do [ "$path" != "$keep" ] || ok=1; done
+        if [ "$ok" = 1 ] && [ -d "$dir/$path" ] && [ ! -L "$dir/$path" ]; then
+          found+="$path "
+        else
+          left+=("$dir/${path#./}")
+        fi
+        ;;
+      *) left+=("$dir, which find could not list in full") ;;
+    esac
+  done < <(cd "$dir" && LC_ALL=C /usr/bin/find . -mindepth 1 \( "${internal[@]}" \) -prune -o \( "${may_stay[@]}" \) -prune -print0 -o -print0 \
+    || printf '%s\0' '?')
+  for keep in "${home_keeps[@]}"; do
+    case "$found" in *" ./$keep "*) kept+=("$dir/$keep") ;; esac
+  done
+  if [ "${#kept[@]}" != 0 ]; then echo "kept what the runner user may not change: ${kept[*]}"; fi
+  if [ "${#left[@]}" != 0 ]; then
+    # A job names what it leaves: none of its newlines reach the log.
+    for path in "${left[@]:0:20}"; do echo "could not wipe: ${path//[$'\n\r']/?}" >&2; done
+    if [ "${#left[@]}" -gt 20 ]; then echo "could not wipe: ${#left[@]} entries in all" >&2; fi
+    return 1
+  fi
+  /bin/chmod 0700 "$dir"
+}
+
+# wipe_jobs [keep...]: empty the home, the temp dir and the work dir (all
+# but its top-level <keep> entries), then exit if any of them failed. All
+# three are tried: a leftover that pins the home must not also hand the
+# next job this job's temp files and work dir, where the runner would trust
+# an _actions .completed marker.
+wipe_jobs() {
+  local failed=0
+  empty "$home" || failed=1
+  empty "$tmp" || failed=1
+  empty "$work" "$@" || failed=1
+  if [ "$failed" = 1 ]; then exit 1; fi
 }
 
 # listeners: "address port" for every TCP listener of another user on this
@@ -244,20 +316,33 @@ register_queued() {
 # @actions/tool-cache expects) into the job's tool cache at $tool, so
 # setup-node finds it without the network. A copy, not a link: jobs write
 # beside the tools (corepack enable puts pnpm next to node), and the store
-# copy must stay as it is. Whatever is already there goes first, flags and
-# all: a previous job could have changed it and locked it (chflags uchg) to
-# outlive the wipe. If it cannot go, the job is refused, as check refuses
-# one. The marker goes in last, so a copy cut short is a cache miss, never a
-# broken hit. A tool that fails to copy only warns: setup-node then
-# downloads it, as it did before.
+# copy must stay as it is. Whatever is already there goes first, locks and
+# all: a previous job could have changed it and locked it to outlive the
+# wipe, so unlock lifts the locks first. A link or file on the way to it
+# goes too, so the copy never lands outside the tree. If any of it cannot
+# go, the job is refused, as check refuses one. The marker goes in last, so
+# a copy cut short is a cache miss, never a broken hit. A tool that fails to
+# copy only warns: setup-node then downloads it, as it did before.
 seed_tools() {
-  local marker rel dest
+  local marker rel dest p rest
+  unlock_top "${work:?}"
+  unlock "${tool:?}"
   for marker in "$seed"/*/*/*.complete; do
     [ -e "$marker" ] || continue
     rel="${marker#"$seed/"}"
     rel="${rel%.complete}"
-    dest="${tool:?}/$rel"
-    /usr/bin/chflags -R -P nouchg,nouappnd "$dest" "$dest.complete" 2>/dev/null || true
+    dest="$tool/$rel"
+    p="$tool" rest="${rel%/*}"
+    while :; do
+      if [ -L "$p" ] || { [ -e "$p" ] && [ ! -d "$p" ]; }; then /bin/rm -f "$p" 2>/dev/null || true; fi
+      if [ -L "$p" ] || { [ -e "$p" ] && [ ! -d "$p" ]; }; then
+        echo "isolation FAILED: cannot delete $p, which an earlier job left; refusing to run jobs" >&2
+        exit 1
+      fi
+      [ -n "$rest" ] || break
+      p="$p/${rest%%/*}"
+      case "$rest" in */*) rest="${rest#*/}" ;; *) rest='' ;; esac
+    done
     /bin/rm -rf "$dest.complete" "$dest" 2>/dev/null || true
     if [ -e "$dest" ] || [ -L "$dest" ] || [ -e "$dest.complete" ] || [ -L "$dest.complete" ]; then
       echo "isolation FAILED: cannot delete $dest, which an earlier job left; refusing to run jobs" >&2
@@ -381,9 +466,7 @@ case "$cmd" in
   start)
     echo "=== $(date '+%F %T') github-runner start"
     check
-    empty "$home"
-    empty "$tmp"
-    empty "$work"
+    wipe_jobs
     # config.sh and the listener read RUNNER_ROOT; jobs inherit HOME and TMPDIR.
     export RUNNER_ROOT="$state" HOME="$home" TMPDIR="$tmp"
     if [ -s "$inbox/token" ]; then register_queued; fi
@@ -409,10 +492,8 @@ case "$cmd" in
       [ -e "$seed/node/${dir##*/}" ] && continue
       echo "::warning::setup-node downloaded node ${dir##*/}; the runner seeds ${pins:-nothing}; bump node in nix/github-runner.nix"
     done
-    empty "$home"
-    empty "$tmp"
     # _temp and _PipelineMapping belong to the runner, which resets them per job.
-    empty "$work" _temp _PipelineMapping
+    wipe_jobs _temp _PipelineMapping
     echo "wiped job state: $home, $tmp, $work"
     ;;
   check)

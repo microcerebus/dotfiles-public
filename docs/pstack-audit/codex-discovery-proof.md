@@ -35,7 +35,7 @@ The skill now separates target-only review commands from custom-focus `exec` bri
 
 These checks prove discovery, automatic router selection, nested skill reading and metadata behavior in a fresh scratch session.
 They do not prove every playbook end to end, live user-level registration, a cross-provider comparison or a production rollout.
-The audit keeps the rollout entries pending until push approval and activation, with full arena and audit workflow execution still unproven.
+Push and activation are now done (see the [current rollout status](audit.md#rollout-status)); the audit keeps the rollout entries pending while full arena and audit workflow execution remain unproven.
 The watcher remains disabled, and held levers remain outside this unit.
 
 ## Independent review

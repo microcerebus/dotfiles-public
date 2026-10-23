@@ -4,7 +4,8 @@
 1. Starting containers or VMs. On 9 Oct 2026 a coordinator judged an OrbStack
    VM "local, reversible" and started one; the owner had to intervene. Only the
    command word of each pipeline stage counts, so quoted text, grep patterns,
-   commit scopes and heredoc bodies that mention docker pass.
+   commit scopes and heredoc bodies that mention docker pass. A $( ) or
+   backticks in a heredoc body with an unquoted delimiter runs, so it counts.
    the owner can allow containers for a while by writing an expiry (epoch seconds)
    to ~/.claude/containers-approved-until, e.g.
    `date -v+2H +%s > ~/.claude/containers-approved-until`.
@@ -24,11 +25,15 @@
    nix-darwin flake, and inside sh/bash/zsh -c strings. Read-only actions
    (build, check, --list-generations, changelog) pass.
 Exit 2 blocks the call and shows stderr to the agent. A command the guard cannot
-read is blocked too: a heredoc delimiter word it cannot read, a reading that
-fails, too many unclosed quotes, a command too long to read within the work
-budget, or a bug in the guard. It is still a guardrail, not a sandbox: eval,
+read is blocked too: a heredoc delimiter word it cannot read, a heredoc whose
+body bash starts after a newline inside (( )), $[ ] or a[ ], an unquoted body
+inside backticks with \\$, \\` or \\\\ in it, a case with a subject and in (or
+zsh's {) inside "$( )" or backticks that it cannot place at command position
+(as after f(), function f, coproc NAME, zsh's repeat or another pattern's )), a
+reading that fails, too many unclosed quotes, a command too long to read within
+the work budget, or a bug in the guard. It is still a guardrail, not a sandbox: eval,
 xargs and the like pass."""
-import collections, functools, json, os, re, shlex, sys, time
+import collections, functools, json, os, re, sys, time
 
 EM_DASH = '\N{EM DASH}'
 CONTAINER_CMDS = {'docker', 'docker-compose', 'podman', 'colima', 'limactl', 'lima', 'orbctl', 'orb',
@@ -43,12 +48,27 @@ HEREDOC = re.compile(r'(?<!<)<<(?!<)(-?)(?:[ \t]|\\\n)*')
 WORD_START = re.compile(r'[^\s;&|()<>#]')
 QUOTED = re.compile(r"'[^']*'|\"[^\"]*\"")
 SUBSCRIPT = re.compile(r'[A-Za-z_][A-Za-z0-9_]*\[')
+BRACKET = re.compile(r'\(\(|\$\[|[()\[\]]')  # what open_arithmetic() matches up
 ASSIGNMENT = re.compile(r'[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]*\])?\+?=\S*')
 CASE_WORD = re.compile(r'(case|esac)(?=[\s;&|)]|$)')
+# What follows the word case in a case statement: its subject word and in, or zsh's {.
+CASE_HEAD = re.compile(r'''[ \t]+(?:[^\s;&|()<>'"\\]|\\.|'[^']*'|"(?:[^"\\]|\\.)*"|\$\([^()]*\))+'''
+                       r'\s+(?:in|\{)(?=[\s;]|$)')
+# A $( or ${, with any backslash-newlines between them, which the shell drops first.
+DOLLAR_OPEN = re.compile(r'\$(?:\\\n)*([({])')
+# What can expand in an unquoted heredoc body (read_once's body reading), and where a body's
+# plain text ends.
+LIVE = re.compile(r'`|\$(?:\\\n)*[({]')
+BODY_TEXT_END = re.compile(r'[$`\\]')
+# Inside `...` the shell drops the \ of these before it reads a heredoc body there.
+BACKTICK_ESCAPE = re.compile(r'\\[$`\\]')
 BASH_PREFIX_WORDS = {'if', 'then', 'elif', 'else', 'do', 'while', 'until', '!', '{', 'time', 'coproc'}
 MAX_PASSES = 32  # read_script() passes before it gives up on a command
-WORK_LIMIT = 3_000_000  # characters the guard may scan per call: about 2 s of CPU on Python 3.9
-# Not charged: joining a heredoc body's backslash-newline lines (read_bodies), 12 s for 900 KB of them.
+# The work budget per call, in characters scanned. The checks that run once per word and once per
+# simple command are charged as WORD_COST and SEGMENT_COST characters. The slowest commands that
+# fit in it take about 1.7 s of CPU on Python 3.9 (/usr/bin/python3) and under 1 s on 3.14.
+WORK_LIMIT = 3_000_000
+WORD_COST, SEGMENT_COST = 1, 4
 STILL_HOSTED = re.compile(r'(?i)\bstill (?:hosts|hosted (?:by|in)|running in)\b')  # same as write_guard.py
 HANDOFF_TARGET = re.compile(r'>\s*\S*(?:/\.resume/|\.resume/|resume[^/\s]*$|resume[^/\s]*\s|/orchestrator/)')
 # The guard reads a command once per shell and blocks if any reading would. The readings differ in
@@ -66,8 +86,9 @@ work_left = WORK_LIMIT
 
 
 def spend(k):
-    """Charge k characters of scanning to the work budget. A command that needs more is Unreadable,
-    so the hook answers well inside its 5 s timeout whatever the input."""
+    """Charge k characters of scanning to the work budget. Every loop whose length the command
+    sets is charged here, and a command that needs more than the budget is Unreadable, so the
+    hook answers inside its 5 s timeout whatever the input."""
     global work_left
     work_left -= k
     if work_left < 0:
@@ -138,7 +159,7 @@ def in_arithmetic(text, sh):
     as after coproc and another word (bash 5 reads coproc foo a[ as an assignment), the command
     is Unreadable."""
     code = QUOTED.sub('', text)
-    if code.count('((') > code.count('))') or code.rfind('$[') > code.rfind(']'):
+    if open_arithmetic(code):
         return True
     if sh == 'zsh':
         return False
@@ -160,6 +181,36 @@ def in_arithmetic(text, sh):
         raise Unreadable('the guard cannot tell whether this << is a heredoc or a shift in an a[ ] subscript. '
                          'Quote the [ or put the heredoc on its own line.')
     return False
+
+
+def open_arithmetic(code):
+    """Whether code leaves a (( or $[ open. A )) closes a (( only when no ( inside it is still
+    open, a ) closes only a (, and a ] closes a [ or $[. A lone ) after a (( leaves it open, which
+    reads more of the line as arithmetic: the body then reads as code."""
+    stack, i = [], 0
+    while m := BRACKET.search(code, i):
+        t, i = m[0], m.end()
+        if t == ')' and stack[-1:] == ['(('] and code.startswith(')', i):
+            stack.pop()
+            i += 1
+        elif t == ')' and stack[-1:] == ['('] or t == ']' and stack[-1:] in (['['], ['$[']):
+            stack.pop()
+        elif t not in ')]':
+            stack.append(t)
+    return '((' in stack or '$[' in stack
+
+
+def no_arithmetic_newline(cmd, i, h, out, sh):
+    """Raise Unreadable for a newline at cmd[i] inside (( )), $(( )), $[ ] or a bash a[ ] subscript
+    opened after heredoc h on its line. zsh reads h's body after this newline, but bash only after
+    the line that closes the arithmetic, which the guard does not follow. out is the code read so
+    far: it has no comments, and h.out_len marks h's end in it."""
+    after = ''.join(h.out[h.out_len:]) if h.out is out else cmd[h.end:i]
+    spend(len(after))
+    if in_arithmetic(line_before(cmd, h.at) + ' ' + after, sh):
+        raise Unreadable('the guard cannot tell where this heredoc body starts: bash reads it after the '
+                         'line that closes the (( )), $[ ] or a[ ] begun after the <<. Put the heredoc on '
+                         'its own line.')
 
 
 def bash3_match(cmd, k, end, frames):
@@ -224,30 +275,39 @@ def read_bodies(cmd, i, pending, sh, bodies):
     after an unquoted delimiter, inside backticks, and for bash 3.2 inside $( ). Inside $( ), bash
     also ends it at a line that starts
     with the delimiter and holds a ) later, and bash 3.2 at the ) its matcher closes the $( )
-    with (bash3_match). Inside backticks, both bash readings end it at an unescaped backtick."""
+    with (bash3_match). Inside backticks, both bash readings end it at an unescaped backtick.
+    The shell drops the \\ of \\$, \\` and \\\\ inside backticks before it reads the body, which can
+    turn text into a live $( ) or change where the body ends, so an unquoted body there that
+    holds one is Unreadable."""
     n, frames = len(cmd), []
     for h in pending:
         start = i
         joins = not h.quoted or h.backtick or sh == 'bash3' and h.comsub
         while i < n:
-            line_start = i
+            line_start = row = i  # row: where the last physical line starts
             j = cmd.find('\n', i)
             i = n if j < 0 else j + 1
-            while joins and j >= 0 and (j - line_start - len(cmd[line_start:j].rstrip('\\'))) % 2:
+            while joins and j >= 0 and (j - row - len(cmd[row:j].rstrip('\\'))) % 2:
+                row = i
                 j = cmd.find('\n', i)
                 i = n if j < 0 else j + 1
+                spend(1)
             raw = cmd[line_start:i].removesuffix('\n')
+            spend(1)
             cut = bash3_match(cmd, line_start, i, frames) if sh == 'bash3' and h.comsub else None
             if cut is not None:
                 bodies.append((h.opener, cmd[start:cut]))
                 return cut, []
+            tick = sh != 'zsh' and h.backtick and re.search(r'(?<!\\)(?:\\\\)*`', raw)
+            if h.backtick and not h.quoted and BACKTICK_ESCAPE.search(raw, 0, tick.end() - 1 if tick else len(raw)):
+                raise Unreadable('the guard cannot read a backslash before `, \\ or $ in a heredoc body inside '
+                                 '`...`. Use $( ) instead.')
             line = raw.replace('\\\n', '') if joins else raw
             if line == h.delim or h.dash and line.lstrip('\t') == (h.delim.lstrip('\t') if sh == 'zsh' else h.delim):
                 bodies.append((h.opener, cmd[start:line_start]))
                 break
-            if sh != 'zsh' and h.backtick:
-                tick = re.search(r'(?<!\\)(?:\\\\)*`', raw)
-                cut = tick and line_start + tick.end() - 1
+            if tick:
+                cut = line_start + tick.end() - 1
             if cut is None and sh == 'bash' and h.comsub and '\\\n' not in raw:
                 tabs = len(raw) - len(raw.lstrip('\t')) if h.dash else 0
                 if raw.startswith(h.delim, tabs) and ')' in raw[tabs + len(h.delim):]:
@@ -260,16 +320,19 @@ def read_bodies(cmd, i, pending, sh, bodies):
     return i, [f for f in frames if f[0] != '#']
 
 
-Heredoc = collections.namedtuple('Heredoc', 'delim dash quoted comsub backtick opener depth ticks')
+Heredoc = collections.namedtuple('Heredoc', 'delim dash quoted comsub backtick opener depth ticks at end out out_len')
 # A "$( )", "${ }", $( ) inside "${ }" or `...` that read_once is inside: kind ('"$(', '"${', '$(' or
 # '`'), the index to read as a literal if it never closes, and the state around it.
 Frame = collections.namedtuple('Frame', 'kind at quote quote_at parens out')
 
 
 @functools.lru_cache(maxsize=None)
-def read_script(cmd, sh='zsh'):
+def read_script(cmd, sh='zsh', body=False):
     """(code, heredoc bodies, texts) of a command line as shell sh reads it.
-    code is the command line without comments and heredoc bodies; both are data, not commands.
+    code is the command line without comments and heredoc bodies; both are data, not commands,
+    apart from the $( ), ${ } and `...` in a body whose delimiter is unquoted. The shell expands
+    those, so read_once reads such a body again as if inside "...", except that " is a literal
+    character there too, and adds the code inside them to code.
     A comment is an unquoted # at the start of a word, through the end of its line (inside
     `...`, through the closing backtick if that comes first), so
     '#', \\#, ${#arr[@]}, x=a#b and flake refs like nix-darwin#darwin-rebuild stay text.
@@ -293,11 +356,13 @@ def read_script(cmd, sh='zsh'):
     (line with the <<, body) pairs, and texts the text inside each "$( )", "${ }" and `...`,
     which the message checks read too.
     A case statement's pattern ) closes nothing in the zsh and bash readings where at_command()
-    finds the case (not after time -p); bash 3.2 closes a $( ) there. The guard does not read
+    finds the case; bash 3.2 closes a $( ) there. Inside "$( )", "${ }" or `...`, a case followed by
+    its subject and in, or zsh's {, that at_command() does not place (after f(), function f,
+    coproc NAME or a pattern's )) is Unreadable. The guard does not read
     bash 5.3's ${ cmd; } and ${| cmd; }, nested backticks, a backslash before `, \\ or $ inside
     `...`, or any backslash in a # comment there: those commands are Unreadable."""
     for _ in range(MAX_PASSES):
-        code, bodies, texts, open_at = read_once(cmd, sh)
+        code, bodies, texts, open_at = read_once(cmd, sh, body)
         if open_at is None:
             return code, tuple(bodies), tuple(texts)
         cmd = cmd[:open_at] + '\\' + cmd[open_at:]
@@ -305,26 +370,55 @@ def read_script(cmd, sh='zsh'):
                      'or move long text into a file.')
 
 
-def not_funsub(cmd, i):
-    """Raise Unreadable for bash 5.3's ${ cmd; } or ${| cmd; } at cmd[i]: commands the guard does not read."""
-    if cmd[i + 2:i + 3] in (' ', '\t', '\n', '|'):
+def not_funsub(cmd, j):
+    """Raise Unreadable for bash 5.3's ${ cmd; } or ${| cmd; } whose { ends at cmd[j]: commands the guard
+    does not read."""
+    if cmd[j:j + 1] in (' ', '\t', '\n', '|'):
         raise Unreadable("the guard does not read bash 5.3's ${ cmd; } command substitution. Use $( ) instead.")
 
 
-def at_command(out):
-    """Whether code ending in out is where a command word goes: after ; & | ( or a newline, and any
-    reserved words. A command more than 64 pieces long is past it."""
-    tail = ''.join(out[-64:])
-    k = max(tail.rfind(c) for c in ';&|(\n')
-    return (k >= 0 or len(out) <= 64) and all(w in BASH_PREFIX_WORDS for w in tail[k + 1:].split())
+def at_command(out, sh):
+    """Whether code ending in out is where a command word goes: after ; & | ( or a newline, or at
+    the start, and any reserved words, with time's -p and -- in bash. It reads out backwards and
+    stops at a separator or at a word longer than 6 characters, which no reserved word is. An
+    escaped character (\\; or \\&) is part of a word."""
+    words, word = [], ''
+    for piece in reversed(out):
+        spend(len(piece))
+        escaped = len(piece) == 2 and piece[0] == '\\'
+        for c in reversed(piece):
+            if not escaped and (c in ';&|(\n' or c.isspace()):
+                if word:
+                    words.append(word)
+                    word = ''
+                if c in ';&|(\n':
+                    return prefix_words(words[::-1], sh)
+            elif len(word) == 6:  # longer than any reserved word
+                return False
+            else:
+                word = c + word
+    return prefix_words(([word] if word else []) + words[::-1], sh)
 
 
-def read_once(cmd, sh):
-    """One pass of read_script: (code, bodies, texts, index of a quote left open or None)."""
+def prefix_words(words, sh):
+    """Whether words are reserved words that can come before a command word (time -p -- in bash)."""
+    timed = False  # just after time, where bash skips -p and --
+    for w in words:
+        if not (w in BASH_PREFIX_WORDS or sh == 'bash' and timed and w in ('-p', '--')):
+            return False
+        timed = w == 'time' or timed and w in ('-p', '--')
+    return True
+
+
+def read_once(cmd, sh, body=False):
+    """One pass of read_script: (code, bodies, texts, index of a quote left open or None).
+    With body, cmd is an unquoted heredoc body, read in quote state 'H': as inside "...", except
+    that " is a literal character there too. code is then only the code of its $( ) and `...`."""
     spend(len(cmd))
     out, bodies, chunks, i, n = [], [], [], 0, len(cmd)  # chunks: (kind, text) of each closed Frame
-    quote, quote_at, parens, outer = None, None, [], []  # parens: '(', '$(', '${' or '"${' per open one
-    word_start, pending, carried, ticks = True, [], set(), 0  # ticks: open `...` Frames
+    quote, quote_at, parens, outer = 'H' if body else None, None, [], []  # parens: '(', '$(', '${' or '"${'
+    word_start, pending, carried, ticks = not body, [], set(), 0  # ticks: open `...` Frames
+    body_code, body_texts = [], []  # from the $( ) and `...` in unquoted bodies read here
 
     def push(kind, at):
         nonlocal quote, parens, out, ticks
@@ -345,9 +439,24 @@ def read_once(cmd, sh):
             parens.append('$(')
             out.append('$(')
 
+    def case_at_command(w, out):  # whether the case or esac in match w is a reserved word
+        if at_command(out, sh):
+            return True
+        if w[1] == 'case' and outer and CASE_HEAD.match(cmd, w.end(), w.end() + 256):
+            raise Unreadable('the guard cannot tell whether this case starts a case statement inside "$( )" or '
+                             "`...` (after f(), function f, coproc NAME or a pattern's )). Move it out of the "
+                             '$( ), or into a script file.')
+        return False
+
     def depth():  # open $( ), <( ) and `...`: a newline reads the heredocs opened this deep or deeper
-        spend(len(outer))
+        spend(len(outer) + len(parens))
+        spend(sum(len(f.parens) for f in outer))
         return sum(f.kind != '"${' for f in outer) + parens.count('$(') + sum(f.parens.count('$(') for f in outer)
+
+    def ready_bodies():  # the pending heredocs whose bodies a newline here starts
+        d = depth()
+        spend(len(pending))
+        return [h for h in pending if h.depth >= d]
 
     while i < n:
         c = cmd[i]
@@ -382,15 +491,21 @@ def read_once(cmd, sh):
             push('`', i)
             i, word_start = i + 1, True
             continue
-        elif quote == '"':
-            if c == '"':
+        elif quote in ('"', 'H'):
+            if c == '"' and quote == '"':
                 quote = None
-            elif cmd.startswith(('$(', '${'), i):
-                brace_open = cmd[i + 1] == '{'
+            elif c == '$' and (m := DOLLAR_OPEN.match(cmd, i)):
+                brace_open = m[1] == '{'
                 if brace_open:
-                    not_funsub(cmd, i)
-                push('"${' if brace_open else '"$(', quote_at)
-                i, word_start = i + 2, not brace_open
+                    not_funsub(cmd, m.end())
+                push('"${' if brace_open else '"$(', quote_at if quote == '"' else i)
+                i, word_start = m.end(), not brace_open
+                continue
+            elif quote == 'H':  # plain body text: skip to the next $, ` or backslash
+                j = BODY_TEXT_END.search(cmd, i + 1)
+                j = n if j is None else j.start()
+                out.append(cmd[i:j])
+                i = j
                 continue
         elif cmd.startswith("$'", i) and not zsh_dq:
             quote, quote_at = "$'", i + 1
@@ -400,7 +515,7 @@ def read_once(cmd, sh):
         elif c == '"' or c == "'" and not zsh_dq:
             quote, quote_at = c, i
         elif cmd.startswith('${', i):
-            not_funsub(cmd, i)
+            not_funsub(cmd, i + 2)
             parens.append('${')
             out.append('${')
             i, word_start = i + 2, False
@@ -426,7 +541,7 @@ def read_once(cmd, sh):
             i = j
             continue
         elif word_start and sh != 'bash3' and (w := CASE_WORD.match(cmd, i)) \
-                and (w[1] == 'case' or parens[-1:] == ['case']) and at_command(out):
+                and (w[1] == 'case' or parens[-1:] == ['case']) and case_at_command(w, out):
             if w[1] == 'case':  # a pattern's ) inside it closes nothing (bash 3.2's matcher does close a $( ) there)
                 parens.append('case')
             else:
@@ -445,18 +560,28 @@ def read_once(cmd, sh):
             opener = cmd[cmd.rfind('\n', 0, i) + 1:n if line_end < 0 else line_end]
             spend(len(opener))
             comsub = '$(' in parens or any(f.kind in ('"$(', '$(') or '$(' in f.parens for f in outer)
-            pending.append(Heredoc(delim, m.group(1) == '-', quoted, comsub, ticks > 0, opener, depth(), ticks))
             out.append(cmd[i:end].replace('\\\n', ''))
+            pending.append(Heredoc(delim, m.group(1) == '-', quoted, comsub, ticks > 0, opener, depth(), ticks,
+                                   i, end, out, len(out)))
             i, word_start = end, True
             continue
-        elif c == '\n' and pending and (ready := [h for h in pending if h.depth >= (d := depth())]):
-            spend(len(pending))
+        elif c == '\n' and pending and (ready := ready_bodies()):
+            d = depth()
+            if sh != 'zsh':
+                no_arithmetic_newline(cmd, i, max(ready, key=lambda h: h.at), out, sh)
             out.append(c)
             pending = [h for h in pending if h.depth < d]
             # A heredoc whose $( ) closed on its own line has no body for zsh and bash 3.2, and one
             # in closed backticks has none for any shell; bash 5 reads the rest first.
             ready = sorted((h for h in ready if h.depth == d or sh == 'bash' and h.ticks <= ticks), key=lambda h: -h.depth)
+            read = len(bodies)
             i, frames = read_bodies(cmd, i + 1, ready, sh, bodies)
+            for h, (_, text) in zip(ready, bodies[read:]):
+                if not h.quoted and LIVE.search(text):  # its $( ) and `...` run
+                    code, inner, texts = read_script(text, sh, True)
+                    body_code.append(code)
+                    bodies.extend(inner)
+                    body_texts.extend(texts)
             word_start = True
             for kind, at in frames:  # bash 3.2 is still inside these after the last body
                 if kind == '`':
@@ -489,9 +614,9 @@ def read_once(cmd, sh):
     if quote and quote_at in carried:
         out.append(quote)
         quote = None
-    open_at = quote_at if quote else outer[-1].at if outer else None
-    code = ''.join(out) + ''.join('\n' + text for kind, text in chunks if kind != '"${')
-    return code, bodies, [text for _, text in chunks], open_at
+    open_at = quote_at if quote and quote != 'H' else outer[-1].at if outer else None
+    code = ('' if body else ''.join(out)) + ''.join('\n' + text for kind, text in chunks if kind != '"${')
+    return code + ''.join(body_code), bodies, [text for _, text in chunks] + body_texts, open_at
 
 
 def shell_code(cmd, sh='zsh'):
@@ -503,24 +628,59 @@ def segments(cmd, sh='zsh'):
     yield from split_segments(cmd, sh)
 
 
+# A token of code for split_words: blanks, a run of operator characters, or a word of plain
+# characters, '...', "..." and backslash-escaped characters.
+TOKEN = re.compile(r'''[ \t\r]+|([;&|()\n]+)|((?:[^ \t\r\n;&|()'"\\]+|'[^']*'|"(?:[^"\\]|\\[\s\S])*"|\\[\s\S])+)''')
+WORD_PART = re.compile(r''''([^']*)'|"((?:[^"\\]|\\[\s\S])*)"|\\([\s\S])|([^'"\\]+)''')
+DQ_ESCAPE = re.compile(r'\\(["\\])')
+DQ_TRAILING_ESCAPE = re.compile(r'"(?:[^"\\]|\\[\s\S])*\\')
+
+
+def split_words(code):
+    """The tokens of code as shlex.shlex(code, posix=True, punctuation_chars=';&|()\\n') with
+    whitespace ' \\t\\r', whitespace_split and no commenters splits them, with the same ValueError
+    for an unclosed quote or a trailing backslash. shlex takes time quadratic in a word's length
+    (1.4 s for a 200 KB python -c script); this takes linear time."""
+    i, n = 0, len(code)
+    while i < n:
+        m = TOKEN.match(code, i)
+        if m is None:
+            escaped = code[i] == '\\' or DQ_TRAILING_ESCAPE.fullmatch(code, i)  # a backslash at the very end
+            raise ValueError('No escaped character' if escaped else 'No closing quotation')
+        i = m.end()
+        if m[1]:
+            yield m[1]
+        elif m[2] is not None:
+            yield WORD_PART.sub(unquote, m[2])
+
+
+def unquote(m):
+    if m[1] is not None:
+        return m[1]
+    if m[2] is not None:
+        return DQ_ESCAPE.sub(r'\1', m[2])  # inside "...", a backslash escapes only " and itself
+    return m[3] if m[3] is not None else m[4]
+
+
 @functools.lru_cache(maxsize=None)
 def split_segments(cmd, sh):
-    code = shell_code(cmd, sh)
-    spend(3 * len(code))  # shlex is slower per character than read_once
-    lex = shlex.shlex(code, posix=True, punctuation_chars=';&|()\n')
-    lex.whitespace = ' \t\r'
-    lex.whitespace_split = True
-    lex.commenters = ''  # shell_code already dropped them
-    segs, seg = [], []
-    for tok in lex:
+    """The simple commands of cmd in reading sh, as tuples of words. Charges the code's length, and
+    for the checks that later run once per word and per simple command, WORD_COST and SEGMENT_COST
+    for each."""
+    code = shell_code(cmd, sh)  # comments are already gone
+    spend(len(code))
+    segs, seg, words = [], [], 0
+    for tok in split_words(code):
         if tok and set(tok) <= set(';&|()\n'):
             if seg:
                 segs.append(tuple(seg))
             seg = []
         else:
             seg.append(tok)
+            words += 1
     if seg:
         segs.append(tuple(seg))
+    spend(WORD_COST * words + SEGMENT_COST * len(segs))
     return tuple(segs)
 
 
@@ -570,9 +730,14 @@ WRAPPERS = {
 KEYWORDS = {'if', 'then', 'elif', 'else', 'do', 'while', 'until', '!', '{'}
 
 
+@functools.lru_cache(maxsize=None)
 def command_words(seg):
-    """Drop reserved words, env assignments, wrappers and their flags before the command word."""
-    words = [w.lstrip('`$') for w in seg]
+    """Drop reserved words, env assignments, wrappers and their flags before the command word.
+    Every check reads each simple command through this, so it runs once per distinct one."""
+    return tuple(drop_prefix([w.lstrip('`$') for w in seg]))
+
+
+def drop_prefix(words):
     while words:
         if words[0] in KEYWORDS or re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]*\])?\+?=.*', words[0]):
             words.pop(0)
@@ -673,11 +838,11 @@ def message_parts(args):
 
 def heredoc_bodies(cmd):
     """Yield (line with the <<, body) for each heredoc, as any of READINGS reads it."""
-    seen = []
+    seen = set()
     for sh in READINGS:
         for body in read_script(cmd, sh)[1]:
             if body not in seen:
-                seen.append(body)
+                seen.add(body)
                 yield body
 
 
@@ -704,11 +869,13 @@ def commit_messages(cmd, cwd):
             segs = list(segments(cmd, sh))
         except ValueError:
             continue
+        texts_sent = False  # once per reading, however many messages hold one
         for seg in segs:
             for kind, value in message_parts(commit_args(seg) or []):
                 if kind == 'text':
                     yield value
-                    if '()' in value or '{}' in value:  # command_words() drops a leading $
+                    if not texts_sent and ('()' in value or '{}' in value):  # command_words() drops a leading $
+                        texts_sent = True
                         yield from read_script(cmd, sh)[2]
                 elif value != '-':
                     try:
@@ -725,10 +892,12 @@ def handoff_writes(cmd):
             yield body
     for sh in READINGS:
         code, _, texts = read_script(cmd, sh)
+        texts_sent = False  # once per reading, however many lines hold one
         for line in code.split('\n'):
             if re.search(r'(^|[\s;&|(])(echo|printf)\s', line) and HANDOFF_TARGET.search(line + ' '):
                 yield line
-                if '$()' in line or '${}' in line:
+                if not texts_sent and ('$()' in line or '${}' in line):
+                    texts_sent = True
                     yield from texts
 
 
@@ -739,37 +908,41 @@ def approved():
         return False
 
 
-try:
-    payload = json.load(sys.stdin)
-    cmd = (payload.get('tool_input') or {}).get('command') or ''
-    cwd = payload.get('cwd') or os.getcwd()
-except (ValueError, AttributeError):
-    sys.exit(0)
+def main():
+    try:
+        payload = json.load(sys.stdin)
+        cmd = (payload.get('tool_input') or {}).get('command') or ''
+        cwd = payload.get('cwd') or os.getcwd()
+    except (ValueError, AttributeError):
+        sys.exit(0)
+    try:
+        if any_segment(starts_container, cmd) and not approved():
+            print("Blocked: starting containers, OrbStack or VMs needs the owner's explicit OK (AGENTS.md). "
+                  'Reproduce Linux-only failures on a GitHub Actions run, or ask the owner.', file=sys.stderr)
+            sys.exit(2)
+        if any_segment(bare_switch, cmd):
+            print('Blocked: a bare darwin-rebuild switch takes no lock, so the hourly auto-update can run alongside '
+                  'it or replace it. Ask the owner to run `rebuild` (or `rollback`, `rollback <n>` for a generation): '
+                  'these aliases wait for the switch lock. Read-only darwin-rebuild build, check and '
+                  '--list-generations pass (docs/formal/autoupdate-handoff).', file=sys.stderr)
+            sys.exit(2)
+        if any(EM_DASH in m for m in commit_messages(cmd, cwd)):
+            print('Blocked: the commit message contains an em dash. Use "-" instead (AGENTS.md).', file=sys.stderr)
+            sys.exit(2)
+        if any(STILL_HOSTED.search(t) for t in handoff_writes(cmd)):
+            print('Blocked: this handoff note says work is still hosted or running in a thread. Native subagents '
+                  'die when their session ends, and nothing reports it. List the worker under "Workers" (task, '
+                  'brief path, what it passed) so the successor respawns it; a T3 delegated task or thread '
+                  'survives, so name its ID (pause-safely skill).', file=sys.stderr)
+            sys.exit(2)
+    except Unreadable as e:
+        print(f'Blocked: {e} (bash_guard.py)', file=sys.stderr)
+        sys.exit(2)
+    except Exception as e:  # a guard bug must not let the command through
+        print(f'Blocked: bash_guard.py failed on this command ({type(e).__name__}: {e}). Split it into '
+              'simpler commands, and report the failure.', file=sys.stderr)
+        sys.exit(2)
 
-try:
-    if any_segment(starts_container, cmd) and not approved():
-        print("Blocked: starting containers, OrbStack or VMs needs the owner's explicit OK (AGENTS.md). "
-              'Reproduce Linux-only failures on a GitHub Actions run, or ask the owner.', file=sys.stderr)
-        sys.exit(2)
-    if any_segment(bare_switch, cmd):
-        print('Blocked: a bare darwin-rebuild switch takes no lock, so the hourly auto-update can run alongside '
-              'it or replace it. Ask the owner to run `rebuild` (or `rollback`, `rollback <n>` for a generation): '
-              'these aliases wait for the switch lock. Read-only darwin-rebuild build, check and '
-              '--list-generations pass (docs/formal/autoupdate-handoff).', file=sys.stderr)
-        sys.exit(2)
-    if any(EM_DASH in m for m in commit_messages(cmd, cwd)):
-        print('Blocked: the commit message contains an em dash. Use "-" instead (AGENTS.md).', file=sys.stderr)
-        sys.exit(2)
-    if any(STILL_HOSTED.search(t) for t in handoff_writes(cmd)):
-        print('Blocked: this handoff note says work is still hosted or running in a thread. Native subagents '
-              'die when their session ends, and nothing reports it. List the worker under "Workers" (task, '
-              'brief path, what it passed) so the successor respawns it; a T3 delegated task or thread '
-              'survives, so name its ID (pause-safely skill).', file=sys.stderr)
-        sys.exit(2)
-except Unreadable as e:
-    print(f'Blocked: {e} (bash_guard.py)', file=sys.stderr)
-    sys.exit(2)
-except Exception as e:  # a guard bug must not let the command through
-    print(f'Blocked: bash_guard.py failed on this command ({type(e).__name__}: {e}). Split it into '
-          'simpler commands, and report the failure.', file=sys.stderr)
-    sys.exit(2)
+
+if __name__ == '__main__':
+    main()

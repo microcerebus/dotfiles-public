@@ -15,14 +15,28 @@
 # every start and before every job the runner proves all that, plus no sudo
 # and no trusted Nix, and runs no jobs if any of it fails. After every job a
 # hook wipes the job's HOME, TMPDIR and work dir, the way a hosted runner
-# starts each job on a fresh VM.
+# starts each job on a fresh VM. It first lifts the user flags uchg and
+# uappnd, ACLs and closed modes across those trees, never through a symlink,
+# down to paths longer than PATH_MAX whatever the names' encoding. Then it
+# deletes everything but the runner's own _temp and _PipelineMapping.
+# Afterwards it lists what is left: only containermanagerd's two directories
+# in the home (Library/ContainerManager and
+# Library/Caches/com.apple.containermanagerd) and the directories on the way
+# to them may stay. Anything else left fails the hook, so the job that left
+# it fails instead of passing. The hook wipes all three dirs before it fails,
+# so the next job, which still runs (job-started does not check again), gets
+# only what could not be wiped. A wipe that succeeds sets each dir back to
+# 0700.
+# Not covered: a process the job leaves running. It can write into HOME,
+# TMPDIR or the work dir again after the wipe, or relock files while the
+# wipe runs (which then fails the hook).
 # Tool cache: the job-started hook copies the Node that job-tracker pins from
 # the Nix store into the job's tool cache, so setup-node finds it there and
 # needs no network (toolSeed below). Jobs get a copy; the store original is
 # root-owned and read-only, so no job can change the seed itself. Each job
-# gets a fresh copy: before copying, job-started clears any flags a job set
-# on the old copy (chflags uchg) and deletes it, and refuses the job if it
-# cannot.
+# gets a fresh copy: before copying, job-started lifts the same locks on the
+# tool cache, deletes the old copy and any link on the way to it, and
+# refuses the job if it cannot.
 # Not covered: other users' listeners on this Mac's loopback and LAN
 # addresses (the agent Chrome's DevTools, T3 Code, the packs server). macOS delivers
 # that traffic without pf ever seeing it, so the runner can connect to them,

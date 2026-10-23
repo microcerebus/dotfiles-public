@@ -48,7 +48,7 @@ Browser quota mechanics remain unchanged, and no live rollout occurred.
   The pack link now points to this worktree's audit directory.
 
 At the original batch 2 check boundary on 20 October 2026, the orchestrator had confirmed batch 1 landing and batch 2 still awaited push approval and activation.
-The [current rollout status](audit.md#rollout-status) records subsequent push verification and the outstanding rebuild confirmation.
+The [current rollout status](audit.md#rollout-status) records subsequent push verification and the applied rollout.
 The package comparison and external-source findings are in [the source evidence](batch-2-sources.md).
 
 ## Batch 2 independent review
@@ -104,9 +104,9 @@ The later factual rollout correction below does not change skills or their revie
 ## Rollout copy correction
 
 On 21 October 2026, the orchestrator confirmed that batch 2 was approved, pushed and independently verified at `2e8783a`, with the main checkout fast-forwarded there.
-One rebuild covering batches 1 and 2 is requested but not confirmed.
+One rebuild covering batches 1 and 2 was requested but not yet confirmed.
 The served page still described batch 2 as local and awaiting push approval; reading that page reproduced both stale statements.
-Current rollout prose now comes from `audit.json`, and current route and ownership entries identify only activation confirmation as outstanding.
+Current rollout prose now comes from `audit.json`, and the route and ownership entries then identified only activation confirmation as outstanding.
 Dated proof-boundary descriptions remain historical and link to current status.
 The targeted copy check failed before the correction and passes afterward, alongside renderer consistency and whitespace checks.
 Regenerated T3 previews at 390 px and 728 px pass the current-copy, row-count and overflow checks; both screenshots were inspected.

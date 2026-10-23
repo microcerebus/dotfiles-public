@@ -50,6 +50,7 @@ Apply can sample revision A, a human rebuild can finish at unpushed L, and apply
 A constrained witness has the human finish before the daemon invokes darwin-rebuild, so the finding does not depend on overlapping rebuild commands.
 Source inspection supports that ordering; this was not a live activation experiment.
 The updater is unchanged and a fix belongs to a separate unit.
+The race has since been fixed on main; see docs/formal/autoupdate-handoff/README.md.
 
 The fetched-handoff and exact-selected-revision properties pass across 375,282 distinct states in the finite model.
 All three scratch source/model mutations produce their intended invariant failures.

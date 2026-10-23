@@ -106,6 +106,9 @@ It stopped before model updates, so it does not demonstrate the updated or bug o
 The seven fixes postdate the exercise and were checked by review, not by a second exercise.
 The exercise ran the first commit's two-command drift check, which diffed all of `flake.nix`.
 After both reviews the check has four commands (see [checks](checks.md#batch-5-independent-review)); they were checked by scratch edits and a quiet run on this tree, not by a second exercise.
-The rollback-race fix landed with its own proof in `docs/formal/autoupdate-handoff` and pinned this one to its reviewed commit; recording the fix's main commit here is the first real maintenance pass, still to do.
+The rollback-race fix landed with its own proof in `docs/formal/autoupdate-handoff` and pinned this one to its reviewed commit.
+The first real maintenance pass ran on 23 October 2026.
+The fixed model's source hash already pins the script at `00f641e`, the last commit to change it.
+The pass read every covered change from there to main at `73de16f`, found none that affects the fixed model, and moved the drift commands' sync commit to `73de16f`.
 The drift commands match two paths, name patterns and untracked files; covered behavior that moves without those names still needs the skill's reading step.
 No Codex invocation proof ran, because Codex is usage-limited until 27 October.

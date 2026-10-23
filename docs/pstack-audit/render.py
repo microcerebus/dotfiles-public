@@ -34,7 +34,7 @@ INTRO = [
     'The old Later list is stale: the explanation and multi-model skills, reflect and poteto-mode are installed; the TypeScript project skill is merged.',
     'Batch 1 declares 27 Codex aliases; batch 2 adds three automatic routes and a 28th alias.',
     'The audited upstream is 0.15.29, compared with the dotfiles pin at 0.15.24. Keep the local skill set after comparing the Claude package; batches 4 and 5 adapt the formal generator and its maintenance loop locally.',
-    'Batch 4 records a source-supported updater rollback counterexample, two passing bounded invariants and an explicit no-verifier case. The updater is unchanged.',
+    'Batch 4 records a source-supported updater rollback counterexample, two passing bounded invariants and an explicit no-verifier case. The race is now fixed on main by a shared switch lock.',
     'Batch 5 adds a drift check to that proof: a scratch updater edit reports it stale, and the unchanged tree stays quiet.',
     'Batch 3 closes its 16 source reviews: 9 entries ported, 4 kept local and 3 skipped. The baseline pin stays at 0.15.24.',
 ]
@@ -42,12 +42,12 @@ DECISION = [
     DATA['rollout_status'],
     'Batch 2 retains the local skill set and confirms built-in plugin enablement. Batch 3 ports selected upstream guidance locally. Wheelhouse source/license and Guide Part 3 publication evidence remain blocked.',
     'The job-tracker coordinator owns order 71: the two-strike rule is in force, the async guard is active work, the size cap follows it, and the four larger rows start after 22 October at 16:00 SGT.',
-    'This batch changes no live skill links, dependency, plugin, schedule or provider setting. The orchestrator owns later batches and rollout.',
+    'The orchestrator owns later batches and rollout.',
 ]
 LIMITS = [
     'Checked on 20 October 2026 at 19:01 SGT using local files and read-only GitHub calls; the head is frozen in audit.json.',
     'The orchestrator independently verified both batch 1 and batch 2 pushes. Batch 2 source evidence and exact route prompts are in batch-2-sources.md and batch-2-route-proof.md; scratch results do not claim live rollout.',
-    'Batch 3 decisions, retained differences and fresh invocation evidence are in batch-3-delta.md and batch-3-route-proof.md. Its source review is complete and its changes are pushed; activation confirmation remains outstanding.',
+    'Batch 3 decisions, retained differences and fresh invocation evidence are in batch-3-delta.md and batch-3-route-proof.md. Its source review is complete and its changes are pushed and applied.',
     'Adopted means an inspected installation, declaration or explicitly retained practice; adapted means an inspected local equivalent.',
     'Neither status claims that every workflow has run successfully on Codex; pending means a named blocker, missing proof or unselected update remains.',
     'Pending update rows are separate from the adoption status of the pinned item, so an adapted skill can also have an unselected upstream change.',
@@ -99,8 +99,8 @@ def ownership_markdown():
         item = row['entry'].removeprefix('Upstream delta: ')
         outcome = DATA['batch_3_outcomes'].get(item)
         if outcome:
-            blocked = 'activation confirmation' if outcome == 'ported' else 'none'
-            order = f'3. Source review closed: {outcome}' + (' and pushed' if outcome == 'ported' else '') + '; see batch-3-delta.md.'
+            blocked = 'none'
+            order = f'3. Source review closed: {outcome}' + (', pushed and applied' if outcome == 'ported' else '') + '; see batch-3-delta.md.'
         else:
             blocked, order = row['blocked_by'], row['order']
         text += '| ' + ' | '.join((row['entry'], row['lane'], blocked, order)) + ' |\n'
