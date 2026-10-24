@@ -1,10 +1,10 @@
 TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
 Running breadth-first search Model-Checking with fp 0 and seed 1 with 1 worker on 12 cores with 8192MB heap and 64MB offheap memory (Mac OS X 26.7.1 aarch64, Azul Systems, Inc. 1.8.0_492 x86_64, MSBDiskFPSet, DiskStateQueue).
-Parsing file /Users/myuser/.t3/worktrees/dotfiles/fix-rollback-interrupt-hold/docs/formal/autoupdate-handoff/evidence/mutation-rebuild-no-lock/Handoff.tla
+Parsing file /Users/myuser/.t3/worktrees/dotfiles/fix-runner-firewall-log/docs/formal/autoupdate-handoff/evidence/mutation-rebuild-no-lock/Handoff.tla
 Parsing file /private/var/folders/87/l57bxt9d4wnb521lw1187z8c0000gn/T/Naturals.tla
 Semantic processing of module Naturals
 Semantic processing of module Handoff
-Starting... (2026-10-23 18:25:41)
+Starting... (2026-10-24 01:06:03)
 Computing initial states...
 Computed 2 initial states...
 Computed 4 initial states...
@@ -14,7 +14,7 @@ Computed 32 initial states...
 Computed 64 initial states...
 Computed 128 initial states...
 Computed 256 initial states...
-Finished computing initial states: 384 distinct states generated at 2026-10-23 18:25:41.
+Finished computing initial states: 384 distinct states generated at 2026-10-24 01:06:03.
 Error: Invariant ProtectLocalRebuild is violated.
 Error: The behavior up to this point is:
 State 1: <Initial predicate>
@@ -628,4 +628,4 @@ State 19: <ApplyComplete line 246, col 5 to line 251, col 35 of module Handoff>
 883262 states generated, 271512 distinct states found, 25970 states left on queue.
 The depth of the complete state graph search is 19.
 The average outdegree of the complete state graph is 1 (minimum is 0, the maximum 5 and the 95th percentile is 3).
-Finished in 02s at (2026-10-23 18:25:44)
+Finished in 03s at (2026-10-24 01:06:06)

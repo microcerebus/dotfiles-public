@@ -66,7 +66,11 @@
 # it and deletes it. Lifecycle and tests: scripts/github-runner,
 # tests/github_runner_test.sh.
 #
-# Logs: /var/log/github-runner/{github-runner,firewall}.log (readable by admin users).
+# Logs (readable by admin users): the runner's in
+# /var/log/github-runner/github-runner.log, the github-runner-firewall daemon's
+# in /var/log/github-runner-firewall.log. That daemon runs as root, so its log
+# stays out of the runner's log dir: the runner owns that dir, could swap the
+# log for a symlink, and root would then write to whatever file it names.
 { config, lib, pkgs, username, hostname, ... }:
 
 let
@@ -76,6 +80,7 @@ let
   inbox = "${root}/inbox";
   evidence = "${root}/evidence";
   logDir = "/var/log/github-runner";
+  firewallLog = "/var/log/github-runner-firewall.log";
   label = "com.${username}.github-runner";
   # The runner's default (work/_tool), set explicitly so the hook and the
   # runner agree. Inside work, so every job's wipe clears it.
@@ -182,6 +187,15 @@ in
     chmod 0770 ${inbox}
     chown ${user}:admin ${logDir}
     chmod 0750 ${logDir}
+    touch ${firewallLog}
+    chown root:admin ${firewallLog}
+    chmod 0640 ${firewallLog}
+    # The firewall daemon's old log, from before it left the runner's dir.
+    # rm takes a symlink there away without following it. A job can leave a
+    # directory or an immutable file there instead, so a failure only warns:
+    # under set -e it would abort every switch from here on.
+    rm -f ${logDir}/firewall.log \
+      || echo "warning: could not remove ${logDir}/firewall.log; root no longer writes there" >&2
     # The owner's home is 750 with group staff, and ~/.t3 and ~/orchestrator
     # are world-readable below it. The runner is not in staff today, but this
     # holds whatever groups it lands in. Replace, never stack, the entry.
@@ -247,8 +261,8 @@ in
       Label = "com.${username}.github-runner-firewall";
       RunAtLoad = true;
       StartInterval = 60;
-      StandardOutPath = "${logDir}/firewall.log";
-      StandardErrorPath = "${logDir}/firewall.log";
+      StandardOutPath = firewallLog;
+      StandardErrorPath = firewallLog;
     };
   };
 }

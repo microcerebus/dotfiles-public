@@ -1,6 +1,6 @@
 --- scripts/dotfiles-autoupdate
 +++ scratch/mutation-no-recheck.sh
-@@ -492,13 +492,6 @@
+@@ -493,13 +493,6 @@
    # A darwin-rebuild run without `rebuild` takes no lock, so just before the
    # switch, look again for one (or for a rebuild waiting on this lock), and
    # for a system that changed since the decision.

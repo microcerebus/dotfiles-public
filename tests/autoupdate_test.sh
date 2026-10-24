@@ -1253,8 +1253,8 @@ expect_no_alarm "a good runner poll is no alarm"
 expect_report "a good runner poll reports a success, worded as the daemon's poll and not CI" \
   "^ok: runner-reload: last good poll 0 min ago$"
 runner_poll "ok	$((FAKE_NOW - 120))" "ran	$FAKE_NOW" "fail	deferred reload failed: launchd has not loaded /Library/LaunchDaemons/x.plist"
-expect_alarm "a failed deferred reload alarms, pointing at the runner's log" \
-  "^dotfiles auto-update: runner-reload: deferred reload failed: launchd has not loaded /Library/LaunchDaemons/x.plist; see /var/log/github-runner/firewall.log$"
+expect_alarm "a failed deferred reload alarms, pointing at the firewall daemon's log" \
+  "^dotfiles auto-update: runner-reload: deferred reload failed: launchd has not loaded /Library/LaunchDaemons/x.plist; see /var/log/github-runner-firewall.log$"
 waiting="the runner restarts on its new config once no job is running"
 runner_poll "ok	$FAKE_NOW" "ran	$FAKE_NOW"
 mkdir -p "${AUTOUPDATE_RUNNER_RELOAD%/*}"
@@ -1263,7 +1263,7 @@ expect_no_alarm "a reload pending for an hour is no alarm"
 expect_report "a reload pending for an hour is reported" "^info: runner-reload: $waiting \(switched 1 h ago\)$"
 echo "$((FAKE_NOW - 7200)) /nix/store/x-launchd/Library/LaunchDaemons/x.plist" >"$AUTOUPDATE_RUNNER_RELOAD.pending"
 expect_alarm "a reload pending for 2 hours alarms" \
-  "^dotfiles auto-update: runner-reload: $waiting, but it has waited 2 h since the switch; see /var/log/github-runner/firewall.log$"
+  "^dotfiles auto-update: runner-reload: $waiting, but it has waited 2 h since the switch; see /var/log/github-runner-firewall.log$"
 rm -f "$AUTOUPDATE_RUNNER_STATUS"
 expect_alarm "a reload pending for 2 hours alarms with no daemon status at all" "^dotfiles auto-update: runner-reload: $waiting, but it has waited 2 h"
 rm -f "$AUTOUPDATE_RUNNER_RELOAD.pending"

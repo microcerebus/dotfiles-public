@@ -1,6 +1,6 @@
 --- scripts/dotfiles-autoupdate
 +++ scratch/mutation-rebuild-no-lock.sh
-@@ -636,7 +636,7 @@
+@@ -637,7 +637,7 @@
    mkdir -p "$daemon_dir" || return 1
    # Switch at once when the lock is free; lockf prints "already locked" when
    # it is not (75).

@@ -43,6 +43,7 @@ switch_lock=$daemon_dir/switch.lock
 # The runner's deferred reload (nix/github-runner.nix, scripts/github-runner).
 runner_status=${AUTOUPDATE_RUNNER_STATUS:-/var/lib/github-runner/reload.status}
 runner_reload=${AUTOUPDATE_RUNNER_RELOAD:-/var/run/github-runner-reload}
+runner_firewall_log=/var/log/github-runner-firewall.log
 
 stale_after=$((36 * 3600))    # no successful run for this long is an alarm
 running_after=$((2 * 3600))   # a run unfinished for this long was killed
@@ -726,7 +727,7 @@ check_runner_reload() {
   since=$(cut -d ' ' -f 1 "$runner_reload.pending" 2>/dev/null)
   case $since in '' | *[!0-9]*) since=$(stat -f %m "$runner_reload.pending") ;; esac
   if [ $((now - since)) -ge 7200 ]; then
-    alarm "runner-reload: $waiting, but it has waited $(age $((now - since))) since the switch; see /var/log/github-runner/firewall.log"
+    alarm "runner-reload: $waiting, but it has waited $(age $((now - since))) since the switch; see $runner_firewall_log"
   else
     info "runner-reload: $waiting (switched $(age $((now - since))) ago)"
   fi
@@ -782,7 +783,7 @@ cmd_status() {
   # reverted it) switches the runner itself, and its firewall daemon neither
   # clears the marker nor writes the status, so what the step left is stale.
   if grep -q -- '-github-runner activate ' "$system/activate" 2>/dev/null; then
-    [ ! -f "$runner_status" ] || read_status runner-reload "$runner_status" /var/log/github-runner/firewall.log poll
+    [ ! -f "$runner_status" ] || read_status runner-reload "$runner_status" "$runner_firewall_log" poll
     check_runner_reload
   fi
   check_flake_lock

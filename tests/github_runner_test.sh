@@ -987,6 +987,90 @@ done
 if [ -z "$missing" ]; then ok "activation creates the evidence store, runner-owned and readable by staff"
 else bad "activation creates the evidence store, runner-owned and readable by staff" "missing:$missing"; fi
 
+# Activation runs under set -e and removes the firewall daemon's old log from
+# the runner's log dir. A job can leave a directory or an immutable file
+# there; removing it must then warn, with rm's reason, not abort the switch.
+# This runs the evaluated line, with its continuation, against a temp dir for
+# the log dir.
+old_rm=$(awk '/^rm -f \/var\/log\/github-runner\/firewall\.log/ { on = 1 } on { print; if ($0 !~ /\\$/) exit }' <<<"$activation")
+for plant in dir uchg; do
+  logdir="$tmp/oldlog-$plant"
+  mkdir -p "$logdir"
+  if [ "$plant" = dir ]; then what="a directory"; mkdir "$logdir/firewall.log"
+  else what="an immutable file"; : >"$logdir/firewall.log"; chflags uchg "$logdir/firewall.log"; fi
+  rm_out=$(bash -ec "${old_rm//\/var\/log\/github-runner/$logdir}"$'\necho reached' 2>&1 || true)
+  if [ -n "$old_rm" ] && grep -qx reached <<<"$rm_out" && grep -q "^rm: .*firewall.log: " <<<"$rm_out" \
+    && grep -q "warning: could not remove" <<<"$rm_out"; then
+    ok "activation warns with rm's reason and goes on when a job leaves $what at the old firewall log"
+  else bad "activation warns with rm's reason and goes on when a job leaves $what at the old firewall log" "line: $old_rm" "$rm_out"; fi
+  chflags -R nouchg "$logdir"
+done
+
+# launchd opens a daemon's StandardOutPath and StandardErrorPath with the
+# daemon's own rights and follows a symlink there. A root daemon's log inside
+# a dir the runner owns lets a job swap the log for a symlink, and root then
+# creates or appends to whatever file it names. The same goes for any dir
+# every user can write, which a job can reach too. /tmp and /var are
+# symlinks into /private, so a log path loses a leading /private before the
+# match, and a path with ., .. or an empty part is refused outright, since a
+# prefix match cannot tell where it lands. The runner can write a dir that
+# activation chowns to it as user or group, with or without flags, and any
+# dir it chmods with a world-write bit.
+writable=$(awk '
+  function out(p,   i) {
+    if (p ~ /\$dir$/) for (i = 1; i <= n; i++) { q = p; sub(/\$dir$/, loop[i], q); print q }
+    else print p
+  }
+  $1 == "for" && $2 == "dir" && $3 == "in" { n = 0; for (i = 4; i <= NF && $i != "do"; i++) loop[++n] = $i; sub(/;$/, "", loop[n]) }
+  $1 == "chown" || $1 == "chmod" { a = 2; while ($a ~ /^-/) a++ }
+  $1 == "chown" && ($a ~ /^_github-runner(:|$)/ || $a ~ /:_github-runner$/) { out($NF) }
+  # Octal modes with 2 in the last digit; symbolic ones that give o or a (or
+  # no who, which umask decides) w.
+  $1 == "chmod" && ($a ~ /^[0-7]*[2367]$/ || $a ~ /(^|,)[ugo]*[ao][ugoa]*[+=][rwxXst]*w/ || $a ~ /(^|,)[+=][rwxXst]*w/) { out($NF) }
+  ' <<<"$activation"; printf '%s\n' /tmp /var/tmp /Users/Shared /Library/Caches)
+# shellcheck disable=SC2016 # Nix expands these, not this script
+root_logs=$(nix eval --raw "$repo#darwinConfigurations.myhost.config.launchd.daemons" --apply 'ds:
+  builtins.concatStringsSep "\n" (builtins.concatLists (builtins.attrValues (builtins.mapAttrs (n: d:
+    let s = d.serviceConfig; in
+    if !(builtins.elem (s.UserName or null) [ null "root" ]) then [ ]
+    else map (p: "${n} ${p}") (builtins.filter (p: p != null) [ (s.StandardOutPath or null) (s.StandardErrorPath or null) ])) ds)))')
+# One entry when stdout and stderr share a path.
+root_logs=$(sort -u <<<"$root_logs")
+# The volume is case-insensitive, so /var/log/GitHub-Runner is the runner's
+# log dir too: compare lowercased paths.
+writable=$(tr '[:upper:]' '[:lower:]' <<<"$writable")
+inside=
+while read -r job path; do
+  plain=$(tr '[:upper:]' '[:lower:]' <<<"$path")
+  case $plain in
+    */./* | */../* | *//* | */. | */..) inside="$inside [$job: $path has a ., .. or empty part]"; continue ;;
+    /private/*) plain=${plain#/private} ;;
+  esac
+  while read -r dir; do
+    case $plain in "$dir"/*) inside="$inside [$job: $path is inside $dir]" ;; esac
+  done <<<"$writable"
+done <<<"$root_logs"
+if grep -qx /var/lib/github-runner/work <<<"$writable" && grep -q '^github-runner-firewall ' <<<"$root_logs" && [ -z "$inside" ]; then
+  ok "no root daemon logs inside a dir the runner can write"
+else bad "no root daemon logs inside a dir the runner can write" "runner's dirs: $(tr '\n' ' ' <<<"$writable")" \
+  "root daemon logs: $(tr '\n' ';' <<<"$root_logs")" "found:$inside"; fi
+# dotfiles-autoupdate's alarms send the owner to the firewall daemon's log.
+firewall_log=$(nix eval --raw "$repo#darwinConfigurations.myhost.config.launchd.daemons.github-runner-firewall.serviceConfig.StandardOutPath")
+if grep -qx "runner_firewall_log=$firewall_log" "$repo/scripts/dotfiles-autoupdate"; then
+  ok "dotfiles-autoupdate names the firewall daemon's log"
+else bad "dotfiles-autoupdate names the firewall daemon's log" "daemon logs to $firewall_log" \
+  "$(grep -n 'firewall.log' "$repo/scripts/dotfiles-autoupdate")"; fi
+# Activation creates that log before launchd opens it: root-owned so no job can
+# swap it, and readable by admin so the owner can read it without sudo.
+prev=0
+missing=
+for line in "touch $firewall_log" "chown root:admin $firewall_log" "chmod 0640 $firewall_log"; do
+  n=$(grep -nxF "$line" <<<"$activation" | head -n 1 | cut -d: -f1 || true)
+  if [ -n "$n" ] && [ "$n" -gt "$prev" ]; then prev=$n; else missing="$missing [$line]"; fi
+done
+if [ -z "$missing" ]; then ok "activation creates the firewall daemon's log, root-owned and readable by admin"
+else bad "activation creates the firewall daemon's log, root-owned and readable by admin" "missing or out of order:$missing"; fi
+
 cache=$(nix eval --raw "$repo#darwinConfigurations.myhost.config.launchd.daemons.github-runner.serviceConfig.EnvironmentVariables.RUNNER_TOOL_CACHE" 2>&1 | tail -n 1 || true)
 if [ "$cache" = /var/lib/github-runner/work/_tool ]; then ok "the runner's tool cache is inside its work dir, which every job wipes"
 else bad "the runner's tool cache is inside its work dir, which every job wipes" "RUNNER_TOOL_CACHE=$cache"; fi
