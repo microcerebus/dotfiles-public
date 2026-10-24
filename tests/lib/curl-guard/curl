@@ -1,0 +1,44 @@
+#!/bin/sh
+# Test-only: tests/lib/agent-chrome-test-env.cjs puts this dir first on PATH.
+# curl (as in scripts/agent-chrome-ready) is outside the node live-port guard,
+# so this refuses the live agent Chrome ports (LIVE_PORTS in
+# tests/lib/live-port-guard.cjs) and hands every other call to the next curl
+# on PATH. Tests: tests/agent_chrome_test_env_test.cjs.
+refuse() {
+  echo "agent-chrome-test-env: refused curl $1. Point the script at its test port; see SETTINGS in tests/lib/agent-chrome-test-env.cjs." >&2
+  exit 7
+}
+# A port in any argument, also through curl's URL globbing (:93[33-33],
+# :{9333}) and leading zeros (:09333). Absolute paths: PATH may hold no /usr/bin.
+printf '%s\n' "$@" | /usr/bin/tr -d '\133\135\173\175' | /usr/bin/grep -Eq ':0*(9333|9222|9334)' &&
+  refuse "to a live agent Chrome port ($*)"
+# Ways to name a URL this cannot read: a config file (-K, also as -sK) and
+# {{variables}} expanded into options.
+for arg in "$@"; do
+  case "$arg" in
+    --config|--expand-*|-K*|-[!-]*K*) refuse "with $arg, which can name a URL this guard cannot check" ;;
+  esac
+done
+# A proxy would carry the request to a port named only in the environment.
+unset ALL_PROXY all_proxy HTTP_PROXY http_proxy HTTPS_PROXY https_proxy
+# -q first: no ~/.curlrc. -g: no URL globbing, so a glob inside a port the
+# check above cannot read (:9[3-3]33) is not a port. A guard that runs again
+# only adds them once.
+[ "${1:-}" = -q ] || set -- -q -g "$@"
+# Hand the call to the next curl that is not a guard. Skipped: this file (-ef,
+# not a name: PATH can spell this dir another way, /private/var for /var),
+# another copy of it (two checkouts), and every curl a guard already ran in
+# this chain, so a fake curl that runs `curl` by name cannot loop back here.
+set -f; IFS=:
+for dir in $PATH; do
+  next="$dir/curl"
+  [ -x "$next" ] || continue
+  [ "$next" -ef "$0" ] && continue
+  /usr/bin/cmp -s "$next" "$0" && continue
+  case ":${AGENT_CHROME_CURL_GUARD_RAN:-}:" in *":$next:"*) continue ;; esac
+  AGENT_CHROME_CURL_GUARD_RAN="${AGENT_CHROME_CURL_GUARD_RAN:+$AGENT_CHROME_CURL_GUARD_RAN:}$next"
+  export AGENT_CHROME_CURL_GUARD_RAN
+  exec "$next" "$@"
+done
+echo "agent-chrome-test-env: no curl on PATH after the guard" >&2
+exit 127

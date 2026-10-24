@@ -1,7 +1,7 @@
 require("./lib/agent-chrome-test-env.cjs");
-const { test } = require("node:test");
+const { test, beforeEach } = require("node:test");
 const assert = require("node:assert/strict");
-const { spawn } = require("node:child_process");
+const { spawn, spawnSync } = require("node:child_process");
 const fs = require("node:fs");
 const { tmpdir } = require("node:os");
 const { join } = require("node:path");
@@ -9,6 +9,8 @@ const { setTimeout: sleep } = require("node:timers/promises");
 const session = require("../scripts/agent-chrome-session");
 
 const HELPER = join(__dirname, "../scripts/agent-chrome-session");
+const HOLD = join(__dirname, "lib/hold-before-watchdog.cjs");
+const SPLIT_KILL = join(__dirname, "lib/split-kill.cjs");
 
 function sandbox() {
   const home = fs.mkdtempSync(join(tmpdir(), "agent-chrome-session-"));
@@ -74,23 +76,41 @@ test("a notification that fails does not stop the run", async () => {
   assert.equal(result, "ran");
 });
 
-function cli(home, log, command) {
-  return spawn(process.execPath, [HELPER, "--minutes", "3", "--what", "long check", "--", ...command], {
-    env: { ...process.env, AGENT_CHROME_STATE_HOME: home, AGENT_CHROME_SESSION_TEST_NOTIFY_LOG: log, [session.ENV]: "" },
+const cliEnv = (home, log, extra = {}) => ({ ...process.env, AGENT_CHROME_STATE_HOME: home, AGENT_CHROME_SESSION_TEST_NOTIFY_LOG: log, [session.ENV]: "", ...extra });
+
+// The running test's signal. node 22 aborts it when the test ends or times
+// out, so a poll that sleeps on it, and a helper cli() starts, end with the
+// test instead of keeping the file alive.
+let current;
+beforeEach((t) => { current = t.signal; });
+
+function cli(home, log, command, extra = {}) {
+  const child = spawn(process.execPath, [HELPER, "--minutes", "3", "--what", "long check", "--", ...command], {
+    env: cliEnv(home, log, extra),
     stdio: ["ignore", "pipe", "pipe"],
   });
+  current.addEventListener("abort", () => child.kill("SIGKILL"), { once: true });
+  return child;
 }
 
-async function until(check) {
-  for (let i = 0; i < 200; i += 1) {
+// Polls until check passes, with no deadline of its own: a slow start under
+// parallel suites is not a failure. The test's timeout ends it.
+async function waitFor(check) {
+  for (;;) {
     const value = check();
     if (value) return value;
-    await sleep(25);
+    await sleep(25, undefined, { signal: current });
   }
-  throw new Error("timed out");
 }
 
 const exited = (child) => new Promise((resolve) => child.once("close", (code, signal) => resolve(code ?? signal)));
+
+// The pid a command wrote, or 0 until it is one the test may signal: Number("")
+// is 0, and kill(0) would reach the test's own group.
+function readPid(file) {
+  const pid = fs.existsSync(file) ? Number(fs.readFileSync(file, "utf8")) : 0;
+  return Number.isInteger(pid) && pid > 1 ? pid : 0;
+}
 
 test("the CLI hands the child its session and passes its exit code on", async () => {
   const { home } = sandbox();
@@ -104,26 +124,28 @@ test("the CLI hands the child its session and passes its exit code on", async ()
     ["long check. About 3 min, background tabs only.", "long check: failed (exit 3) after"]);
 });
 
-test("killing the helper stops the child and still says done", async () => {
+test("killing the helper stops the child and still says done", { timeout: 60_000 }, async () => {
   const { home } = sandbox();
   const log = join(home, "notices");
   const child = cli(home, log, [process.execPath, "-e", "setInterval(() => {}, 1000)"]);
-  await until(() => session.declarations(session.stateDir(home)).length === 1);
-  await until(() => fs.existsSync(log));
+  await waitFor(() => session.declarations(session.stateDir(home)).length === 1);
+  await waitFor(() => fs.existsSync(log));
   child.kill("SIGTERM");
   assert.equal(await exited(child), 143);
   assert.match(fs.readFileSync(log, "utf8"), /long check: stopped after/);
   assert.deepEqual(session.declarations(session.stateDir(home)), []);
 });
 
-test("a helper killed with SIGKILL is reported done by the sweep", async (t) => {
+test("a helper killed with SIGKILL is reported done by the sweep", { timeout: 60_000 }, async (t) => {
   const { home, notices, deps } = sandbox();
   const log = join(home, "notices");
   const pidFile = join(home, "child.pid");
   const child = cli(home, log, [process.execPath, "-e", "require('fs').writeFileSync(process.argv[1], String(process.pid)); setInterval(() => {}, 1000)", pidFile]);
-  // The orphaned child keeps the helper's pipes open, so wait for exit, not close, and kill it here.
-  t.after(() => { try { process.kill(Number(fs.readFileSync(pidFile, "utf8"))); } catch { /* gone */ } });
-  await until(() => session.declarations(session.stateDir(home)).length === 1 && fs.existsSync(pidFile));
+  t.after(() => {
+    const pid = readPid(pidFile);
+    if (pid) try { process.kill(pid); } catch { /* gone */ }
+  });
+  await waitFor(() => session.declarations(session.stateDir(home)).length === 1 && fs.existsSync(pidFile));
   await session.sweep({ ...deps, now: Date.now });
   assert.deepEqual(notices, []);
   const gone = new Promise((resolve) => child.once("exit", resolve));
@@ -195,7 +217,7 @@ test("the sweep ends adopted declarations at the grace deadline while their proc
   assert.equal(notices.length, 3);
 });
 
-test("a second signal during a blocked start notice exits before the child starts", async (t) => {
+test("a second signal during a blocked start notice exits before the child starts", { timeout: 60_000 }, async (t) => {
   const { home } = sandbox();
   const log = join(home, "notices");
   const marker = join(home, "started");
@@ -221,9 +243,9 @@ test("a second signal during a blocked start notice exits before the child start
   const gone = exited(child);
   let output = "";
   child.stdout.on("data", (chunk) => { output += chunk; });
-  await until(() => output.includes("ready"));
+  await waitFor(() => output.includes("ready"));
   child.kill("SIGINT");
-  await until(() => output.includes("signal seen"));
+  await waitFor(() => output.includes("signal seen"));
   child.kill("SIGINT");
   const code = await Promise.race([gone, sleep(1000).then(() => "still waiting for start notice")]);
   assert.equal(code, 130);
@@ -231,7 +253,7 @@ test("a second signal during a blocked start notice exits before the child start
   assert.match(fs.readFileSync(log, "utf8"), /slow notice: stopped after/);
 });
 
-test("a second signal kills a child that ignored the first, and the run still says done", async () => {
+test("a second signal kills a child that ignored the first, and the run still says done", { timeout: 60_000 }, async () => {
   const { home } = sandbox();
   const log = join(home, "notices");
   const child = cli(home, log, [process.execPath, "-e", "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000); console.log('ready')"]);
@@ -258,7 +280,7 @@ test("a library run that fails because it was signalled is reported stopped, not
 // Review r3 of agent-chrome-playwright-attach: the handlers went before the
 // done notice, and a stop during it found the declaration claimed and exited
 // at once, so the notice was lost and <id>.json.ending stayed behind.
-test("signals while the done notice goes out wait for it, and nothing is left behind", { timeout: 10000 }, async (t) => {
+test("signals while the done notice goes out wait for it, and nothing is left behind", { timeout: 60_000 }, async (t) => {
   for (const signals of [1, 3]) {
     const home = fs.mkdtempSync(join(tmpdir(), "agent-chrome-session-"));
     t.after(() => fs.rmSync(home, { recursive: true, force: true }));
@@ -281,7 +303,10 @@ test("signals while the done notice goes out wait for it, and nothing is left be
   }
 });
 
-const running = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+const running = (pid) => {
+  assert.ok(Number.isInteger(pid) && pid > 1, `${pid} is no pid the test may probe`);
+  try { process.kill(pid, 0); return true; } catch { return false; }
+};
 
 // A shell that ignores the stop signals, with a grandchild that inherits that
 // and writes its pid, as a command with a helper of its own does.
@@ -291,33 +316,192 @@ function stubborn(pidFile) {
 
 // Follow-up of playwright-session-signals review r2: a real second Ctrl-C
 // SIGKILLed only the command, and what it had started kept running.
-test("a second signal kills everything the command started, not just the command", async (t) => {
+test("a second signal kills everything the command started, not just the command", { timeout: 60_000 }, async (t) => {
   const { home } = sandbox();
   const log = join(home, "notices");
   const pidFile = join(home, "grandchild.pid");
   const child = cli(home, log, stubborn(pidFile));
-  const grandchild = await until(() => fs.existsSync(pidFile) && Number(fs.readFileSync(pidFile, "utf8")));
+  const grandchild = await waitFor(() => readPid(pidFile));
   t.after(() => { try { process.kill(grandchild, "SIGKILL"); } catch { /* gone */ } });
   child.kill("SIGINT");
   await sleep(200);
   const code = new Promise((resolve) => child.once("exit", (status, signal) => resolve(status ?? signal)));
   child.kill("SIGINT");
   assert.equal(await code, 137);
-  await until(() => !running(grandchild));
+  await waitFor(() => !running(grandchild));
+  assert.match(fs.readFileSync(log, "utf8"), /long check: stopped after/);
+});
+
+// Review r3 of chrome-dead-gate-followups: XNU's killpg reaches a group's
+// members one at a time, newest first, so under load the command's shell saw
+// its child die and exited 0 before its own SIGKILL, and the session reported
+// a stopped run as finished. The split-kill preload makes that order certain.
+test("a second signal is reported as a stop even if the command's shell exits 0 first", { timeout: 60_000 }, async (t) => {
+  const { home } = sandbox();
+  const log = join(home, "notices");
+  const pidFile = join(home, "grandchild.pid");
+  const child = cli(home, log, stubborn(pidFile), {
+    NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ""} --require ${JSON.stringify(SPLIT_KILL)}`.trim(),
+    AGENT_CHROME_SESSION_TEST_SPLIT_KILL: pidFile,
+  });
+  t.after(() => {
+    child.kill("SIGKILL");
+    const grandchild = readPid(pidFile);
+    if (grandchild) try { process.kill(grandchild, "SIGKILL"); } catch { /* gone */ }
+  });
+  const grandchild = await waitFor(() => readPid(pidFile));
+  child.kill("SIGINT");
+  await sleep(200);
+  const code = new Promise((resolve) => child.once("exit", (status, signal) => resolve(status ?? signal)));
+  child.kill("SIGINT");
+  assert.equal(await code, 137);
+  await waitFor(() => !running(grandchild));
   assert.match(fs.readFileSync(log, "utf8"), /long check: stopped after/);
 });
 
 // The command's own process group must not let it outlive a harness that
 // SIGKILLs the session, as it did when the command shared the session's group.
-test("a session SIGKILLed by its harness takes its command and what it started down with it", async (t) => {
+test("a session SIGKILLed by its harness takes its command and what it started down with it", { timeout: 60_000 }, async (t) => {
   const { home } = sandbox();
   const log = join(home, "notices");
   const pidFile = join(home, "grandchild.pid");
   const child = cli(home, log, stubborn(pidFile));
-  const grandchild = await until(() => fs.existsSync(pidFile) && Number(fs.readFileSync(pidFile, "utf8")));
+  const grandchild = await waitFor(() => readPid(pidFile));
   t.after(() => { try { process.kill(grandchild, "SIGKILL"); } catch { /* gone */ } });
   child.kill("SIGKILL");
-  await until(() => !running(grandchild));
+  await waitFor(() => !running(grandchild));
+});
+
+// Review r4 of chrome-dead-gate-followups: the helper started the command and
+// only then its watchdog, so a harness SIGKILL between the two left the command
+// and what it started running with nothing to take them down. The hold preload
+// stops the helper in that gap, so the SIGKILL lands there every time.
+test("a session SIGKILLed before its watchdog starts runs none of its command", { timeout: 60_000 }, async (t) => {
+  const { home } = sandbox();
+  const log = join(home, "notices");
+  const pidFile = join(home, "grandchild.pid");
+  const hold = join(home, "held");
+  const child = cli(home, log, stubborn(pidFile), {
+    NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ""} --require ${JSON.stringify(HOLD)}`.trim(),
+    AGENT_CHROME_SESSION_TEST_HOLD: hold,
+  });
+  t.after(() => {
+    child.kill("SIGKILL");
+    const grandchild = readPid(pidFile);
+    if (grandchild) try { process.kill(grandchild, "SIGKILL"); } catch { /* gone */ }
+  });
+  const group = await waitFor(() => readPid(hold));
+  // The group is the helper's own child, so the SIGKILL below cannot strand anything the test did not start.
+  assert.ok(Number.isInteger(group) && group > 1, `held group ${group}`);
+  assert.equal(Number(spawnSync("/bin/ps", ["-o", "ppid=", "-p", String(group)], { encoding: "utf8" }).stdout), child.pid);
+  child.kill("SIGKILL");
+  await waitFor(() => !running(group) || fs.existsSync(pidFile));
+  assert.equal(fs.existsSync(pidFile), false, "the command ran before its watchdog had its group");
+});
+
+// The launcher that holds the command until its watchdog runs is a shell, and
+// bash rewrites PWD and drops OLDPWD and _ from what it passes on, and a
+// launcher shell would add SHLVL and the like of its own.
+test("the command gets the session's environment as it is, and no pipe of the launcher's", async () => {
+  const { home } = sandbox();
+  const log = join(home, "notices");
+  const given = { OLDPWD: "/nowhere/old", PWD: "/nowhere/now", _: "/nowhere/last", AGENT_CHROME_SESSION_TEST_VALUE: "a=b c\nd" };
+  // Left out of what the test passes, so one a launcher shell adds shows up.
+  const unset = { SHLVL: undefined };
+  const run = async (command) => {
+    const child = cli(home, log, command, { ...given, ...unset });
+    let out = "";
+    child.stdout.on("data", (chunk) => { out += chunk; });
+    assert.equal(await exited(child), 0);
+    return out;
+  };
+  const env = (await run(["/usr/bin/env", "-0"])).split("\0").filter(Boolean);
+  for (const [name, value] of Object.entries(given)) assert.ok(env.includes(`${name}=${value}`), `${name} must reach the command unchanged`);
+  // The session adds only its own id, which the test's env already names, empty.
+  const own = [session.ENV];
+  const names = (entries) => [...new Set(entries)].sort();
+  const passed = Object.entries(cliEnv(home, log, { ...given, ...unset })).filter(([, value]) => value !== undefined).map(([name]) => name);
+  assert.deepEqual(names(env.map((entry) => entry.slice(0, entry.indexOf("=")))), names([...passed, ...own]));
+  assert.equal(await run(["/bin/sh", "-c", "if { : <&3; } 2>/dev/null; then echo open; else echo closed; fi"]), "closed\n");
+});
+
+// The three ways the helper starts a command: from an agent's harness (no
+// terminal, so a group of its own), from a terminal, and inside another
+// session. Each run gets its own notice logs; script(1) puts the command's
+// stdout and stderr both on its own stdout.
+async function onEachPath(home, command, extra = {}) {
+  const helper = (what) => [process.execPath, HELPER, "--minutes", "3", "--what", what, "--", ...command];
+  const starts = {
+    grouped: (log) => cli(home, log, command, extra),
+    terminal: (log) => spawn("/usr/bin/script", ["-q", "/dev/null", ...helper("long check")], { env: cliEnv(home, log, extra), stdio: ["ignore", "pipe", "pipe"] }),
+    nested: (log) => cli(home, log, helper("inner check"), extra),
+  };
+  const runs = {};
+  const logs = fs.mkdtempSync(join(home, "notices-"));
+  for (const [path, start] of Object.entries(starts)) {
+    const log = join(logs, path);
+    const child = start(log);
+    let out = "";
+    let err = "";
+    child.stdout.on("data", (chunk) => { out += chunk; });
+    child.stderr.on("data", (chunk) => { err += chunk; });
+    const code = await exited(child);
+    const notices = fs.existsSync(log) ? fs.readFileSync(log, "utf8").trim().split("\n").map((line) => line.replace(/ after .*/, " after")) : [];
+    runs[path] = { code, out, err: path === "terminal" ? out : err, notices };
+  }
+  return runs;
+}
+
+// Review r2 of chrome-dead-gate-followups: env reads a leading NAME=value
+// operand as an assignment, so `-- ./a=b` ran nothing, printed the session's
+// whole environment and said "finished" on the agent path, while the terminal
+// path ran the file.
+test("a command name with \"=\" in it is refused on every path, and nothing prints the environment", { timeout: 60_000 }, async () => {
+  const { home } = sandbox();
+  const file = join(home, "a=b");
+  fs.writeFileSync(file, "#!/bin/sh\necho the file ran\n", { mode: 0o755 });
+  const mark = "agent-chrome-session-test-env-mark";
+  const runs = await onEachPath(home, [file], { AGENT_CHROME_SESSION_TEST_MARK: mark });
+  for (const [path, run] of Object.entries(runs)) {
+    // First, so the messages below never quote an environment.
+    for (const output of [run.out, run.err]) {
+      assert.ok(!output.includes(mark), `${path} printed the environment`);
+      assert.ok(!output.includes("the file ran"), `${path} ran the file`);
+    }
+    assert.equal(run.code, 2, `${path}: exit code`);
+    assert.ok(run.err.includes(`agent-chrome-session: command name may not contain "=": ${file}`), `${path}: says why, not ${JSON.stringify(run.err.slice(0, 200))}`);
+    assert.deepEqual(run.notices, ["long check. About 3 min, background tabs only.", "long check: failed (exit 2) after"], path);
+  }
+});
+
+test("a missing command exits 127 and an unexecutable one 126, with the helper's message, on every path", { timeout: 60_000 }, async () => {
+  const { home } = sandbox();
+  const unexecutable = join(home, "not-executable");
+  fs.writeFileSync(unexecutable, "#!/bin/sh\necho the file ran\n", { mode: 0o644 });
+  const cases = [
+    [join(home, "missing"), 127, "command not found"],
+    ["agent-chrome-session-test-no-such-command", 127, "command not found"],
+    [unexecutable, 126, "permission denied"],
+  ];
+  for (const [command, code, why] of cases) {
+    for (const [path, run] of Object.entries(await onEachPath(home, [command]))) {
+      assert.equal(run.code, code, `${path} ${command}: exit code`);
+      assert.ok(run.err.includes(`agent-chrome-session: ${command}: ${why}`), `${path} ${command}: says why, not ${JSON.stringify(run.err.slice(0, 200))}`);
+      assert.ok(!run.out.includes("the file ran"), `${path} ran ${command}`);
+      assert.deepEqual(run.notices, ["long check. About 3 min, background tabs only.", `long check: failed (exit ${code}) after`], `${path} ${command}`);
+    }
+  }
+});
+
+// As from a shell, a script with no #! line runs through /bin/sh.
+test("a script with no shebang runs through /bin/sh on every path", { timeout: 60_000 }, async () => {
+  const { home } = sandbox();
+  const script = join(home, "no-shebang");
+  fs.writeFileSync(script, 'echo "no shebang, ran"\n', { mode: 0o755 });
+  for (const [path, run] of Object.entries(await onEachPath(home, [script]))) {
+    assert.equal(run.code, 0, `${path}: exit code, stderr ${JSON.stringify(run.err.slice(0, 200))}`);
+    assert.match(run.out, /no shebang, ran/, path);
+  }
 });
 
 // What each process's group is, as the command sees it.
@@ -408,4 +592,9 @@ test("keep against a gate from before keep (Chrome's 404) says the tab stays; an
   assert.match(await session.keepTab("tab-1", "form to review", url), /stays open anyway/);
   status = 403;
   await assert.rejects(session.keepTab("tab-1", "form to review", url), /refused/);
+});
+
+test("the launcher and watchdog survive a drained socket (tests/agent_chrome_session_drain_test.py)", () => {
+  const run = spawnSync("python3", ["-I", join(__dirname, "agent_chrome_session_drain_test.py")], { encoding: "utf8", timeout: 90000 });
+  assert.equal(run.status, 0, `${run.stderr}${run.error ? run.error.message : ""}`.slice(-4000));
 });

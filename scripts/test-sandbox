@@ -1,0 +1,469 @@
+#!/usr/bin/env bash
+# test-sandbox - run a test so it cannot write outside one scratch dir and
+# cannot outlive its timeout.
+#
+#   test-sandbox --scratch DIR [--timeout SECONDS] [--rm-scratch] -- command [args...]
+#
+# The command runs under /usr/bin/sandbox-exec with a profile that denies
+# every file write (data, create, unlink, rename, mode, flags, xattrs, times)
+# outside the real path of DIR, apart from a few device nodes, and denies
+# every new hard link. Paths are checked after symlink resolution, so a
+# symlink inside DIR that points elsewhere gives no way out. A hard link
+# would: the kernel sees only its name inside DIR. So DIR is refused if any
+# file in it has more than one link or sits on another file system, and the
+# command cannot make new hard links. The command sees TEST_SANDBOX=DIR,
+# TMPDIR and XDG_CACHE_HOME inside DIR, and DIR/bin first on PATH with a
+# mktemp shim (macOS mktemp ignores TMPDIR). A suite that runs something
+# with a scrubbed environment (env -i) passes those on itself. The command
+# can signal only processes inside its own sandbox, and cannot connect to
+# TCP ports 9333, 9222 or 9334 (the agent Chrome and the owner's own).
+#
+# DIR must sit inside /tmp or the user temp dir (from getconf, not TMPDIR),
+# hold no repo checkout, and be none of /, HOME or an ancestor of HOME.
+#
+# The command runs in a process group test-sandbox creates for it. When it
+# exits, times out, or test-sandbox is signalled, that group gets TERM, then
+# KILL after a grace period (also when TERM is ignored), and so does each
+# process test-sandbox saw leave the group (setsid, setpgid) while its
+# parent chain still led back to the command. Every target is checked
+# against that group, its leader (test-sandbox's own child, not yet reaped)
+# and that list. A listed pid is dropped as soon as a ps snapshot shows it
+# gone or with another start time, so a pid reused by an unrelated process
+# is not signalled. Two narrow cases remain: a pid that dies and is reused
+# between the last snapshot and the signal, or within the second it
+# started, would be hit. test-sandbox's own tools run from a fixed PATH, so
+# nothing the command or the caller puts on PATH can pick a target.
+# Anything found alive after that is a loud failure.
+#
+# Gaps, accepted because writes stay confined and the accidents this is for
+# (an rm walking a link) do not daemonize or talk to services:
+#   - A daemon that double-forks and calls setsid between two scans (every
+#     0.25s) is never seen, and outlives the run.
+#   - Writes a service makes for the command are not confined: cfprefsd
+#     (`defaults write` to a path in the canary changed its dir's mtime),
+#     the nix daemon (store writes from `nix build`), LaunchServices (`open`
+#     starts an app outside the sandbox), and a copy of /bin/launchctl,
+#     which the exec deny names by path.
+#   - A writable fd the caller passes in (`5>>file`) writes wherever it
+#     points; only fds the command opens itself are checked.
+#   - DIR is checked once, at the start: a hard link or a mount that
+#     something outside adds to it during the run is a way out.
+#   - When test-sandbox itself is SIGKILLed, the sentinel still kills the
+#     group, but processes that left the group live on (still confined).
+#   - The command may create, write and unlink /private/tmp/sh-thd-<number>
+#     (bash 3.2 here-documents, see the profile below).
+#   - Network access other than the three Chrome ports is open.
+#   - DIR need not be fresh: files an earlier run left in it are writable.
+#   - A command that reads the terminal in an interactive run stops with
+#     SIGTTIN (it runs in a background process group) until the timeout:
+#     a git or ssh prompt hangs instead of failing.
+#   - tests/test_sandbox_test.sh runs unconfined (sandboxes do not nest).
+#
+# Exit status: the command's own, or
+#   123  a process survived the kill
+#   124  the command timed out
+#   125  refused setup (bad scratch dir, bad arguments)
+#
+# Born from a review mutant whose `rm -rf "$dir/$path/"` followed a link to
+# / and walked it for 19 minutes after its watchdog killed the parent shell.
+set -uo pipefail
+
+# test-sandbox's own tools come from the system, never from the caller's
+# PATH; the command gets the caller's PATH back.
+caller_path=$PATH
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+
+readonly EXIT_SURVIVORS=123 EXIT_TIMEOUT=124 EXIT_SETUP=125
+GRACE_SECONDS=${TEST_SANDBOX_GRACE:-2}
+# Only tests/test_sandbox_test.sh sets these. The first makes a process
+# outlive the final signal and pins the survivor check. The second records
+# each signal test-sandbox would send instead of sending it, so the suite
+# can check every target. The third adds one more denied TCP port, so the
+# suite can prove the port rule on a listener of its own.
+FINAL_SIGNAL=${TEST_SANDBOX_KILL_SIGNAL:-KILL}
+kill_log=${TEST_SANDBOX_KILL_LOG:-}
+extra_port=${TEST_SANDBOX_EXTRA_DENY_PORT:-}
+# Test-only too: a pid to plant in the escapee list with a start time no
+# process has, as a dead escapee's entry looks once its pid is reused.
+# Honoured only with the kill log on, so a seed can never send a signal.
+seed_escapee=''
+[ -z "$kill_log" ] || seed_escapee=${TEST_SANDBOX_SEED_ESCAPEE:-}
+
+usage() {
+  echo "usage: test-sandbox --scratch DIR [--timeout SECONDS] [--rm-scratch] -- command [args...]" >&2
+}
+
+refuse() {
+  echo "test-sandbox: refused: $*" >&2
+  exit "$EXIT_SETUP"
+}
+
+scratch='' timeout=600 rm_scratch=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --scratch) [ $# -ge 2 ] || { usage; exit "$EXIT_SETUP"; }; scratch=$2; shift 2 ;;
+    --timeout) [ $# -ge 2 ] || { usage; exit "$EXIT_SETUP"; }; timeout=$2; shift 2 ;;
+    --rm-scratch) rm_scratch=1; shift ;;
+    --) shift; break ;;
+    *) usage; exit "$EXIT_SETUP" ;;
+  esac
+done
+[ -n "$scratch" ] && [ $# -gt 0 ] || { usage; exit "$EXIT_SETUP"; }
+[[ "$timeout" =~ ^[1-9][0-9]*$ ]] || refuse "--timeout must be a positive whole number of seconds"
+[ -z "$extra_port" ] || [[ "$extra_port" =~ ^[1-9][0-9]{0,4}$ ]] || refuse "TEST_SANDBOX_EXTRA_DENY_PORT must be a port number"
+[ -z "$seed_escapee" ] || [[ "$seed_escapee" =~ ^[1-9][0-9]*$ ]] || refuse "TEST_SANDBOX_SEED_ESCAPEE must be a pid"
+[ -x /usr/bin/sandbox-exec ] || refuse "/usr/bin/sandbox-exec is missing"
+# macOS refuses to apply a sandbox inside another one (sandbox_apply: EPERM).
+[ -z "${TEST_SANDBOX:-}" ] || refuse "already inside test-sandbox (TEST_SANDBOX=$TEST_SANDBOX), and sandboxes do not nest"
+
+# Resolve every symlink before any check, so the checks see what the kernel sees.
+real_dir() { (cd -P -- "$1" 2>/dev/null && pwd -P); }
+
+[ -d "$scratch" ] || refuse "scratch dir $scratch does not exist"
+real=$(real_dir "$scratch") || refuse "cannot resolve $scratch"
+case "$real" in
+  *[\"\\]* | *$'\n'*) refuse "scratch path $real contains a quote, backslash or newline" ;;
+esac
+[ "$real" != / ] || refuse "scratch dir is /"
+
+# Home and the temp dir come from the system, not the environment, so a
+# spoofed HOME or TMPDIR cannot widen where a scratch dir may live.
+# shellcheck disable=SC2016 # Perl code, not shell.
+passwd_home=$(perl -e 'print +(getpwuid $<)[7]')
+homes=()
+for h in "$passwd_home" "${HOME:-}"; do
+  [ -n "$h" ] && h=$(real_dir "$h") && homes+=("$h")
+done
+for h in "${homes[@]}"; do
+  [ "$real" != "$h" ] || refuse "scratch dir is \$HOME"
+  case "$h/" in "$real"/*) refuse "scratch dir $real is an ancestor of \$HOME" ;; esac
+done
+if [ -n "${TMPDIR:-}" ] && real_tmpdir=$(real_dir "$TMPDIR"); then
+  [ "$real_tmpdir" != / ] || refuse "TMPDIR is /"
+  for h in "${homes[@]}"; do
+    case "$h/" in "$real_tmpdir"/*) refuse "TMPDIR $real_tmpdir is \$HOME or an ancestor of it" ;; esac
+  done
+fi
+
+user_tmp=$(real_dir "$(getconf DARWIN_USER_TEMP_DIR)") || refuse "cannot resolve the user temp dir (getconf DARWIN_USER_TEMP_DIR)"
+under=0
+for parent in /private/tmp "$user_tmp"; do
+  case "$real" in "$parent"/?*) under=1 ;; esac
+done
+[ "$under" = 1 ] || refuse "scratch dir $real is not inside /tmp or the user temp dir ($user_tmp)"
+
+dir=$real
+while [ -n "$dir" ]; do
+  [ ! -e "$dir/.git" ] || refuse "scratch dir $real is inside a repo checkout ($dir)"
+  dir=${dir%/*}
+done
+nested=$(find "$real" -name .git -print -quit 2>/dev/null)
+[ -z "$nested" ] || refuse "scratch dir $real holds a repo checkout (${nested%/.git})"
+# The profile checks paths, so a hard link in the scratch dir to a file
+# outside it, or a mount of another file system, is a way out. Neither can
+# be made inside the sandbox, so this one look at the start closes both for
+# what is in DIR now; one added from outside during the run is a gap (see
+# the header). No case mounts a file system here, so the st_dev test is a
+# second layer no case pins.
+# shellcheck disable=SC2016 # Perl code, not shell.
+linked=$(perl -MFile::Find -e '
+  my $root = shift;
+  my $dev = (lstat $root)[0];
+  find({ no_chdir => 1, wanted => sub {
+    my @s = lstat $_ or return;
+    if ($s[0] != $dev) { print "$_ is on another file system"; exit }
+    if (!-d _ && $s[3] > 1) { print "$_ has $s[3] hard links"; exit }
+  } }, $root)' "$real")
+[ -z "$linked" ] || refuse "$linked; the sandbox cannot confine writes through it"
+for p in "$real/tmp" "$real/bin" "$real/bin/mktemp"; do
+  [ ! -L "$p" ] || refuse "$p is a symlink"
+done
+[ ! -e "$real/bin/mktemp" ] || [ -f "$real/bin/mktemp" ] || refuse "$real/bin/mktemp is not a regular file"
+
+deny_ports="9333 9222 9334${extra_port:+ $extra_port}"
+port_rules=''
+for port in $deny_ports; do port_rules+=" (remote tcp \"*:$port\")"; done
+
+# SBPL: the last matching rule wins. Writes are denied everywhere, then
+# allowed again only inside the scratch dir and, as data writes alone, for
+# the device nodes a shell or a pty (script, expect) opens by path. Data
+# writes only is a second layer: none of those nodes is a place a test
+# could delete, chmod or rename for harm, and no case pins it.
+# Apple's /bin/bash 3.2 (also /bin/sh) ignores TMPDIR for here-documents:
+# it checks that /tmp is writable, then creates /tmp/sh-thd-<number> and
+# unlinks it after opening it, so exactly that much of /tmp is open. SBPL
+# cannot tell a shell's own file from another's, so the command could
+# unlink another shell's here-document in that moment, nothing more.
+# Hard links are denied everywhere, the scratch dir included (see the
+# check above). Apple events and launchctl would let a test ask an
+# unsandboxed process (Finder, launchd) to do the write. /bin/ps is setuid
+# root, which a sandbox may not exec; it only reads, so it runs outside the
+# sandbox. Signals reach only processes in the same sandbox: the command
+# and what it starts.
+profile="(version 1)
+(allow default)
+(deny file-write*)
+(allow file-write* (subpath \"$real\"))
+(allow file-write-data
+  (literal \"/dev/null\")
+  (literal \"/dev/zero\")
+  (literal \"/dev/tty\")
+  (literal \"/dev/ptmx\")
+  (regex #\"^/dev/ttys[0-9]+$\")
+  (literal \"/dev/dtracehelper\")
+  (subpath \"/dev/fd\")
+  (literal \"/private/tmp\"))
+(allow file-write-create file-write-data file-write-unlink
+  (regex #\"^/private/tmp/sh-thd-[0-9]+$\"))
+(deny file-link)
+(deny network-outbound$port_rules)
+(deny appleevent-send)
+(deny signal)
+(allow signal (target same-sandbox))
+(allow process-exec (literal \"/bin/ps\") (with no-sandbox))
+(deny process-exec (literal \"/bin/launchctl\") (literal \"/usr/bin/osascript\"))"
+
+# macOS mktemp puts `mktemp`, `mktemp -d` and `mktemp -t prefix` in the
+# per-user temp dir under /var/folders whatever TMPDIR says. This shim keeps
+# them in TMPDIR, so the real temp dir needs no write allowance. Caches go
+# in the scratch dir too (XDG_CACHE_HOME): nix eval, for one, takes a lock
+# under ~/.cache/nix and fails if it cannot. The setup runs inside the
+# sandbox and renames a new file into place, so neither a symlink nor a
+# hard link already at bin/mktemp is written through. The checks above
+# refuse both first; this is the second layer.
+# shellcheck disable=SC2016 # expands in the inner shell.
+shim='#!/bin/bash
+# Written by test-sandbox: keep TMPDIR-less mktemp forms inside TMPDIR.
+flags=() prefix=tmp want_prefix=0
+for arg in "$@"; do
+  if [ "$want_prefix" = 1 ]; then prefix=$arg want_prefix=0; continue; fi
+  case "$arg" in
+    -d | -q | -u) flags+=("$arg") ;;
+    -t) want_prefix=1 ;;
+    *) exec /usr/bin/mktemp "$@" ;;
+  esac
+done
+exec /usr/bin/mktemp "${flags[@]}" "${TMPDIR%/}/$prefix.XXXXXXXXXX"
+'
+# shellcheck disable=SC2016 # expands in the inner shell.
+/usr/bin/sandbox-exec -p "$profile" /bin/bash -c '
+  set -e
+  mkdir -p "$1/tmp" "$1/bin"
+  new=$(/usr/bin/mktemp "$1/bin/.mktemp.XXXXXXXXXX")
+  printf %s "$2" >"$new"
+  chmod 755 "$new"
+  mv -f "$new" "$1/bin/mktemp"' \
+  setup "$real" "$shim" ||
+  refuse "cannot install $real/tmp, $real/bin and the mktemp shim (inside another sandbox? sandboxes do not nest)"
+
+# A sentinel leads a new process group and starts the command in it, already
+# inside the sandbox, so every child it forks inherits both. The sentinel
+# passes on the command's exit status, and kills its own group if
+# test-sandbox itself disappears (SIGKILL leaves no chance to run traps).
+# Bash starts a background command with INT and QUIT ignored; the sentinel
+# gives the command test-sandbox's own dispositions back.
+# shellcheck disable=SC2016 # Perl code, not shell.
+sentinel='
+use POSIX ":sys_wait_h";
+setpgrp(0, 0) or die "test-sandbox: setpgrp: $!\n";
+my %ignored = map { $_ => 1 } split " ", shift @ARGV;
+$SIG{$_} = $ignored{$_} ? "IGNORE" : "DEFAULT" for qw(INT QUIT);
+my $owner = getppid();
+my $child = fork() // die "test-sandbox: fork: $!\n";
+if ($child == 0) { exec { $ARGV[0] } @ARGV or die "test-sandbox: exec: $!\n" }
+while (1) {
+  if (waitpid($child, WNOHANG) == $child) { exit(($? & 127) ? 128 + ($? & 127) : $? >> 8) }
+  if (getppid() != $owner && $$ > 1) { kill "KILL", -$$ }
+  select(undef, undef, undef, 0.2);
+}'
+# Signals ignored when test-sandbox started stay ignored for the command; a
+# foreground child sees exactly those (before any trap below is set).
+# shellcheck disable=SC2016 # Perl code, not shell.
+ignored=$(perl -e 'print join " ", grep { ($SIG{$_} // "") eq "IGNORE" } qw(INT QUIT)')
+
+my_pgid=$(/bin/ps -o pgid= -p $$ | tr -d ' ')
+[[ "$my_pgid" =~ ^[1-9][0-9]*$ ]] || refuse "cannot read test-sandbox's own process group"
+
+perl -e "$sentinel" "$ignored" \
+  /usr/bin/sandbox-exec -p "$profile" \
+  /usr/bin/env TEST_SANDBOX="$real" \
+  TMPDIR="$real/tmp/" XDG_CACHE_HOME="$real/cache" PATH="$real/bin:$caller_path" "$@" <&0 &
+leader=$!
+# The sentinel makes itself the leader of a new group, so the group's id is
+# its pid. That group, its leader and pids seen leaving it are the only
+# targets. The leader is test-sandbox's own child and is reaped only after
+# the last signal, so neither its pid nor the group id can be reused first.
+pgid=$leader
+
+# Descendants seen to leave the process group, keyed by pid, valued by the
+# start time ps showed for them, so an entry whose pid now belongs to
+# another process is dropped instead of signalled.
+declare -A escaped=()
+[ -z "$seed_escapee" ] || escaped[$seed_escapee]='seeded: no process started then'
+signalled=''
+trap 'signalled=TERM' TERM
+trap 'signalled=INT' INT
+trap 'signalled=HUP' HUP
+
+# One ps snapshot, start times included, so every decision reads one view:
+# drop escapees whose pid is gone, a zombie or started at another time;
+# record descendants of the leader that left its group, with their start
+# time; list the group's live members; and report whether the leader is
+# still running (not a zombie).
+scan() {
+  local snapshot out known='' pid
+  snapshot=$(/bin/ps -ax -o pid=,ppid=,pgid=,stat=,lstart=) || return 0
+  for pid in "${!escaped[@]}"; do known+="$pid=${escaped[$pid]};"; done
+  out=$(awk -v leader="$leader" -v pgid="$pgid" -v known="$known" '
+    BEGIN {
+      n = split(known, k, ";")
+      for (i = 1; i <= n; i++)
+        if ((j = index(k[i], "=")) > 1) want[substr(k[i], 1, j - 1)] = substr(k[i], j + 1)
+    }
+    {
+      parent[$1] = $2; group[$1] = $3; zombie[$1] = ($4 ~ /^Z/)
+      # lstart is the last five fields; joining them drops the padding.
+      start[$1] = $5 " " $6 " " $7 " " $8 " " $9
+      if ($1 == leader && !zombie[$1]) running = 1
+      if ($3 == pgid && !zombie[$1]) print "member", $1
+    }
+    END {
+      print "running", running + 0
+      for (p in want) {
+        if ((p in start) && !zombie[p] && start[p] == want[p]) esc[p] = 1
+        else print "gone", p
+      }
+      for (pid in start) {
+        # The sentinel runs a moment in the caller group before its setpgrp.
+        if (pid == leader || group[pid] == pgid || (pid in esc) || zombie[pid]) continue
+        for (p = parent[pid]; p != "" && p > 1; p = parent[p])
+          if (p == leader || group[p] == pgid || (p in esc)) { print "escaped", pid, start[pid]; break }
+      }
+    }' <<<"$snapshot")
+  local tag value rest
+  members=''
+  while read -r tag value rest; do
+    case "$tag" in
+      running) leader_running=$value ;;
+      member) members+="$value " ;;
+      gone) unset "escaped[$value]" ;;
+      escaped) [ -z "$rest" ] || escaped[$value]=$rest ;;
+    esac
+  done <<<"$out"
+}
+
+started=$SECONDS
+timed_out=0
+leader_running=1
+members=''
+while :; do
+  scan
+  [ "$leader_running" = 1 ] || break
+  [ -z "$signalled" ] || break
+  if [ $((SECONDS - started)) -ge "$timeout" ]; then
+    timed_out=1
+    echo "test-sandbox: timed out after ${timeout}s; killing process group $pgid" >&2
+    break
+  fi
+  sleep 0.25
+done
+
+# send <signal> <target>: the one place a signal leaves test-sandbox. A
+# target is -PGID for the command's own group, the leader's pid while it
+# runs, or a pid the last scan kept on the escapee list. Anything else (0,
+# 1, -1, another group, test-sandbox itself or its caller's group) is
+# refused, whatever the code above computed.
+send() {
+  local sig=$1 target=$2 pid
+  case "$target" in
+    -*)
+      if [ "$target" != "-$pgid" ] || ! [[ "$pgid" =~ ^[1-9][0-9]*$ ]] || [ "$pgid" -le 1 ] || [ "$pgid" = "$my_pgid" ]; then
+        echo "test-sandbox: refusing to signal process group $target" >&2
+        return 1
+      fi ;;
+    *)
+      pid=$target
+      if ! [[ "$pid" =~ ^[1-9][0-9]*$ ]] || [ "$pid" -le 1 ] || [ "$pid" = $$ ] || [ "$pid" = "$my_pgid" ] ||
+        { [ -z "${escaped[$pid]+set}" ] && { [ "$pid" != "$leader" ] || [ "$leader_running" != 1 ]; }; }; then
+        echo "test-sandbox: refusing to signal pid $target" >&2
+        return 1
+      fi ;;
+  esac
+  if [ -n "$kill_log" ]; then
+    echo "$sig $target" >>"$kill_log"
+  else
+    kill -s "$sig" -- "$target" 2>/dev/null
+  fi
+}
+
+# Scans first, so only escapees still the same process are signalled. The
+# leader gets the signal by pid too: one that lands before its setpgrp
+# finds no group to reach it through.
+kill_all() {
+  local sig=$1 pid
+  scan
+  send "$sig" "-$pgid"
+  send CONT "-$pgid"
+  if [ "$leader_running" = 1 ]; then
+    send "$sig" "$leader"
+    send CONT "$leader"
+  fi
+  for pid in "${!escaped[@]}"; do
+    send "$sig" "$pid"
+    send CONT "$pid"
+  done
+}
+
+# Live members of the group and live escapees, as the last scan saw them.
+survivors() {
+  local pid
+  for pid in $members "${!escaped[@]}"; do echo "$pid"; done
+}
+
+# Scans as it waits, so a child an escapee forks late is still seen.
+wait_empty() {
+  local deadline=$((SECONDS + $1))
+  while scan; [ -n "$(survivors)" ] && [ "$SECONDS" -lt "$deadline" ]; do sleep 0.1; done
+  [ -z "$(survivors)" ]
+}
+
+scan
+for pid in $(printf '%s\n' "${!escaped[@]}" | sort -un); do
+  echo "test-sandbox: killing pid $pid, which left process group $pgid: $(/bin/ps -o command= -p "$pid")" >&2
+done
+kill_all TERM
+# Escalate before reaping the leader: a TERM the caller ignored stays
+# ignored through exec and bash cannot trap it, so `wait` would otherwise
+# block until the command ends on its own.
+if ! wait_empty "$GRACE_SECONDS"; then
+  kill_all "$FINAL_SIGNAL"
+  wait_empty 3
+fi
+left=$(survivors | sort -un)
+# Reap the leader only once it has stopped, so this never blocks. One that
+# outlived the final signal is a survivor and fails the run below.
+status=$EXIT_SURVIVORS
+if [ "$leader_running" != 1 ]; then
+  wait "$leader" 2>/dev/null
+  status=$?
+fi
+
+if [ "$rm_scratch" = 1 ]; then
+  # Clean up inside the same sandbox: a link in the scratch dir cannot take
+  # the delete anywhere else.
+  /usr/bin/sandbox-exec -p "$profile" /usr/bin/chflags -R nouchg "$real" 2>/dev/null
+  /usr/bin/sandbox-exec -p "$profile" /bin/rm -rf "$real" || echo "test-sandbox: could not remove $real" >&2
+fi
+
+if [ -n "$left" ]; then
+  echo "test-sandbox: FAILED: processes survived SIG$FINAL_SIGNAL:" >&2
+  /bin/ps -o pid=,ppid=,pgid=,stat=,command= -p "$(echo "$left" | paste -sd, -)" >&2
+  exit "$EXIT_SURVIVORS"
+fi
+[ "$timed_out" = 0 ] || exit "$EXIT_TIMEOUT"
+case "$signalled" in
+  TERM) exit 143 ;;
+  INT) exit 130 ;;
+  HUP) exit 129 ;;
+esac
+exit "$status"

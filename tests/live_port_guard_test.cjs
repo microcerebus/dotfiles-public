@@ -34,18 +34,23 @@ const ways = {
   "net.createConnection(options)": (port) => quiet(net.createConnection({ port, host: "127.0.0.1" })),
   "socket.connect(port)": (port) => quiet(new net.Socket().connect(port, "127.0.0.1")),
   "socket.connect(options)": (port) => quiet(new net.Socket().connect({ port, host: "127.0.0.1" })),
-  "fetch": (port) => fetch(\`http://127.0.0.1:\${port}/json/version\`, { signal: AbortSignal.timeout(300) }),
-  "fetch URL object": (port) => fetch(new URL(\`http://127.0.0.1:\${port}/json/version\`), { signal: AbortSignal.timeout(300) }),
+  "fetch": (port) => fetch(\`http://127.0.0.1:\${port}/json/version\`),
+  "fetch URL object": (port) => fetch(new URL(\`http://127.0.0.1:\${port}/json/version\`)),
+  "fetch Request": (port) => fetch(new Request(\`http://127.0.0.1:\${port}/json/version\`)),
 };
 (async () => {
   const results = [];
   for (const port of [9333, 9222, 9334, 9999]) {
     for (const [way, open] of Object.entries(ways)) {
       const before = globalThis.reached.length;
+      const reached = () => globalThis.reached.slice(before).includes(port);
       let refused = false;
-      try { await Promise.race([Promise.resolve(open(port)).catch((e) => { if (/live-port-guard/.test(e.message)) refused = true; }), new Promise((r) => setTimeout(r, 400))]); }
+      try { Promise.resolve(open(port)).catch((e) => { if (/live-port-guard/.test(e.message)) refused = true; }); }
       catch (error) { refused = /live-port-guard/.test(error.message); }
-      results.push({ port, way, refused, reached: globalThis.reached.slice(before).includes(port) });
+      // Each way ends in a refusal or in the stubbed connect, however long
+      // that takes; a way that does neither hangs until the test's timeout.
+      while (!refused && !reached()) await new Promise((r) => setTimeout(r, 5));
+      results.push({ port, way, refused, reached: reached() });
     }
   }
   const unparsable = await fetch("http://[not a host/json/version").then(() => "fetched", (error) => error.message);
@@ -60,9 +65,9 @@ test("the guard refuses every way to open 9333, 9222 and 9334, and still lets 99
   fs.writeFileSync(join(dir, "stub.cjs"), STUB);
   // Only the stub and the guard: no inherited preloads, so the result is this guard's alone.
   const out = execFileSync(process.execPath, ["--require", join(dir, "stub.cjs"), "--require", GUARD, "-e", PROBE],
-    { env: { PATH: process.env.PATH }, encoding: "utf8", timeout: 30000 });
+    { env: { PATH: process.env.PATH }, encoding: "utf8", timeout: 120000 });
   const { results, unparsable } = JSON.parse(out);
-  assert.equal(results.length, 32);
+  assert.equal(results.length, 36);
   for (const { port, way, refused, reached } of results) {
     if (port === 9999) assert.ok(reached && !refused, `${way} to 9999 must go through to the (stubbed) connect`);
     else assert.ok(refused && !reached, `${way} to ${port} was ${reached ? "let through to connect" : "not refused"}; tests/lib/live-port-guard.cjs must refuse it (${way.startsWith("fetch") ? "its globalThis.fetch wrapper rejects a live port before undici connects" : "read the port from inside Socket.connect's [options, cb] array"}).`);

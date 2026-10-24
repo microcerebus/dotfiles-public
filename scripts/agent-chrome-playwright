@@ -106,13 +106,16 @@ const CLOSE_FRAME = Buffer.from([0x88, 0x80, 0, 0, 0, 0]);
 // supported." (job-tracker, 2026-10-22). Target.createTarget loads the profile
 // again. With no window left, Chrome opens one for the tab and, as the tab is
 // a background one, orders it behind every other window instead of in front.
+// `timeout` is ms for every step, or ms per step name with a `default`, so a
+// test can stall one step without racing the others against a short deadline.
 async function openBackgroundTab(marker, url = GATE_URL, timeout = CDP_TIMEOUT) {
+  const deadline = (what) => (typeof timeout === "number" ? timeout : timeout[what] ?? timeout.default ?? CDP_TIMEOUT);
   const reading = new AbortController();
   const version = await within(fetch(`${url}/json/version`, { signal: reading.signal })
     .then(async (response) => ({ status: response.status, ok: response.ok, body: await response.text() })),
-  "Reading /json/version", timeout, () => reading.abort());
+  "Reading /json/version", deadline("Reading /json/version"), () => reading.abort());
   if (!version.ok) throw new Error(`The agent Chrome answered ${version.status} on ${url}/json/version.${version.body.trim() ? `\n${version.body.trim()}` : ""}`);
-  const { socket, head } = await cdpSocket(JSON.parse(version.body).webSocketDebuggerUrl, url, timeout);
+  const { socket, head } = await cdpSocket(JSON.parse(version.body).webSocketDebuggerUrl, url, deadline("Opening a CDP connection"));
   const pending = new Map();
   let lastId = 0;
   let closed = false;
@@ -172,7 +175,7 @@ async function openBackgroundTab(marker, url = GATE_URL, timeout = CDP_TIMEOUT) 
     return within(new Promise((answered, failed) => {
       pending.set(id, { method, answered, failed });
       socket.write(encodeFrame(JSON.stringify({ id, method, params }), randomBytes(4)));
-    }), method, timeout, () => pending.delete(id));
+    }), method, deadline(method), () => pending.delete(id));
   };
   // A close frame, then the socket goes, whether or not the peer answers it.
   const hangUp = () => {
@@ -226,6 +229,8 @@ const defaults = {
   // Aborting closes the flow's tab, so a stopped run leaves nothing behind.
   signal: null,
   keepPopups: false,
+  // How long a second signal waits for the flow's tab; tests record it.
+  patience: sleep,
 };
 
 // A link with target=_blank or a window.open from the flow opens a tab Chrome
@@ -365,7 +370,7 @@ function cli(args, deps = defaults, sessionDeps = undefined) {
         stopping.abort();
         waiting = setTimeout(() => process.stderr.write(`agent-chrome-playwright: ${STOPPING}\n`), 1000);
         waiting.unref();
-      } else stopped ??= Promise.race([closeTab().catch(() => {}), sleep(patience)]).then(() => stop(signal));
+      } else stopped ??= Promise.race([closeTab().catch(() => {}), (deps.patience ?? defaults.patience)(patience)]).then(() => stop(signal));
     };
     return withSession({ ...spec, onSignal },
       () => run(flow, { ...deps, signal: stopping.signal, keepPopups, onCloseTab: (close) => { closeTab = close; } }), sessionDeps);
@@ -379,9 +384,10 @@ function cli(args, deps = defaults, sessionDeps = undefined) {
     // Once the session has ended, the run is over: a socket or timer the flow
     // or a wedged peer left open must not keep it alive. What it printed is
     // flushed first; pipes on macOS are written asynchronously. After a second
-    // signal, the session's stop exits instead, with 128 + the signal, once its
-    // stopped notice is out and the declaration is gone.
-    process.stdout.write("", () => process.stderr.write("", () => { if (!stopped) process.exit(); }));
+    // signal this never runs: the session's stop waits on the same ending as
+    // withSession and exits first, with 128 + the signal, once its stopped
+    // notice is out and the declaration is gone.
+    process.stdout.write("", () => process.stderr.write("", () => process.exit()));
   });
 }
 

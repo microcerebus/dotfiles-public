@@ -25,7 +25,9 @@ const { join } = require("node:path");
 const { fallbackUntil, isAgent } = require("./codex-browser-fallback");
 const agentChromeSession = require("./agent-chrome-session");
 
-const AXI_BINARY = join(homedir(), "Library/pnpm/bin/chrome-devtools-axi");
+// Tests point this at a stub (tests/lib/agent-chrome-test-env.cjs): the real
+// binary reuses its session's live bridge whatever CHROME_DEVTOOLS_AXI_PORT says.
+const AXI_BINARY = process.env.CHROME_DEVTOOLS_AXI_TEST_BINARY || join(homedir(), "Library/pnpm/bin/chrome-devtools-axi");
 const FOREGROUND = "--foreground";
 // Agents reach the agent Chrome through scripts/agent-chrome-gate on 9333.
 // The identity check below also accepts a Chrome still on 9333 from the

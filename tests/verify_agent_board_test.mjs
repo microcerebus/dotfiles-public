@@ -41,7 +41,11 @@ const board = (root, ...args) => boardWithEnv({}, root, ...args);
 const runs = () => fs.readdirSync(STATE).filter((id) => fs.existsSync(path.join(STATE, id, 'run.json')))
   .map((id) => JSON.parse(fs.readFileSync(path.join(STATE, id, 'run.json'), 'utf8')));
 const latest = () => runs().sort((x, y) => x.startedAt.localeCompare(y.startedAt)).at(-1);
-const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+// The pids come from run.json, so each must be one the test may signal:
+// kill(0) or a negative pid would reach a whole process group.
+const realPid = (pid) => Number.isInteger(pid) && pid > 1;
+const alive = (pid) => { if (!realPid(pid)) return false; try { process.kill(pid, 0); return true; } catch { return false; } };
+const signal = (pid, name) => { assert.ok(realPid(pid), `pid ${pid}`); process.kill(pid, name); };
 const until = async (what, ms = 15_000) => {
   const deadline = Date.now() + ms;
   while (!what()) {
@@ -51,7 +55,7 @@ const until = async (what, ms = 15_000) => {
 };
 
 after(() => {
-  for (const r of fs.existsSync(STATE) ? runs() : []) for (const pid of [r.keeperPid, r.boardPid]) if (pid && alive(pid)) process.kill(pid);
+  for (const r of fs.existsSync(STATE) ? runs() : []) for (const pid of [r.keeperPid, r.boardPid]) if (alive(pid)) process.kill(pid);
   fs.rmSync(tmp, { recursive: true, force: true });
 });
 
@@ -107,9 +111,9 @@ test('orphan stop waits for a suspended owned board to exit before deleting scra
   const run = latest();
   let stopping;
   try {
-    process.kill(run.keeperPid, 'SIGKILL');
+    signal(run.keeperPid, 'SIGKILL');
     await until(() => !alive(run.keeperPid));
-    process.kill(run.boardPid, 'SIGSTOP');
+    signal(run.boardPid, 'SIGSTOP');
     stopping = spawn(process.execPath, ['--no-warnings', path.join(A, SKILL, 'board.mjs'), 'stop', run.runId], {
       env: { ...process.env, VERIFY_AGENT_BOARD_STATE: STATE }, stdio: 'pipe',
     });
@@ -123,7 +127,7 @@ test('orphan stop waits for a suspended owned board to exit before deleting scra
     assert.equal(latest().boardPid, null);
     assert.equal(fs.existsSync(run.scratch), false);
   } finally {
-    if (alive(run.boardPid)) process.kill(run.boardPid, 'SIGKILL');
+    if (alive(run.boardPid)) signal(run.boardPid, 'SIGKILL');
     if (stopping && stopping.exitCode === null) stopping.kill('SIGKILL');
   }
 });
@@ -144,7 +148,7 @@ test('orphan stop preserves PID and scratch when listener ownership is lost befo
   assert.equal(board(root, 'launch', '--fixture', '--ttl', '5').code, 0);
   const run = latest();
   try {
-    process.kill(run.keeperPid, 'SIGKILL');
+    signal(run.keeperPid, 'SIGKILL');
     await until(() => !alive(run.keeperPid));
     const stopped = board(root, 'stop', run.runId);
     assert.equal(stopped.code, 2, stopped.out);
@@ -154,7 +158,7 @@ test('orphan stop preserves PID and scratch when listener ownership is lost befo
     assert.equal(latest().stoppedAt, null);
     assert.equal(fs.existsSync(run.scratch), true);
   } finally {
-    process.kill(run.boardPid, 'SIGKILL');
+    signal(run.boardPid, 'SIGKILL');
     await until(() => !alive(run.boardPid));
     assert.equal(board(root, 'stop', run.runId).code, 0);
   }
@@ -251,8 +255,8 @@ test('stop signals only processes the run started', async () => {
   // The keeper and board are gone and their pids now belong to someone else.
   const stranger = spawn('/bin/sleep', ['30']);
   try {
-    process.kill(run.keeperPid, 'SIGKILL');
-    process.kill(run.boardPid, 'SIGKILL');
+    signal(run.keeperPid, 'SIGKILL');
+    signal(run.boardPid, 'SIGKILL');
     await until(() => !alive(run.boardPid));
     const file = path.join(run.dir, 'run.json');
     fs.writeFileSync(file, JSON.stringify({ ...JSON.parse(fs.readFileSync(file, 'utf8')), keeperPid: stranger.pid, boardPid: stranger.pid }));

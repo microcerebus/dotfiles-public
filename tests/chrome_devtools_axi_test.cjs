@@ -42,7 +42,7 @@ function harness({ up = [true], installed = true, browser = [FLAGGED], pages = N
 test("routes to the agent Chrome by default", () => {
   const { calls, deps, io } = harness();
   assert.equal(run(["open", "https://example.com"], {}, deps, io), 0);
-  assert.equal(calls.spawn[0].env.CHROME_DEVTOOLS_AXI_BROWSER_URL, GATE_URL);
+  assert.equal(calls.spawn[0].env.CHROME_DEVTOOLS_AXI_BROWSER_URL, GATE_URL, "axi must hand the real binary GATE_URL, not the URL it was given");
   assert.equal(calls.spawn[0].env.CHROME_DEVTOOLS_AXI_AUTO_CONNECT, undefined);
   assert.equal(calls.kickstart, 0);
 });
@@ -121,7 +121,7 @@ test("starts the agent Chrome through launchd when it is down", () => {
   const { calls, deps, io } = harness({ up: [false, false, true] });
   assert.equal(run(["open", "https://example.com"], { CHROME_DEVTOOLS_AXI_BROWSER_URL: AGENT_CHROME_URL }, deps, io), 0);
   assert.equal(calls.kickstart, 1);
-  assert.equal(calls.spawn[0].env.CHROME_DEVTOOLS_AXI_BROWSER_URL, GATE_URL);
+  assert.equal(calls.spawn[0].env.CHROME_DEVTOOLS_AXI_BROWSER_URL, GATE_URL, "axi must hand the real binary GATE_URL, not the URL it was given");
   // Chrome listens behind the gate, so the kickstart starts both launchd agents.
   const started = [];
   require("../scripts/chrome-devtools-axi").defaultDeps.kickstart((file, args) => started.push([file, args[1].replace(/^gui\/\d+\//, "")]));
@@ -242,7 +242,7 @@ test("open gives a session without a tab a background one first", () => {
   assert.match(blank[1], /^about:blank#claude-f1966707-[0-9a-f]{8}$/);
   assert.deepEqual(blank, ["newpage", blank[1], "--background"]);
   assert.deepEqual(open, ["open", PAGE]);
-  for (const call of calls.spawn) assert.equal(call.env.CHROME_DEVTOOLS_AXI_BROWSER_URL, GATE_URL);
+  for (const call of calls.spawn) assert.equal(call.env.CHROME_DEVTOOLS_AXI_BROWSER_URL, GATE_URL, "axi must hand the real binary GATE_URL, not the URL it was given");
   const script = harness();
   run(["run"], env, script.deps, script.io);
   assert.equal(script.calls.spawn[1].args[0], "newpage");

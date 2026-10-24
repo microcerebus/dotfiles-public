@@ -5,12 +5,11 @@
 // and fail to act in Chrome Beta until it was brought to the front (2026-10-17).
 // The sentences are matched exactly on purpose: job-tracker's control skill carries the same text, so rewording them
 // here means updating this test and passing the new wording on.
-import "./lib/agent-chrome-test-env.cjs";
+import testEnv from "./lib/agent-chrome-test-env.cjs";
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
-import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -62,110 +61,66 @@ test('agent-chrome-ready kickstarts the launchd agent, retries for 15 seconds wi
   assert.doesNotMatch(script, /open -a|\bactivate\b|Google Chrome Beta\.app/, 'only the launchd agent may start Chrome Beta');
 });
 
-// A free port on 127.0.0.1, released for the stub to take.
-const freePort = () => new Promise((resolve) => {
-  const server = net.createServer().listen(0, '127.0.0.1', () => {
-    const { port } = server.address();
-    server.close(() => resolve(port));
-  });
-});
-
-// A python3 -I listener on port: 'answer' serves /json/version, 'hang' accepts and never replies. It is killed by its
-// own pid, never by pattern, and signal.alarm ends it after 60 seconds anyway, so a killed test run leaves no listener.
-const stub = async (port, mode) => {
-  const code = 'import signal; signal.alarm(60)\n' + (mode === 'answer'
-    ? `import http.server as h
-class H(h.BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200); self.end_headers(); self.wfile.write(b'{}')
-    def log_message(self, *a): pass
-h.HTTPServer(('127.0.0.1', ${port}), H).serve_forever()`
-    : `import socket, time
-s = socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1); s.bind(('127.0.0.1', ${port})); s.listen(64)
-held = []
-while True: held.append(s.accept()[0])`);
-  const child = spawn('python3', ['-I', '-c', code], { stdio: 'ignore' });
-  for (let i = 0; i < 50; i++) {
-    const up = await new Promise((resolve) => {
-      const sock = net.connect(port, '127.0.0.1', () => { sock.destroy(); resolve(true); }).on('error', () => resolve(false));
-    });
-    if (up) return child;
-    await new Promise((r) => setTimeout(r, 100));
-  }
-  child.kill();
-  throw new Error(`stub on ${port} never listened`);
-};
-
-// Runs the script against port with launchctl stubbed to fail first on PATH, so a fallback to the real launchctl can
-// never kickstart the agent Chrome. The kickstart hook (default: count a line in a marker file) replaces the kickstart.
-// Resolves to its exit code, stderr, seconds taken, and how many times each of the hook and launchctl ran.
-const runReady = (port, { kickstart } = {}) => new Promise((resolve) => {
+// Runs the script with a recording curl, sleep and launchctl first on PATH, so it never reaches a port or launchd and
+// no assertion depends on the clock: macOS scans each new executable on its first run, and under parallel suites on
+// fresh copies that took the old 3-second limit on "answers" over, 24 of 24 runs (review c23-dgf-rv1).
+// The recording curl exits curlExit. The kickstart hook (default: record "kickstart") replaces the kickstart.
+// Resolves to the exit code, stderr, and every recorded call in order: "curl <args>", "sleep <args>", "kickstart",
+// "launchctl <args>".
+const runReady = ({ curlExit = 0, kickstart } = {}) => new Promise((resolve) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-chrome-ready-'));
-  const marker = path.join(dir, 'kickstarts');
-  const launchctlMarker = path.join(dir, 'launchctl');
+  const calls = path.join(dir, 'calls');
   fs.mkdirSync(path.join(dir, 'bin'));
-  fs.writeFileSync(path.join(dir, 'bin/launchctl'), `#!/bin/sh\necho "$*" >> '${launchctlMarker}'\nexit 1\n`, { mode: 0o755 });
+  const recorder = (name, code) => fs.writeFileSync(path.join(dir, 'bin', name), `#!/bin/sh\necho "${name} $*" >> '${calls}'\nexit ${code}\n`, { mode: 0o755 });
+  recorder('curl', curlExit);
+  recorder('sleep', 0);
+  recorder('launchctl', 1);
   const env = {
     ...process.env,
     PATH: `${path.join(dir, 'bin')}:${process.env.PATH}`,
-    AGENT_CHROME_READY_TEST_PORT: String(port),
-    AGENT_CHROME_READY_TEST_KICKSTART: kickstart ?? `echo kickstart >> '${marker}'`,
+    AGENT_CHROME_READY_TEST_PORT: String(PORT),
+    AGENT_CHROME_READY_TEST_KICKSTART: kickstart ?? `echo kickstart >> '${calls}'`,
   };
   if (kickstart === null) delete env.AGENT_CHROME_READY_TEST_KICKSTART;
-  const started = Date.now();
   const child = spawn(READY, [], { env, stdio: ['ignore', 'ignore', 'pipe'] });
   let stderr = '';
   child.stderr.on('data', (d) => { stderr += d; });
-  const lines = (file) => (fs.existsSync(file) ? fs.readFileSync(file, 'utf8').split('\n').filter(Boolean).length : 0);
   child.on('close', (code) => {
-    const result = { code, stderr, seconds: (Date.now() - started) / 1000, kickstarts: lines(marker), launchctl: lines(launchctlMarker) };
+    const recorded = fs.existsSync(calls) ? fs.readFileSync(calls, 'utf8').split('\n').filter(Boolean) : [];
     fs.rmSync(dir, { recursive: true, force: true });
-    resolve(result);
+    resolve({ code, stderr, calls: recorded });
   });
 });
 
-test('agent-chrome-ready exits 0 when the port answers', async () => {
-  const port = await freePort();
-  const child = await stub(port, 'answer');
-  try {
-    const { code, seconds, kickstarts, launchctl } = await runReady(port);
-    assert.equal(code, 0);
-    assert.ok(seconds < 3, `took ${seconds}s`);
-    assert.equal(kickstarts, 0, 'a Chrome that answers needs no kickstart');
-    assert.equal(launchctl, 0);
-  } finally { child.kill(); }
+// The recording curl never connects, so any port not live will do.
+const PORT = testEnv.DEAD_PORT;
+const READY_URL = `http://127.0.0.1:${PORT}/json/version`;
+const CHECK = `curl -sf -m 2 ${READY_URL}`;
+const RETRY = `curl -sf -m 2 --retry 15 --retry-delay 1 --retry-max-time 15 --retry-connrefused ${READY_URL}`;
+
+test('agent-chrome-ready exits 0 after one capped request when the port answers', async () => {
+  const { code, calls } = await runReady();
+  assert.equal(code, 0);
+  assert.deepEqual(calls, [CHECK], 'a Chrome that answers needs one request, no wait and no kickstart');
 });
 
-test('agent-chrome-ready exits 1 within about 20 seconds when the port accepts and never answers', { timeout: 30_000 }, async () => {
-  const port = await freePort();
-  const child = await stub(port, 'hang');
-  try {
-    const { code, stderr, seconds, kickstarts, launchctl } = await runReady(port);
+// curl exits 28 when -m 2 cuts a request off, and 7 when nothing listens.
+for (const [name, curlExit] of [['accepts and never answers', 28], ['has nothing listening', 7]]) {
+  test(`agent-chrome-ready kickstarts once, retries with a 2-second cap per request, and exits 1 when the port ${name}`, async () => {
+    const { code, stderr, calls } = await runReady({ curlExit });
     assert.equal(code, 1);
-    assert.match(stderr, new RegExp(`not up on 127\\.0\\.0\\.1:${port} after 15s; see ~/Library/Logs/agent-chrome\\.log`));
-    assert.ok(seconds >= 14 && seconds < 22, `took ${seconds}s`);
-    assert.equal(kickstarts, 1);
-    assert.equal(launchctl, 0);
-  } finally { child.kill(); }
-});
-
-test('agent-chrome-ready exits 1 when nothing listens', { timeout: 30_000 }, async () => {
-  const { code, stderr, seconds, kickstarts, launchctl } = await runReady(await freePort());
-  assert.equal(code, 1);
-  assert.match(stderr, /the agent Chrome is not up/);
-  assert.ok(seconds < 22, `took ${seconds}s`);
-  assert.equal(kickstarts, 1, 'a port that is down gets exactly one kickstart');
-  assert.equal(launchctl, 0);
-});
+    assert.match(stderr, new RegExp(`not up on 127\\.0\\.0\\.1:${PORT} after 15s; see ~/Library/Logs/agent-chrome\\.log`));
+    assert.deepEqual(calls, [CHECK, 'kickstart', RETRY], 'a port that is down gets exactly one kickstart and never the real launchctl');
+  });
+}
 
 // A test that sets the stub port but forgets the kickstart hook must not reach the real launchctl.
 for (const [name, kickstart] of [['unset', null], ['empty', '']]) {
-  test(`agent-chrome-ready refuses to run launchctl under a test port when the kickstart hook is ${name}`, { timeout: 30_000 }, async () => {
-    const { code, stderr, seconds, launchctl } = await runReady(await freePort(), { kickstart });
+  test(`agent-chrome-ready refuses to run launchctl under a test port when the kickstart hook is ${name}`, async () => {
+    const { code, stderr, calls } = await runReady({ kickstart });
     assert.equal(code, 1);
-    assert.equal(launchctl, 0, 'launchctl ran under a test port');
     assert.match(stderr, /AGENT_CHROME_READY_TEST_PORT is set but AGENT_CHROME_READY_TEST_KICKSTART is not/);
-    assert.ok(seconds < 3, `took ${seconds}s`);
+    assert.deepEqual(calls, [], 'it refuses before any request, wait or launchctl');
   });
 }
 

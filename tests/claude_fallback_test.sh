@@ -4,6 +4,9 @@
 # meter, the Codex reading and alerts are stubs, so nothing leaves the temp dir.
 # Run: bash tests/claude_fallback_test.sh
 set -euo pipefail
+# Confine the suite under scripts/test-sandbox (see tests/lib/confine.sh).
+# shellcheck source=tests/lib/confine.sh
+. "$(dirname "${BASH_SOURCE[0]}")/lib/confine.sh"
 repo="$(cd "$(dirname "$0")/.." && pwd)"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT

@@ -10,6 +10,7 @@ require("./lib/agent-chrome-test-env.cjs");
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
+const { tmpdir } = require("node:os");
 const { join } = require("node:path");
 const { pathToFileURL } = require("node:url");
 const env = require("./lib/agent-chrome-test-env.cjs");
@@ -23,6 +24,9 @@ const NAMES_A_SCRIPT = /\b(agent-chrome-(session|gate|playwright|ready)|chrome-d
 // What the scripts read, listed here rather than taken from the helper, so a
 // setting dropped from the helper is still checked.
 const PORT_SETTINGS = ["AGENT_CHROME_SESSION_TEST_GATE_URL", "AGENT_CHROME_GATE_PORT", "AGENT_CHROME_GATE_CHROME_PORT", "AGENT_CHROME_READY_TEST_PORT", "CHROME_DEVTOOLS_AXI_PORT"];
+// Each must sit in the test's scratch dir, or a test that relies on the helper
+// sends the owner a real notice, writes real state or runs the real axi binary.
+const SCRATCH_SETTINGS = ["AGENT_CHROME_SESSION_TEST_NOTIFY_LOG", "AGENT_CHROME_STATE_HOME", "CHROME_DEVTOOLS_AXI_TEST_BINARY"];
 const FIX = "Set it in SETTINGS in tests/lib/agent-chrome-test-env.cjs, and have the script read that variable before its production default.";
 const DOCTOR = "verify-agent-board board.mjs doctor";
 
@@ -132,14 +136,43 @@ const board = (args, extraEnv) => {
     probe: (url) => { seen.push({ how: "probe", port: Number(new URL(url).port) }); return false; },
     agentInstalled: () => true, kickstart: () => {}, sleep: () => {}, spawn: () => ({ status: 0 }), lease: () => {}, endLease: () => {} },
     { stderr: { write: (text) => { out.axiTimeout += text; } } }));
-  // The agent Chrome answers: record the browser URL and bridge port axi hands the real binary (stubbed, never run).
-  await step("chrome-devtools-axi child", () => axi.run(["snapshot"], process.env, { ...axi.defaultDeps, fallbackUntil: () => Date.now() / 1000 + 3600,
+  // The agent Chrome answers: record the binary, browser URL and bridge port axi hands its child (spawn stubbed, nothing runs).
+  out.axiBinaries = [];
+  const axiChild = (env) => axi.run(["snapshot"], env, { ...axi.defaultDeps, fallbackUntil: () => Date.now() / 1000 + 3600,
     probe: () => true, browserCommandLines: () => ["chrome --disable-extensions --disable-sync"], lease: () => {}, endLease: () => {},
     spawn: (file, args, options) => {
-      seen.push({ how: "hand the real binary CHROME_DEVTOOLS_AXI_BROWSER_URL", port: Number(URL.parse(options.env.CHROME_DEVTOOLS_AXI_BROWSER_URL ?? "")?.port) });
-      seen.push({ how: "start the real binary's bridge on CHROME_DEVTOOLS_AXI_PORT", port: Number(options.env.CHROME_DEVTOOLS_AXI_PORT) });
+      out.axiBinaries.push(file);
+      const url = options.env.CHROME_DEVTOOLS_AXI_BROWSER_URL;
+      seen.push(url === undefined
+        ? { how: "hand the real binary no CHROME_DEVTOOLS_AXI_BROWSER_URL (main-Chrome or autoConnect mode)", fix: "The helper must drop inherited axi variables in the test process (DROPPED in tests/lib/agent-chrome-test-env.cjs)." }
+        : { how: "hand the real binary CHROME_DEVTOOLS_AXI_BROWSER_URL", port: Number(URL.parse(url)?.port) });
+      // Only a bridge the binary has to start: it reuses a live one named in its session's bridge.pid whatever this says.
+      seen.push({ how: "hand the real binary CHROME_DEVTOOLS_AXI_PORT for a new bridge", port: Number(options.env.CHROME_DEVTOOLS_AXI_PORT) });
       return { status: 0 };
-    } }, { stderr: { write: () => {} } }));
+    } }, { stderr: { write: () => {} } });
+  await step("chrome-devtools-axi child", () => axiChild(process.env));
+  // nix/user.nix exports this URL in every shell, and axi must still hand the binary GATE_URL.
+  await step("chrome-devtools-axi child, nix's 9333 URL", () => axiChild({ ...process.env, CHROME_DEVTOOLS_AXI_BROWSER_URL: "http://127.0.0.1:9333" }));
+  // The binary axi would run must be the helper's refusing stub; run it only once it is known to be: in scratch, and a
+  // sh script that prints the refusal. Either check alone keeps the real binary from running here.
+  const stub = out.axiBinaries[0] ?? "";
+  const stubText = stub.startsWith(scratch + "/") && fs.existsSync(stub) ? fs.readFileSync(stub, "utf8") : "";
+  out.axiStub = stubText.startsWith("#!/bin/sh\\n") && stubText.includes(helper.AXI_REFUSAL) ? spawnSync(stub, ["snapshot"], { encoding: "utf8" }) : null;
+  // agent-chrome-ready's curl is outside the node guards. A recording curl and launchctl, first on PATH, refuse every call.
+  await step("agent-chrome-ready", () => {
+    const calls = join(scratch, "ready-calls");
+    fs.writeFileSync(calls, "");
+    fs.writeFileSync(join(scratch, "bin/curl"), "#!/bin/sh\\nfor a in \\"$@\\"; do case \\"$a\\" in http*) echo \\"curl $a\\" >> " + JSON.stringify(calls) + " ;; esac; done\\nexit 7\\n", { mode: 0o755 });
+    fs.writeFileSync(join(scratch, "bin/launchctl"), "#!/bin/sh\\necho \\"launchctl $*\\" >> " + JSON.stringify(calls) + "\\nexit 1\\n", { mode: 0o755 });
+    const hook = "echo kickstart >> " + JSON.stringify(calls) + "; " + process.env.AGENT_CHROME_READY_TEST_KICKSTART;
+    const result = spawnSync("/bin/bash", [S + "/agent-chrome-ready"], { env: { ...process.env, AGENT_CHROME_READY_TEST_KICKSTART: hook }, encoding: "utf8", timeout: 20000 });
+    const lines = fs.readFileSync(calls, "utf8").split("\\n").filter(Boolean);
+    for (const line of lines) {
+      if (line.startsWith("curl ")) seen.push({ how: line, port: Number(URL.parse(line.slice(5))?.port) });
+      if (line.startsWith("launchctl ")) seen.push({ how: "run " + line + " instead of its test kickstart hook", fix: "scripts/agent-chrome-ready must run AGENT_CHROME_READY_TEST_KICKSTART whenever AGENT_CHROME_READY_TEST_PORT is set, and the helper must set both." });
+    }
+    out.ready = { status: result.status, stderr: result.stderr, kickstarts: lines.filter((line) => line === "kickstart").length };
+  });
   // board.mjs doctor ends by checking the agent Chrome; its page checks fetch / and /map on the run's own port.
   await step(${JSON.stringify(DOCTOR)}, () => { out.boardDoctor = board(["doctor", "probe"], {}).stdout; });
   // A malformed test URL fails doctor's agent Chrome check, and nothing else.
@@ -167,6 +200,8 @@ const board = (args, extraEnv) => {
   const settle = (call) => new Promise((resolve, reject) => call((error, stdout) => (error ? reject(error) : resolve(stdout))));
   out.handBuilt = {
     "spawnSync(cmd, args, { env })": JSON.parse(spawnSync(process.execPath, ["-e", "process.stdout.write(JSON.stringify(process.env))"], handBuilt).stdout),
+    // With no PATH the child would get the shell's default, which has no guard.
+    "spawnSync(cmd, args, { env }) with no PATH": JSON.parse(spawnSync(process.execPath, ["-e", "process.stdout.write(JSON.stringify(process.env))"], { env: {}, encoding: "utf8" }).stdout),
     "spawnSync(cmd, undefined, { env })": envOf(spawnSync("/usr/bin/env", undefined, handBuilt).stdout),
     "execFileSync(cmd, null, { env })": envOf(execFileSync("/usr/bin/env", null, handBuilt)),
     "spawn(cmd, args, { env })": envOf(await collect(spawn("/usr/bin/env", [], { env: handBuilt.env }))),
@@ -180,7 +215,8 @@ const board = (args, extraEnv) => {
   // A test that passes an axi URL to a child on purpose keeps it there.
   out.childAxiUrl = spawnSync(process.execPath, ["-e", "process.stdout.write(String(process.env.CHROME_DEVTOOLS_AXI_BROWSER_URL))"],
     { env: { PATH: process.env.PATH, CHROME_DEVTOOLS_AXI_BROWSER_URL: "http://127.0.0.1:9" }, encoding: "utf8" }).stdout;
-  out.env = Object.fromEntries([...keys, "AGENT_CHROME_READY_TEST_KICKSTART", "CHROME_DEVTOOLS_AXI_BROWSER_URL", "CHROME_DEVTOOLS_AXI_MAIN_CHROME"].map((key) => [key, process.env[key]]));
+  out.env = Object.fromEntries([...keys, ...${JSON.stringify(SCRATCH_SETTINGS)}, "AGENT_CHROME_TEST_SCRATCH", "PATH", "AGENT_CHROME_READY_TEST_KICKSTART",
+    "CHROME_DEVTOOLS_AXI_BROWSER_URL", "CHROME_DEVTOOLS_AXI_AUTO_CONNECT", "CHROME_DEVTOOLS_AXI_MAIN_CHROME"].map((key) => [key, process.env[key]]));
   process.stdout.write(JSON.stringify(out));
   process.exit(0);
 })();
@@ -190,21 +226,37 @@ function probeEachDefault(settings) {
   const cleared = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(AGENT_CHROME_|CHROME_DEVTOOLS_AXI_)/.test(key)));
   Object.assign(cleared, settings);
   cleared.NODE_OPTIONS = (cleared.NODE_OPTIONS ?? "").replace(`--require ${JSON.stringify(HELPER)}`, "").trim();
+  // A scratch HOME, so a default that falls back to ~/Library/pnpm/bin/chrome-devtools-axi finds nothing to run.
+  cleared.HOME = fs.mkdtempSync(join(tmpdir(), "agent-chrome-probe-home-"));
   // The unwrapped execFileSync, so the env reaches the child as written.
-  const out = JSON.parse(env.original.execFileSync(process.execPath, ["-e", PROBE], { env: cleared, encoding: "utf8", timeout: 60000 }));
+  let out;
+  try { out = JSON.parse(env.original.execFileSync(process.execPath, ["-e", PROBE], { env: cleared, encoding: "utf8", timeout: 60000 })); }
+  finally { fs.rmSync(cleared.HOME, { recursive: true, force: true }); }
   const dead = String(env.DEAD_PORT);
   assert.ok(out.guarded, "tests/lib/agent-chrome-test-env.cjs must load tests/lib/live-port-guard.cjs");
   assert.equal(new URL(out.gateUrl).port, dead, `agent-chrome-session GATE_URL is ${out.gateUrl} with AGENT_CHROME_SESSION_TEST_GATE_URL unset. ${FIX}`);
   for (const [name, attempts] of Object.entries(out.steps)) {
     assert.ok(attempts.length > 0, `${name} tried no connection, so this check proves nothing about it. Fix its step in PROBE in tests/agent_chrome_test_env_test.cjs so it reaches the production default again.`);
-    for (const { how, port } of attempts) {
+    for (const { how, port, fix } of attempts) {
+      if (fix) assert.fail(`${name} would ${how}. ${fix}`);
       assert.ok(!env.LIVE_PORTS.includes(port), `${name} would ${how} to the live port ${port} with its setting unset. ${FIX}`);
       assert.equal(port, env.DEAD_PORT, `${name} would ${how} to ${port}, not the dead port ${dead}. ${FIX}`);
     }
   }
   assert.equal(out.steps["chrome-devtools-axi probe"].length, 31, "chrome-devtools-axi must probe once, kickstart, then probe 30 more times; this check must reach its retry loop. If you changed the retry count in scripts/chrome-devtools-axi, update 31 here.");
   assert.match(out.axiTimeout, /did not come up on http:\/\/127\.0\.0\.1:9 within 15s/, `chrome-devtools-axi's timeout message must name the gate it probed, agent-chrome-session's GATE_URL; it printed: ${out.axiTimeout}`);
-  assert.equal(out.steps["chrome-devtools-axi child"].length, 2, "chrome-devtools-axi did not start its (stubbed) child, so this check proves nothing about the URL and bridge port it hands the real binary. Fix the step in PROBE.");
+  for (const name of ["chrome-devtools-axi child", "chrome-devtools-axi child, nix's 9333 URL"]) {
+    assert.equal(out.steps[name].length, 2, `${name}: axi did not start its (stubbed) child, so this check proves nothing about the URL and bridge port it hands the real binary. Fix the step in PROBE.`);
+  }
+  for (const file of out.axiBinaries) {
+    assert.equal(file, out.env.CHROME_DEVTOOLS_AXI_TEST_BINARY, `scripts/chrome-devtools-axi would run ${file}, not the helper's stub. The real binary reuses its session's live bridge whatever CHROME_DEVTOOLS_AXI_PORT says; read CHROME_DEVTOOLS_AXI_TEST_BINARY first, and set it in SETTINGS in tests/lib/agent-chrome-test-env.cjs.`);
+  }
+  assert.equal(out.axiStub?.status, 1, "the helper's chrome-devtools-axi stub must exit 1; see CHROME_DEVTOOLS_AXI_TEST_BINARY in tests/lib/agent-chrome-test-env.cjs.");
+  assert.equal(out.axiStub.stderr.trim(), env.AXI_REFUSAL, "the helper's chrome-devtools-axi stub must say why it refused.");
+  assert.equal(out.steps["agent-chrome-ready"].length, 2, `agent-chrome-ready must curl once, run the kickstart hook, then curl again with retries; it made ${out.steps["agent-chrome-ready"].length} calls. Fix its step in PROBE.`);
+  assert.equal(out.ready.kickstarts, 1, `agent-chrome-ready must run its test kickstart hook once, the one the helper sets with its test port; it ran ${out.ready.kickstarts} times.`);
+  assert.equal(out.ready.status, 1, `agent-chrome-ready must exit 1 when its port never answers; it exited ${out.ready.status}: ${out.ready.stderr}`);
+  assert.match(out.ready.stderr, new RegExp(`not up on 127\\.0\\.0\\.1:${dead} after`), `agent-chrome-ready must name the port it checked: ${out.ready.stderr}`);
   assert.ok(out.steps[DOCTOR].some(({ path }) => path === "/json/version"), `board.mjs doctor fetched no /json/version, so this check no longer sees its agent Chrome check. Fix the doctor step in PROBE in tests/agent_chrome_test_env_test.cjs.`);
   assert.match(out.boardDoctor, /^warn agent Chrome: 127\.0\.0\.1:9 does not answer;/m, `board.mjs doctor must name the gate it checked: ${out.boardDoctor}`);
   assert.match(out.boardMalformed, /^FAIL agent Chrome: AGENT_CHROME_SESSION_TEST_GATE_URL=9 is not a URL; unset it/m, `board.mjs doctor must fail its agent Chrome check, with the fix, on a malformed test gate URL: ${out.boardMalformed}`);
@@ -213,6 +265,17 @@ function probeEachDefault(settings) {
   assert.match(out.gateMain, new RegExp(`listening on 127\\.0\\.0\\.1:(?!(9333|9222|9334)\\b)\\d+, Chrome on ${dead}$`),
     `the agent-chrome-gate script started with "${out.gateMain}" with AGENT_CHROME_GATE_PORT and AGENT_CHROME_GATE_CHROME_PORT unset. ${FIX}`);
   const wheres = [["the test process", out.env], ...Object.entries(out.handBuilt).map(([shape, seen]) => [`a child given a hand-built env through ${shape}`, seen])];
+  for (const [where, seen] of wheres) {
+    const own = seen.AGENT_CHROME_TEST_SCRATCH ?? "";
+    assert.ok(own, `AGENT_CHROME_TEST_SCRATCH is unset in ${where}; the helper must set it.`);
+    for (const key of SCRATCH_SETTINGS) {
+      assert.ok((seen[key] ?? "").startsWith(own + "/"), `${key} is ${seen[key]} in ${where}; it must sit in the test's scratch dir ${own}, or a test that relies on the helper sends the owner a real notice, writes real state or runs the real axi binary. ${FIX}`);
+    }
+    const dirs = (seen.PATH ?? "").split(":");
+    const guard = dirs.indexOf(env.CURL_GUARD);
+    const firstCurl = dirs.findIndex((dir) => dir !== env.CURL_GUARD && fs.existsSync(join(dir, "curl")));
+    assert.ok(guard >= 0 && (firstCurl < 0 || guard < firstCurl), `PATH in ${where} must have the helper's curl guard before ${dirs[firstCurl]}, the first other dir with a curl, since curl is outside the node guards: ${seen.PATH}`);
+  }
   for (const key of PORT_SETTINGS) {
     for (const [where, seen] of wheres) {
       const port = /^\d+$/.test(seen[key] ?? "") ? seen[key] : URL.parse(seen[key] ?? "")?.port;
@@ -221,6 +284,7 @@ function probeEachDefault(settings) {
   }
   assert.equal(out.env.AGENT_CHROME_READY_TEST_KICKSTART, "true", "agent-chrome-ready needs a kickstart hook with its test port, or it refuses; the helper must set a no-op one.");
   assert.equal(out.env.CHROME_DEVTOOLS_AXI_BROWSER_URL, undefined, "an inherited CHROME_DEVTOOLS_AXI_BROWSER_URL can point a test's axi at a live Chrome; the helper must drop it.");
+  assert.equal(out.env.CHROME_DEVTOOLS_AXI_AUTO_CONNECT, undefined, "an inherited CHROME_DEVTOOLS_AXI_AUTO_CONNECT=1 points a test's axi at the owner's own Chrome; the helper must drop it.");
   assert.equal(out.env.CHROME_DEVTOOLS_AXI_MAIN_CHROME, undefined, "an inherited CHROME_DEVTOOLS_AXI_MAIN_CHROME=1 points a test's axi at the owner's own Chrome; the helper must drop it.");
   assert.equal(out.childAxiUrl, "http://127.0.0.1:9", "a child must keep a CHROME_DEVTOOLS_AXI_BROWSER_URL its test passed on purpose; the helper drops inherited ones only in the test process.");
   for (const [shape, seen] of Object.entries(out.handBuilt)) {
@@ -230,21 +294,97 @@ function probeEachDefault(settings) {
 
 test("with every setting cleared, each production default resolves to a dead port", () => {
   // An agent shell can carry these; the helper must drop them. 9500 stands in for a live axi bridge.
-  probeEachDefault({ CHROME_DEVTOOLS_AXI_BROWSER_URL: "http://127.0.0.1:9222", CHROME_DEVTOOLS_AXI_MAIN_CHROME: "1", CHROME_DEVTOOLS_AXI_PORT: "9500" });
+  probeEachDefault({ CHROME_DEVTOOLS_AXI_BROWSER_URL: "http://127.0.0.1:9222", CHROME_DEVTOOLS_AXI_MAIN_CHROME: "1", CHROME_DEVTOOLS_AXI_AUTO_CONNECT: "1", CHROME_DEVTOOLS_AXI_PORT: "9500" });
 });
 
 test("with every setting set to an empty string, each production default still resolves to a dead port", () => {
   // An empty export reads as unset in the scripts ("" || 9333), so the helper must fill it in.
-  probeEachDefault(Object.fromEntries(PORT_SETTINGS.map((key) => [key, ""])));
+  // The other scratch settings stay set: an empty AGENT_CHROME_STATE_HOME crashes the probe before it can name the setting.
+  probeEachDefault(Object.fromEntries([...PORT_SETTINGS, "CHROME_DEVTOOLS_AXI_TEST_BINARY"].map((key) => [key, ""])));
 });
 
 
 test("a setting preset to a live port stops the test before anything runs", () => {
-  for (const [key, value] of [["AGENT_CHROME_SESSION_TEST_GATE_URL", "http://127.0.0.1:9333"], ["AGENT_CHROME_GATE_CHROME_PORT", "9334"], ["AGENT_CHROME_READY_TEST_PORT", "9222"]]) {
+  for (const [key, value] of [["AGENT_CHROME_SESSION_TEST_GATE_URL", "http://127.0.0.1:9333"], ["AGENT_CHROME_SESSION_TEST_GATE_URL", "http://127.0.0.1:9333/"],
+    ["AGENT_CHROME_GATE_CHROME_PORT", "9334"], ["AGENT_CHROME_READY_TEST_PORT", "9222"]]) {
     let failure;
     try { env.original.execFileSync(process.execPath, ["--require", HELPER, "-e", "process.stdout.write('ran')"], { env: { PATH: process.env.PATH, [key]: value }, encoding: "utf8", stdio: "pipe" }); }
     catch (error) { failure = error; }
-    assert.ok(failure, `${key}=${value} ran`);
+    assert.ok(failure, `${key}=${value} ran: the helper let a live preset through; see livePort() in tests/lib/agent-chrome-test-env.cjs.`);
     assert.match(String(failure.stderr), new RegExp(`${key}=${value} is the live port`));
   }
+});
+
+test("an axi test binary inherited from the shell, or outside the temp dir, stops the test before anything runs", () => {
+  const run = (extra, script = "process.stdout.write('ran')") => {
+    try { return env.original.execFileSync(process.execPath, ["--require", HELPER, "-e", script], { env: { PATH: process.env.PATH, ...extra }, encoding: "utf8", stdio: "pipe" }); }
+    catch (error) { return error; }
+  };
+  const inherited = run({ CHROME_DEVTOOLS_AXI_TEST_BINARY: join(tmpdir(), "chrome-devtools-axi") });
+  assert.match(String(inherited.stderr), /an inherited CHROME_DEVTOOLS_AXI_TEST_BINARY=.* is outside this test's scratch dir/, "the helper kept an inherited axi binary; see AXI_STUB in tests/lib/agent-chrome-test-env.cjs.");
+  // A test may hand a child its own stub, but never one outside the temp dir, where the real binary lives.
+  const handed = run({}, `require("node:child_process").spawnSync(process.execPath, ["-e", ""], { env: { CHROME_DEVTOOLS_AXI_TEST_BINARY: "/nonexistent/Library/pnpm/bin/chrome-devtools-axi" } })`);
+  assert.match(String(handed.stderr), /CHROME_DEVTOOLS_AXI_TEST_BINARY=\/nonexistent\/Library\/pnpm\/bin\/chrome-devtools-axi is outside/, "the helper let a test hand a child an axi binary outside the temp dir.");
+  assert.equal(env.SETTINGS.CHROME_DEVTOOLS_AXI_TEST_BINARY, env.AXI_STUB, "the stub's path is AXI_STUB; the helper writes only there.");
+});
+
+test("the helper's curl guard refuses the live ports and hands every other call to the next curl on PATH", (t) => {
+  // The only curl behind the guard is a recorder, so a guard that let a live port through records it and reaches nothing.
+  const dir = fs.mkdtempSync(join(tmpdir(), "curl-guard-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const calls = join(dir, "calls");
+  fs.mkdirSync(join(dir, "bin"));
+  fs.writeFileSync(join(dir, "bin/curl"), `#!/bin/sh\necho "$* proxy=\${ALL_PROXY:-}\${all_proxy:-}\${HTTP_PROXY:-}\${http_proxy:-}\${HTTPS_PROXY:-}\${https_proxy:-}" >> '${calls}'\n`, { mode: 0o755 });
+  fs.writeFileSync(join(dir, "config"), "url = http://127.0.0.1:9333/json/version\n");
+  const curl = (args, extra = {}) => env.original.spawnSync(join(env.CURL_GUARD, "curl"), args, { env: { PATH: `${env.CURL_GUARD}:${join(dir, "bin")}`, ...extra }, encoding: "utf8", timeout: 60000 });
+  const recorded = () => (fs.existsSync(calls) ? fs.readFileSync(calls, "utf8") : "");
+  // Each a way curl 8 connects to the port it names; the URL is never last, and the hosts vary.
+  const refused = [
+    ...env.LIVE_PORTS.map((port) => ["-sf", `http://127.0.0.1:${port}/json/version`, "-o", "/dev/null"]),
+    ["-sf", "http://localhost:9222/json/version", "-o", "/dev/null"],
+    ["-sf", "http://[::1]:9334/json/version", "-o", "/dev/null"],
+    ["-sf", "http://127.0.0.1:09333/json/version", "-o", "/dev/null"],
+    ["-sf", "http://127.0.0.1:93[33-33]/json/version", "-o", "/dev/null"],
+    ["-sf", "http://127.0.0.1:{9333}/json/version", "-o", "/dev/null"],
+    ["-sf", "--connect-to", "::127.0.0.1:9333", `http://127.0.0.1:${env.DEAD_PORT}/`],
+    ["-sf", "-K", join(dir, "config"), "-o", "/dev/null"],
+    ["-sfK", join(dir, "config"), "-o", "/dev/null"],
+    ["-sf", "--config", join(dir, "config"), "-o", "/dev/null"],
+    ["-sf", "--variable", "p=9333", "--expand-url", "http://127.0.0.1:{{p}}/json/version", "-o", "/dev/null"],
+  ];
+  for (const args of refused) {
+    const result = curl(args);
+    assert.equal(result.status, 7, `the curl guard let "curl ${args.join(" ")}" through; see tests/lib/curl-guard/curl.`);
+    assert.match(result.stderr, /agent-chrome-test-env: refused curl/);
+  }
+  assert.equal(recorded(), "", "the curl guard handed a live-port call on");
+  const dead = `http://127.0.0.1:${env.DEAD_PORT}/json/version`;
+  assert.equal(curl(["-sf", dead], { ALL_PROXY: "http://127.0.0.1:9333", all_proxy: "x", HTTP_PROXY: "x", http_proxy: "x", HTTPS_PROXY: "x", https_proxy: "x" }).status, 0, "the curl guard must hand other calls to the next curl on PATH");
+  assert.equal(recorded(), `-q -g -sf ${dead} proxy=\n`, "the guard must pass -q first (no ~/.curlrc) and -g (no globbing, which can hide a port), and drop the proxy variables, which can carry a call to a live port");
+});
+
+// Two guard copies on one PATH (two checkouts), or a fake curl that runs curl by name, used to exec each other forever.
+test("the curl guard skips other guards and every curl it already ran, so it never loops", (t) => {
+  const dir = fs.mkdtempSync(join(tmpdir(), "curl-guard-loop-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const calls = join(dir, "calls");
+  const guard = fs.readFileSync(join(env.CURL_GUARD, "curl"), "utf8");
+  const bins = {
+    same: guard, // another checkout at the same commit
+    other: `${guard}# another checkout at another commit\n`,
+    fake: `#!/bin/sh\necho "fake $*" >> '${calls}'\nexec curl "$@"\n`, // a test's fake curl that hands on by name
+    real: `#!/bin/sh\necho "real $*" >> '${calls}'\necho "$AGENT_CHROME_CURL_GUARD_RAN" > '${join(dir, "ran")}'\n`,
+  };
+  for (const [name, text] of Object.entries(bins)) {
+    fs.mkdirSync(join(dir, name));
+    fs.writeFileSync(join(dir, name, "curl"), text, { mode: 0o755 });
+  }
+  const path = [env.CURL_GUARD, ...Object.keys(bins).map((name) => join(dir, name))].join(":");
+  // Every curl here is a script that execs the next, so a loop keeps one pid; the kill is a hang bound only.
+  const result = env.original.spawnSync(join(env.CURL_GUARD, "curl"), ["-sf", "http://127.0.0.1:9/"], { env: { PATH: path }, encoding: "utf8", timeout: 60_000 });
+  assert.equal(result.signal, null, "the curl guards looped until killed");
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(fs.readFileSync(calls, "utf8"), "fake -q -g -sf http://127.0.0.1:9/\nreal -q -g -sf http://127.0.0.1:9/\n");
+  const ran = fs.readFileSync(join(dir, "ran"), "utf8").trim().split(":");
+  assert.ok(!ran.includes(join(dir, "same", "curl")), `a guard ran another copy of itself instead of skipping it: ${ran}`);
 });

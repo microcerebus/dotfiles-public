@@ -4,8 +4,11 @@
 // mutant runs that stripped a check reached it seven times, each a stray
 // notice to the owner. So this file:
 // - loads the live-port guard,
-// - points every gate and Chrome setting at a dead port, notices at a file and
-//   state at a temp dir, unless the test already set them to something safe,
+// - points every gate and Chrome setting at a dead port, notices at a file,
+//   state at a temp dir and chrome-devtools-axi at a stub binary, unless the
+//   test already set them to something safe,
+// - puts a curl first on PATH that refuses the live ports, since curl (as in
+//   scripts/agent-chrome-ready) is outside the node guard,
 // - adds the same settings to any env a test builds for a child process, and
 //   preloads this file there, so a hand-built env cannot drop them.
 // Checked by tests/agent_chrome_test_env_test.cjs.
@@ -13,7 +16,7 @@ const { LIVE_PORTS } = require("./live-port-guard.cjs");
 const childProcess = require("node:child_process");
 const fs = require("node:fs");
 const { tmpdir } = require("node:os");
-const { join } = require("node:path");
+const { dirname, join } = require("node:path");
 const { promisify } = require("node:util");
 
 // Port 9 (discard) has no listener on macOS, so a connection there is refused at once.
@@ -28,6 +31,9 @@ if (topLevel) {
   scratch = fs.mkdtempSync(join(tmpdir(), "agent-chrome-test-"));
   process.on("exit", () => fs.rmSync(scratch, { recursive: true, force: true }));
 }
+// The stub's one path. Written here and never to a SETTINGS value, so an edit
+// there cannot overwrite the real binary's pnpm shim.
+const AXI_STUB = join(scratch, "chrome-devtools-axi");
 
 // Each setting a script reads, with the dead value it gets when it is missing.
 const SETTINGS = {
@@ -35,11 +41,14 @@ const SETTINGS = {
   AGENT_CHROME_GATE_PORT: "0", // scripts/agent-chrome-gate main: listen on any free port
   AGENT_CHROME_GATE_CHROME_PORT: String(DEAD_PORT), // scripts/agent-chrome-gate: Chrome behind it
   AGENT_CHROME_READY_TEST_PORT: String(DEAD_PORT), // scripts/agent-chrome-ready
-  // The real chrome-devtools-axi binary's bridge. Unset, it hashes the session
-  // name (scripts/chrome-devtools-axi uses CLAUDE_CODE_SESSION_ID) into
-  // 9225-10224, which finds this thread's live bridge, already attached to the
-  // agent Chrome. Neither guard nor the gate log sees that.
+  // The bridge port the real chrome-devtools-axi binary would start a new
+  // bridge on. Unset, it hashes the session name into 9225-10224. This does not
+  // keep the binary off a live bridge: it first reuses the bridge named in its
+  // session's ~/.chrome-devtools-axi bridge.pid, whatever this says, and that
+  // bridge drives the agent Chrome. Hence the stub binary below.
   CHROME_DEVTOOLS_AXI_PORT: String(DEAD_PORT),
+  // scripts/chrome-devtools-axi runs this instead of the real binary.
+  CHROME_DEVTOOLS_AXI_TEST_BINARY: AXI_STUB,
   AGENT_CHROME_SESSION_TEST_NOTIFY_LOG: join(scratch, "notices"), // notices to a file, not the owner
   AGENT_CHROME_STATE_HOME: join(scratch, "home"), // declarations outside ~/.local/state
   AGENT_CHROME_TEST_SCRATCH: scratch,
@@ -48,6 +57,12 @@ const SETTINGS = {
 // live bridge. The test process drops inherited ones; a test that wants one
 // sets it on the env it passes to a child, which keeps it.
 const DROPPED = ["CHROME_DEVTOOLS_AXI_BROWSER_URL", "CHROME_DEVTOOLS_AXI_AUTO_CONNECT", "CHROME_DEVTOOLS_AXI_MAIN_CHROME", "CHROME_DEVTOOLS_AXI_PORT"];
+
+// Holds a curl that refuses the live ports and hands every other call to the
+// next curl on PATH, so a test's own fake curl still runs. A committed file,
+// not one per test: macOS takes about half a second over a script's first run.
+const CURL_GUARD = join(__dirname, "curl-guard");
+const AXI_REFUSAL = "tests never run the real chrome-devtools-axi binary; inject spawn";
 
 function livePort(value) {
   const text = String(value);
@@ -65,12 +80,23 @@ function withDeadDefaults(env) {
     const port = livePort(out[key]);
     if (port !== null) throw new Error(`agent-chrome-test-env: ${key}=${out[key]} is the live port ${port}. Use a dead or stub port; leave it unset for ${value}.`);
   }
+  // A test may hand a child a stub of its own, but only one in a temp dir: the real binary sits in ~/Library/pnpm/bin.
+  // The test process's temp dir holds scratch, and a child given no TMPDIR has /tmp for tmpdir(), so both count.
+  if (![dirname(scratch), tmpdir()].some((dir) => out.CHROME_DEVTOOLS_AXI_TEST_BINARY.startsWith(dir + "/"))) throw new Error(`agent-chrome-test-env: CHROME_DEVTOOLS_AXI_TEST_BINARY=${out.CHROME_DEVTOOLS_AXI_TEST_BINARY} is outside the test's temp dir ${dirname(scratch)}. Tests never run the real chrome-devtools-axi binary; leave it unset for the helper's stub.`);
+  // A child env without PATH gets the shell's default PATH, with no guard: give it the guard and that default.
+  const path = out.PATH === undefined ? "/usr/bin:/bin:/usr/sbin:/sbin" : out.PATH;
+  out.PATH = path.split(":").includes(CURL_GUARD) ? path : `${CURL_GUARD}:${path}`;
   const preload = `--require ${JSON.stringify(SELF)}`;
   if (!(out.NODE_OPTIONS ?? "").includes(SELF)) out.NODE_OPTIONS = `${out.NODE_OPTIONS ?? ""} ${preload}`.trim();
   return out;
 }
 
-if (topLevel) for (const key of DROPPED) delete process.env[key];
+if (topLevel) {
+  for (const key of DROPPED) delete process.env[key];
+  // Inherited from the shell, it cannot be this run's stub: the scratch dir is new.
+  if (process.env.CHROME_DEVTOOLS_AXI_TEST_BINARY) throw new Error(`agent-chrome-test-env: an inherited CHROME_DEVTOOLS_AXI_TEST_BINARY=${process.env.CHROME_DEVTOOLS_AXI_TEST_BINARY} is outside this test's scratch dir. Unset it; the helper points it at its own stub.`);
+  fs.writeFileSync(AXI_STUB, `#!/bin/sh\necho ${JSON.stringify(AXI_REFUSAL)} >&2\nexit 1\n`, { mode: 0o755 });
+}
 Object.assign(process.env, withDeadDefaults(process.env));
 fs.mkdirSync(process.env.AGENT_CHROME_STATE_HOME, { recursive: true });
 
@@ -99,4 +125,4 @@ for (const name of ["spawn", "spawnSync", "execFile", "execFileSync", "exec", "e
 // ESM tests import named bindings from node:child_process; make them see the wrappers.
 require("node:module").syncBuiltinESMExports();
 
-module.exports = { DEAD_PORT, DEAD_URL, SETTINGS, LIVE_PORTS, withDeadDefaults, original };
+module.exports = { DEAD_PORT, DEAD_URL, SETTINGS, LIVE_PORTS, CURL_GUARD, AXI_STUB, AXI_REFUSAL, withDeadDefaults, original };

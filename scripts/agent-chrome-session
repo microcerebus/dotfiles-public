@@ -317,13 +317,62 @@ async function sweep(deps = defaults, graceUntil = Infinity) {
 // helper's group, which used to take the command down too. A watchdog in a
 // session of its own reads a pipe from the helper; if the pipe closes before
 // the helper says the command ended, it SIGKILLs the command's group.
-function lifeline(group) {
-  const watchdog = spawn("/bin/sh", ["-c", 'read _ || kill -s KILL -- "-$1" 2>/dev/null', "sh", String(group)], { detached: true, stdio: ["pipe", "ignore", "ignore"] });
+// The watchdog can only start once the command's group exists, so the command
+// starts through a shell that waits on another pipe until the watchdog has the
+// group. A SIGKILL between the two spawns closes that pipe too, and the shell
+// exits before any of the command's code runs. bash rewrites PWD and drops
+// OLDPWD and _, so env -i hands the command exactly the session's environment.
+// The other two paths exec it through env -i too, so a command runs the same
+// way on all three.
+// Do not simplify the read loops here and in WATCHDOG back to `read`. Node's
+// "pipe" is a socketpair, and libuv closes the helper's copy of the child's
+// end right after the spawn. If anything inspects that fd at that moment
+// (lsof does, and the gate runs lsof for every connection), XNU's
+// fileproc_drain marks the socket SS_DRAINING for good. From then on a read
+// that would block fails with EBADF, in every process, while a read that finds
+// data or EOF still works. `read` cannot tell that error from EOF; dd's exit
+// status can. So an error, while the fd is still open, waits and reads again,
+// a bounded number of times, and never runs or kills anything.
+const LAUNCHER = 'for w in 0.01 0.02 0.05 0.1 0.2 0.5 1 1 ""; do r=$(/bin/dd bs=1 count=1 status=none <&3 2>&1) && break; [ -n "$w" ] && { : <&3; } 2>/dev/null || { echo "agent-chrome-session: the command did not start: its release pipe could not be read (${r:-fd 3 closed}), retried for 3 s" >&2; exit 1; }; sleep "$w"; done; [ "$r" = r ] || exit 1; exec 3<&-; exec /usr/bin/env -i -- "$@"';
+// The watchdog reads its pipe the same way. A byte means the command ended
+// and EOF means the helper is gone. If the pipe still cannot be read after
+// about 9 s, the watchdog exits 3 without killing anything, and the helper
+// says that a SIGKILL of the helper will no longer stop the command.
+const WATCHDOG = 'for w in 0.2 0.5 1 2 5 ""; do r=$(/bin/dd bs=1 count=1 status=none 2>&1) && break; [ -n "$w" ] && { : <&0; } 2>/dev/null || exit 3; sleep "$w"; done; [ -n "$r" ] || kill -s KILL -- "-$1" 2>/dev/null';
+
+// env runs the command with execvp, so a script with no #! line runs through
+// /bin/sh, as from a shell. Its failures come from env, so the command is
+// looked up here first, as execvp does, and one that cannot run fails before
+// anything is spawned, with the shell's exit codes and this helper's name.
+// A file that goes away between this check and the exec still fails 127, with
+// env's message. env reads a leading NAME=value operand as an assignment, so a
+// command name with "=" in it would run nothing and print the environment.
+function unrunnable(command, env) {
+  if (command.includes("=")) return { code: 2, message: `command name may not contain "=": ${command}` };
+  const candidates = command.includes("/") ? [command] : command ? (env.PATH ?? "/usr/bin:/bin").split(":").map((dir) => join(dir || ".", command)) : [];
+  let found = false;
+  for (const file of candidates) {
+    let stat;
+    try { stat = fs.statSync(file); } catch { continue; }
+    found = true;
+    if (!stat.isFile()) continue;
+    try {
+      fs.accessSync(file, fs.constants.X_OK);
+      return null;
+    } catch { /* found, but not executable */ }
+  }
+  return found ? { code: 126, message: `${command}: permission denied` } : { code: 127, message: `${command}: command not found` };
+}
+function lifeline(group, log) {
+  const watchdog = spawn("/bin/sh", ["-c", WATCHDOG, "sh", String(group)], { detached: true, stdio: ["pipe", "ignore", "ignore"] });
   watchdog.once("error", () => {});
+  watchdog.once("exit", (code) => {
+    if (code === 3) log("the watchdog could not read its pipe (a drained socket, EBADF for 9 s), so a SIGKILL of this helper will not stop the command.");
+  });
   watchdog.stdin.on("error", () => {});
   watchdog.unref();
   watchdog.stdin.unref();
-  return () => new Promise((resolve) => watchdog.stdin.end("\n", resolve));
+  return () => new Promise((resolve) => watchdog.stdin.end("e", resolve));
 }
 
 // Asks the gate to leave a tab open after the session ends. The caller is
@@ -359,6 +408,9 @@ async function main(args, deps = defaults, stdinIsTerminal = Boolean(process.std
   const [command, ...rest] = spec.command;
   let child;
   let pending;
+  // Set once a second signal SIGKILLs the command. killpg reaches the group's
+  // members one at a time, so its shell can still exit 0 before its own SIGKILL.
+  let killed = false;
   // Nested, the outer session has put this one in a group of its own, or in
   // the terminal's, so every signal also reaches the command directly, and only
   // the outer session SIGKILLs. From a terminal it kills only its own child,
@@ -380,7 +432,10 @@ async function main(args, deps = defaults, stdinIsTerminal = Boolean(process.std
       if (!child && count > 1) stop(signal);
       else if (!child) pending = signal;
       else if (count === 1) send(signal);
-      else if (!nested) send("SIGKILL");
+      else if (!nested) {
+        killed = true;
+        send("SIGKILL");
+      }
     },
     outcome: (status) => (status === 0 ? "finished" : status > 128 ? "stopped" : `failed (exit ${status})`),
   }, (env) => new Promise((resolve) => {
@@ -388,11 +443,25 @@ async function main(args, deps = defaults, stdinIsTerminal = Boolean(process.std
       resolve(128 + SIGNALS[pending]);
       return;
     }
-    child = spawn(command, rest, { stdio: "inherit", env, detached: grouped });
-    const ended = grouped && child.pid ? lifeline(child.pid) : async () => {};
+    const refused = unrunnable(command, env);
+    if (refused) {
+      deps.log(refused.message);
+      resolve(refused.code);
+      return;
+    }
+    const vars = Object.entries(env).filter(([, value]) => value !== undefined).map(([name, value]) => `${name}=${value}`);
+    if (grouped) child = spawn("/bin/sh", ["-c", LAUNCHER, "sh", ...vars, command, ...rest], { stdio: ["inherit", "inherit", "inherit", "pipe"], env: {}, detached: true });
+    else child = spawn("/usr/bin/env", ["-i", "--", ...vars, command, ...rest], { stdio: "inherit", env: {} });
+    const ended = grouped && child.pid ? lifeline(child.pid, deps.log) : async () => {};
+    // Only now that the watchdog has the group may the command run.
+    const release = child.stdio[3];
+    if (release) {
+      release.on("error", () => {});
+      release.end("r");
+    }
     child.once("error", (error) => { deps.log(error.message); ended().then(() => resolve(127)); });
     child.once("close", (status, signal) => {
-      ended().then(() => resolve(status ?? 128 + (signal === "SIGKILL" ? 9 : signal === "SIGINT" ? 2 : 15)));
+      ended().then(() => resolve(killed ? 128 + 9 : status ?? 128 + (signal === "SIGKILL" ? 9 : signal === "SIGINT" ? 2 : 15)));
     });
   }), deps);
   return code;

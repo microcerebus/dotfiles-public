@@ -7,6 +7,9 @@
 # store. The network is used only by Nix, to fetch what that build needs.
 # Run: bash tests/autoupdate_test.sh
 set -euo pipefail
+# Confine the suite under scripts/test-sandbox (see tests/lib/confine.sh).
+# shellcheck source=tests/lib/confine.sh
+. "$(dirname "${BASH_SOURCE[0]}")/lib/confine.sh"
 repo="$(cd "$(dirname "$0")/.." && pwd)"
 script="$repo/scripts/dotfiles-autoupdate"
 tmp="$(mktemp -d)"
@@ -323,7 +326,10 @@ as() {
   local h=$1 v vars=()
   shift
   for v in $(compgen -e | grep -E '^(AUTOUPDATE|STUB)_'); do vars+=("$v=${!v}"); done
-  env -i HOME="$h" TZ="$TZ" PATH="$as_path" FAKE_NOW="$FAKE_NOW" \
+  # The suite runs under scripts/test-sandbox, which may write only in its
+  # scratch dir: keep TMPDIR, and its mktemp shim ahead of macOS mktemp, which
+  # ignores TMPDIR.
+  env -i HOME="$h" TZ="$TZ" PATH="$TEST_SANDBOX/bin:$as_path" TMPDIR="$TMPDIR" FAKE_NOW="$FAKE_NOW" \
     SYSTEMS="$SYSTEMS" HM_GCROOT="$HM_GCROOT" "${vars[@]}" "$@"
 }
 

@@ -10,10 +10,10 @@ const { statePath, fallbackUntil } = require("../scripts/codex-browser-fallback"
 function fixture(t) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "codex-browser-"));
   t.after(() => fs.rmSync(home, { recursive: true, force: true }));
-  const env = { HOME: home, PATH: process.env.PATH };
-  const helper = (...args) => spawnSync(process.execPath, [path.resolve(__dirname, "../scripts/codex-browser-fallback"), ...args], { env, encoding: "utf8" });
   // Even an accidentally allowed command can only reach this harmless stub.
   const binary = path.join(home, "Library/pnpm/bin/chrome-devtools-axi");
+  const env = { HOME: home, PATH: process.env.PATH, CHROME_DEVTOOLS_AXI_TEST_BINARY: binary };
+  const helper = (...args) => spawnSync(process.execPath, [path.resolve(__dirname, "../scripts/codex-browser-fallback"), ...args], { env, encoding: "utf8" });
   fs.mkdirSync(path.dirname(binary), { recursive: true });
   fs.writeFileSync(binary, "#!/bin/sh\nprintf 'stub upstream: %s\\n' \"$*\"\n", { mode: 0o755 });
   const wrapper = (signal, args) => spawnSync(process.execPath, [

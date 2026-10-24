@@ -3,7 +3,7 @@
 // 9333 with no notice and called browser.newContext() for each user, which
 // opened windows on the owner's screen. Real playwright-core talks to the real gate.
 require("./lib/agent-chrome-test-env.cjs");
-const { test, before, after } = require("node:test");
+const { test, before, after, beforeEach, afterEach } = require("node:test");
 const assert = require("node:assert/strict");
 const { execFile, spawn } = require("node:child_process");
 const fs = require("node:fs");
@@ -14,7 +14,13 @@ const { promisify } = require("node:util");
 const { setTimeout: sleep } = require("node:timers/promises");
 const session = require("../scripts/agent-chrome-session");
 
-const run = promisify(execFile);
+// The running test's signal. node 22 aborts it when the test ends or times
+// out, so a poll that sleeps on it, and a child run() starts, end with the
+// test instead of keeping the file alive.
+let current;
+beforeEach((t) => { current = t.signal; });
+const tick = (ms) => sleep(ms, undefined, { signal: current });
+const run = (file, args, options) => promisify(execFile)(file, args, { ...options, signal: current });
 const GATE = join(__dirname, "../scripts/agent-chrome-gate");
 const HELPER = join(__dirname, "../scripts/agent-chrome-session");
 
@@ -30,6 +36,13 @@ function headlessShell() {
 let playwrightDir;
 try { playwrightDir = require("../scripts/agent-chrome-playwright").playwrightDirectory(); } catch { /* skipped below */ }
 const SHELL = headlessShell();
+// Chrome's own sandbox cannot start inside test-sandbox's, since macOS
+// seatbelt sandboxes do not nest: its GPU process dies at once and Chrome
+// exits ("GPU process isn't usable. Goodbye."). There the outer sandbox does
+// the confining, so the shell runs without its own; elsewhere it keeps it.
+function shellArgs(port, profile, env = process.env) {
+  return [`--remote-debugging-port=${port}`, `--user-data-dir=${profile}`, "--no-first-run", ...(env.TEST_SANDBOX ? ["--no-sandbox"] : []), "about:blank"];
+}
 // Without playwright-core there is nothing to replay with. With it, a missing
 // shell fails the run instead of skipping it quietly.
 const skip = playwrightDir ? false : "needs the pnpm global playwright-core";
@@ -43,12 +56,49 @@ function freePort() {
   });
 }
 
-async function answers(port) {
-  for (let i = 0; i < 100; i += 1) {
-    try { if ((await fetch(`http://127.0.0.1:${port}/json/version`)).ok) return; } catch { /* not yet */ }
-    await sleep(100);
+// How long each started process gets to answer. Not a test's timeout: the
+// file-level before() is a hook, and node:test gives hooks none by default.
+// A timeout does not stop a poll either (node 22 aborts a test's signal when
+// it times out, never a hook's), and a poll left running keeps the file
+// alive for good. So the bound is generous, well above the slowest start
+// under six parallel suites, but never absent.
+const STARTUP_MS = Number(process.env.AGENT_CHROME_REPLAY_TEST_STARTUP_MS) || 60000;
+
+// Every process the file starts. Each one's stderr goes to a file in its own
+// sandbox, printed when a test fails or it never answers.
+const children = [];
+function start(name, home, file, args, env) {
+  const log = join(home, `${name}.stderr`);
+  const fd = fs.openSync(log, "a");
+  const child = spawn(file, args, { stdio: ["ignore", "ignore", fd], env });
+  fs.closeSync(fd);
+  const exited = new AbortController();
+  child.once("exit", (code, signal) => { child.status = signal ? `signal ${signal}` : `code ${code}`; exited.abort(); });
+  const proc = { name, log, child, exited: exited.signal };
+  children.push(proc);
+  return proc;
+}
+const stderrOf = ({ name, log }) => `--- ${name} stderr (${log}) ---\n${fs.existsSync(log) ? fs.readFileSync(log, "utf8").slice(-4000) : ""}`;
+
+// Fails at once if the process exits first, else at STARTUP_MS.
+async function answers(port, proc) {
+  const started = Date.now();
+  const deadline = started + STARTUP_MS;
+  let last = "none yet";
+  for (;;) {
+    if (proc.exited.aborted) throw new Error(`nothing answers on ${port}: ${proc.name} exited with ${proc.child.status} before it answered\n${stderrOf(proc)}`);
+    if (Date.now() >= deadline) throw new Error(`nothing answers on ${port}: ${proc.name} did not answer within ${STARTUP_MS} ms (last try: ${last})\n${stderrOf(proc)}`);
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}/json/version`, { signal: AbortSignal.any([AbortSignal.timeout(deadline - Date.now()), proc.exited]) });
+      last = `HTTP ${response.status}`;
+      await response.body?.cancel();
+      if (response.ok) {
+        process.stderr.write(`replay startup: ${proc.name} answered on ${port} in ${Date.now() - started} ms (bound ${STARTUP_MS} ms)\n`);
+        return;
+      }
+    } catch (error) { last = error.cause?.code ?? error.name; }
+    await sleep(100, undefined, { signal: proc.exited }).catch(() => {});
   }
-  throw new Error(`nothing answers on ${port}`);
 }
 
 // Each gate has its own state and notices, so one gate's sweep never reports
@@ -62,25 +112,36 @@ const strict = sandbox("strict");
 const grace = sandbox("grace");
 const control = sandbox("control");
 const lines = (file) => (fs.existsSync(file) ? fs.readFileSync(file, "utf8").trim().split("\n") : []);
-const children = [];
 let chromePort;
 
+// Three starts in a row, each bounded by answers(); this is the backstop.
 before(async () => {
   if (skip) return;
   assert.ok(SHELL, "no chrome-headless-shell in ~/Library/Caches/ms-playwright; install one with playwright-core's install chromium-headless-shell");
   chromePort = await freePort();
   strict.port = await freePort();
   grace.port = await freePort();
-  children.push(spawn(SHELL, [`--remote-debugging-port=${chromePort}`, `--user-data-dir=${join(control.home, "profile")}`, "--no-first-run", "about:blank"], { stdio: "ignore" }));
-  await answers(chromePort);
+  await answers(chromePort, start("chrome-headless-shell", control.home, SHELL, shellArgs(chromePort, join(control.home, "profile"))));
   for (const [gate, graceUntil] of [[strict, 1], [grace, Date.now() + 3600000]]) {
-    children.push(spawn(process.execPath, [GATE], { stdio: "ignore", env: { ...gate.env, AGENT_CHROME_GATE_PORT: String(gate.port), AGENT_CHROME_GATE_CHROME_PORT: String(chromePort),
-      AGENT_CHROME_GATE_TEST_GRACE_UNTIL: String(graceUntil), AGENT_CHROME_GATE_TEST_SWEEP_MS: "100" } }));
-    await answers(gate.port);
+    await answers(gate.port, start("agent-chrome-gate", gate.home, process.execPath, [GATE], { ...gate.env, AGENT_CHROME_GATE_PORT: String(gate.port), AGENT_CHROME_GATE_CHROME_PORT: String(chromePort),
+      AGENT_CHROME_GATE_TEST_GRACE_UNTIL: String(graceUntil), AGENT_CHROME_GATE_TEST_SWEEP_MS: "100" }));
   }
+}, { timeout: 3 * STARTUP_MS + 10000 });
+
+const failed = [];
+afterEach((t) => { if (!t.passed) failed.push(t.name); });
+
+after(() => {
+  for (const { child } of children) child.kill("SIGKILL");
+  if (failed.length) process.stderr.write(`${failed.length} failed; the stderr of each process this file started:\n${children.map(stderrOf).join("\n")}\n`);
 });
 
-after(() => { for (const child of children) child.kill("SIGKILL"); });
+test("the headless shell drops Chrome's own sandbox only inside test-sandbox, and the one started here got those flags", { skip }, () => {
+  assert.deepEqual(shellArgs(1, "profile", {}), ["--remote-debugging-port=1", "--user-data-dir=profile", "--no-first-run", "about:blank"]);
+  assert.deepEqual(shellArgs(1, "profile", { TEST_SANDBOX: "/tmp/scratch" }), ["--remote-debugging-port=1", "--user-data-dir=profile", "--no-first-run", "--no-sandbox", "about:blank"]);
+  const shell = children.find(({ name }) => name === "chrome-headless-shell");
+  assert.deepEqual(shell.child.spawnargs.slice(1), shellArgs(chromePort, join(control.home, "profile")));
+});
 
 // The pw-pr84 shape: attach to the shared Chrome, then a new context per user.
 const PR84 = `
@@ -102,24 +163,24 @@ const { chromium } = require(process.env.PLAYWRIGHT_CORE);
 })().catch((error) => { console.error(error.message); process.exit(1); });
 `;
 
-test("control: straight to Chrome, as 9333 is before the gate, the pw-pr84 shape opens a new context with no notice", { skip }, async () => {
+test("control: straight to Chrome, as 9333 is before the gate, the pw-pr84 shape opens a new context with no notice", { skip, timeout: 120000 }, async () => {
   const { stdout } = await run(process.execPath, ["-e", PR84, String(chromePort)], { env: control.env });
   assert.match(stdout, /^opened a new context$/m);
   assert.deepEqual(lines(control.notices), []);
 });
 
-test("in the migration window the pw-pr84 shape gets through, the owner is told on its behalf before and after, and its new context is still refused", { skip }, async () => {
+test("in the migration window the pw-pr84 shape gets through, the owner is told on its behalf before and after, and its new context is still refused", { skip, timeout: 120000 }, async () => {
   const { stdout } = await run(process.execPath, ["-e", PR84, String(grace.port)], { env: grace.env });
   assert.match(stdout, /^newContext: [\s\S]*refused Target\.createBrowserContext/m);
   assert.match(stdout, /^background tab: replay$/m);
   assert.deepEqual(lines(grace.notices)[0], "node is using the agent Chrome without agent-chrome-session, so how long is unknown.");
   // The client has exited; the gate's next sweep says done.
-  for (let i = 0; i < 50 && lines(grace.notices).length < 2; i += 1) await sleep(100);
+  while (lines(grace.notices).length < 2) await tick(100);
   assert.match(lines(grace.notices)[1], /^node: finished after under a minute\. Done with the agent Chrome\.$/);
   assert.equal(lines(grace.notices).length, 2);
 });
 
-test("after the window the pw-pr84 shape without the helper is refused before it can open anything, and the error names the helper", { skip }, async () => {
+test("after the window the pw-pr84 shape without the helper is refused before it can open anything, and the error names the helper", { skip, timeout: 120000 }, async () => {
   const result = await run(process.execPath, ["-e", PR84, String(strict.port)], { env: strict.env }).catch((error) => error);
   assert.equal(result.code, 1);
   assert.match(result.stderr, /403 Forbidden[\s\S]*did not tell him[\s\S]*agent-chrome-session --minutes N --what/);
@@ -127,7 +188,7 @@ test("after the window the pw-pr84 shape without the helper is refused before it
   assert.deepEqual(lines(strict.notices), []);
 });
 
-test("through the helper it is announced, its new context is refused naming a headless launch, and its background tab works", { skip }, async () => {
+test("through the helper it is announced, its new context is refused naming a headless launch, and its background tab works", { skip, timeout: 120000 }, async () => {
   const { stdout } = await run(process.execPath, [HELPER, "--minutes", "2", "--what", "PR 84 hosted check replay", "--",
     process.execPath, "-e", PR84, String(strict.port)], { env: strict.env });
   assert.match(stdout, /^newContext: [\s\S]*refused Target\.createBrowserContext[\s\S]*chromium\.launch\(\{ headless: true \}\)/m);
@@ -139,28 +200,22 @@ test("through the helper it is announced, its new context is refused naming a he
 });
 
 async function until(check) {
-  for (let i = 0; i < 100; i += 1) {
-    if (check()) return;
-    await sleep(50);
-  }
-  throw new Error("timed out waiting for the gate");
+  while (!check()) await tick(50);
 }
 
-test("a code change keeps the gate up with a live CDP socket, then exits zero once it closes", { skip }, async (t) => {
+test("a code change keeps the gate up with a live CDP socket, then exits zero once it closes", { skip, timeout: 120000 }, async (t) => {
   const state = sandbox("restart");
   const file = join(state.home, "agent-chrome-gate");
   fs.copyFileSync(GATE, file);
   fs.copyFileSync(HELPER, join(state.home, "agent-chrome-session"));
   const port = await freePort();
-  let log = "";
-  const child = spawn(process.execPath, [file], { stdio: ["ignore", "ignore", "pipe"], env: { ...state.env,
+  const gate = start("agent-chrome-gate", state.home, process.execPath, [file], { ...state.env,
     AGENT_CHROME_GATE_PORT: String(port), AGENT_CHROME_GATE_CHROME_PORT: String(chromePort),
-    AGENT_CHROME_GATE_TEST_GRACE_UNTIL: "1", AGENT_CHROME_GATE_TEST_WATCH_MS: "20" } });
-  children.push(child);
-  child.stderr.on("data", (chunk) => { log += chunk; });
+    AGENT_CHROME_GATE_TEST_GRACE_UNTIL: "1", AGENT_CHROME_GATE_TEST_WATCH_MS: "20" });
+  const { child } = gate;
   const gone = new Promise((resolve) => child.once("exit", (code, signal) => resolve({ code, signal })));
   t.after(() => child.kill("SIGKILL"));
-  await answers(port);
+  await answers(port, gate);
   await session.withSession({ minutes: 1, what: "restart replay" }, async () => {
     const browser = await require(playwrightDir).chromium.connectOverCDP(`http://127.0.0.1:${port}`);
     t.after(() => browser.close());
@@ -168,7 +223,7 @@ test("a code change keeps the gate up with a live CDP socket, then exits zero on
     await sleep(100);
     fs.appendFileSync(file, "\n// Replay code change.\n");
     fs.utimesSync(file, new Date(), new Date(Date.now() + 5000));
-    await until(() => log.includes("its code changed"));
+    await until(() => fs.readFileSync(gate.log, "utf8").includes("its code changed"));
     await sleep(100);
     assert.equal(child.exitCode, null);
     assert.equal((await fetch(`http://127.0.0.1:${port}/json/version`)).status, 200);
@@ -179,18 +234,17 @@ test("a code change keeps the gate up with a live CDP socket, then exits zero on
   }, { dir: () => session.stateDir(state.home), now: Date.now, notify: async () => {}, log: () => {} });
 });
 
-test("the gate ends an adopted declaration and says done at the grace deadline while its client lives", { skip }, async (t) => {
+test("the gate ends an adopted declaration and says done at the grace deadline while its client lives", { skip, timeout: 120000 }, async (t) => {
   const state = sandbox("deadline");
   const port = await freePort();
   const notify = async (message) => fs.appendFileSync(state.notices, `${message}\n`);
   await session.adopt({ pid: process.pid, what: "deadline replay" }, { dir: () => session.stateDir(state.home), now: Date.now, notify, log: () => {} });
   const deadline = Date.now() + 1500;
-  const child = spawn(process.execPath, [GATE], { stdio: "ignore", env: { ...state.env,
+  const gate = start("agent-chrome-gate", state.home, process.execPath, [GATE], { ...state.env,
     AGENT_CHROME_GATE_PORT: String(port), AGENT_CHROME_GATE_CHROME_PORT: String(chromePort),
-    AGENT_CHROME_GATE_TEST_GRACE_UNTIL: String(deadline), AGENT_CHROME_GATE_TEST_SWEEP_MS: "20" } });
-  children.push(child);
-  t.after(() => child.kill("SIGKILL"));
-  await answers(port);
+    AGENT_CHROME_GATE_TEST_GRACE_UNTIL: String(deadline), AGENT_CHROME_GATE_TEST_SWEEP_MS: "20" });
+  t.after(() => gate.child.kill("SIGKILL"));
+  await answers(port, gate);
   const browser = await require(playwrightDir).chromium.connectOverCDP(`http://127.0.0.1:${port}`);
   t.after(() => browser.close());
   assert.equal(lines(state.notices).length, 1);
@@ -202,7 +256,7 @@ test("the gate ends an adopted declaration and says done at the grace deadline w
   assert.deepEqual(session.declarations(session.stateDir(state.home)), []);
 });
 
-test("the runner closes popups from a page the flow opens with context.newPage", { skip }, async () => {
+test("the runner closes popups from a page the flow opens with context.newPage", { skip, timeout: 120000 }, async () => {
   const { run: runFlow, openBackgroundTab } = require("../scripts/agent-chrome-playwright");
   const logs = [];
   await runFlow(async (page) => {
@@ -213,7 +267,7 @@ test("the runner closes popups from a page the flow opens with context.newPage",
       await extra.evaluate(() => { window.open("about:blank#flow-popup"); });
       const popup = await opened;
       try {
-        if (!popup.isClosed()) await popup.waitForEvent("close", { timeout: 1000 });
+        if (!popup.isClosed()) await popup.waitForEvent("close", { timeout: 60000 });
         assert.equal(popup.isClosed(), true);
         assert.equal(extra.isClosed(), false);
       } finally { await popup.close(); }
@@ -227,7 +281,7 @@ test("the runner closes popups from a page the flow opens with context.newPage",
   assert.equal(logs.length, 1);
 });
 
-test("through the gate and the helper, the runner's own CDP connection opens its background tab, and the runner closes only that tab", { skip }, async () => {
+test("through the gate and the helper, the runner's own CDP connection opens its background tab, and the runner closes only that tab", { skip, timeout: 120000 }, async () => {
   const flow = `
     const { run, openBackgroundTab } = require(${JSON.stringify(require.resolve("../scripts/agent-chrome-playwright"))});
     const { chromium } = require(process.env.PLAYWRIGHT_CORE);
@@ -264,14 +318,14 @@ const marker = process.argv[2];
 })();
 `;
 
-test("a client SIGKILLed after opening a tab leaves no tab once its session ends", { skip }, async () => {
+test("a client SIGKILLed after opening a tab leaves no tab once its session ends", { skip, timeout: 120000 }, async () => {
   const marker = `about:blank#killed-${process.pid}`;
   const open = async () => (await (await fetch(`http://127.0.0.1:${chromePort}/json/list`)).json()).filter(({ url }) => url === marker);
   const result = await run(process.execPath, [HELPER, "--minutes", "1", "--what", "killed client replay", "--",
     process.execPath, "-e", KILLED, String(strict.port), marker], { env: strict.env }).catch((error) => error);
   assert.equal(result.code, 137);
   assert.ok(lines(strict.notices).some((line) => /^killed client replay: stopped after/.test(line)));
-  for (let i = 0; i < 50 && (await open()).length; i += 1) await sleep(100);
+  while ((await open()).length) await tick(100);
   assert.deepEqual(await open(), []);
 });
 
@@ -285,13 +339,13 @@ const keptRecords = () => {
 
 async function settled(tag, expected) {
   const tagged = async () => (await pageUrls()).filter(({ url }) => url.includes(tag));
-  for (let i = 0; i < 50 && (await tagged()).length !== expected; i += 1) await sleep(100);
+  while ((await tagged()).length !== expected) await tick(100);
   // A few more sweeps: a kept tab must stay, not just outlast the first one.
   await sleep(500);
   return tagged();
 }
 
-test("a flow keeps a tab opened the apply way; the gate closes its sibling and the runner's tab, and leaves the kept one", { skip }, async () => {
+test("a flow keeps a tab opened the apply way; the gate closes its sibling and the runner's tab, and leaves the kept one", { skip, timeout: 120000 }, async () => {
   const tag = `apply-${process.pid}`;
   const flow = `
     const { run, openBackgroundTab, targetIdOf } = require(${JSON.stringify(require.resolve("../scripts/agent-chrome-playwright"))});
@@ -306,7 +360,7 @@ test("a flow keeps a tab opened the apply way; the gate closes its sibling and t
       const marker = "about:blank#" + tag + "-kept";
       await cdp.send("Target.createTarget", { url: marker, background: true });
       let tab;
-      for (let i = 0; i < 100 && !tab; i += 1) { tab = context.pages().find((candidate) => candidate.url() === marker); if (!tab) await sleep(50); }
+      while (!tab) { tab = context.pages().find((candidate) => candidate.url() === marker); if (!tab) await sleep(50); }
       await tab.goto("data:text/html,<title>" + tag + "-kept</title>");
       const sibling = await context.newPage();
       await sibling.goto("data:text/html,<title>" + tag + "-sibling</title>");
@@ -333,7 +387,7 @@ test("a flow keeps a tab opened the apply way; the gate closes its sibling and t
   assert.deepEqual(keptRecords().filter(({ targetId }) => targetId === left[0].id).map(({ what }) => what), ["form for the owner to review"]);
   // the owner closes it; the gate forgets it.
   await fetch(`http://127.0.0.1:${chromePort}/json/close/${left[0].id}`);
-  for (let i = 0; i < 50 && keptRecords().some(({ targetId }) => targetId === left[0].id); i += 1) await sleep(100);
+  while (keptRecords().some(({ targetId }) => targetId === left[0].id)) await tick(100);
   assert.equal(keptRecords().some(({ targetId }) => targetId === left[0].id), false);
 });
 
@@ -367,7 +421,7 @@ const [port, tag, helper] = process.argv.slice(1);
 })().catch((error) => { console.error(error.message); process.exit(1); });
 `;
 
-test("a raw-CDP script keeps tabs with agent-chrome-session keep and the documented fetch, and the gate closes the rest", { skip }, async () => {
+test("a raw-CDP script keeps tabs with agent-chrome-session keep and the documented fetch, and the gate closes the rest", { skip, timeout: 120000 }, async () => {
   const tag = `raw-${process.pid}`;
   const { stdout } = await run(process.execPath, [HELPER, "--minutes", "1", "--what", "raw keep replay", "--",
     process.execPath, "-e", RAW_KEEP, String(strict.port), tag, HELPER], { env: { ...strict.env, AGENT_CHROME_SESSION_TEST_GATE_URL: `http://127.0.0.1:${strict.port}` } });

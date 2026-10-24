@@ -6,6 +6,9 @@
 # network. Writes only to a temp dir.
 # Run: bash tests/github_runner_test.sh
 set -euo pipefail
+# Confine the suite under scripts/test-sandbox (see tests/lib/confine.sh).
+# shellcheck source=tests/lib/confine.sh
+. "$(dirname "${BASH_SOURCE[0]}")/lib/confine.sh"
 repo="$(cd "$(dirname "$0")/.." && pwd)"
 script="$repo/scripts/github-runner"
 # Physical, so the chflags stub can match the directory -execdir runs it in.

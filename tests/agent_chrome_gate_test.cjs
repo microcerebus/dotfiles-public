@@ -164,7 +164,8 @@ test("a connection's declaration is live while its file is, and an adopted one o
 
 // Answers /json/version and accepts CDP WebSockets, recording every command
 // and answering each with an empty result. Target.createTarget answers, after
-// createDelay, with a targetId made from its url; /json/new opens "new-tab".
+// createDelay (ms, or a promise to wait for), with a targetId made from its
+// url; /json/new opens "new-tab".
 function stubChrome({ createDelay = 0 } = {}) {
   const commands = [];
   const paths = [];
@@ -185,7 +186,8 @@ function stubChrome({ createDelay = 0 } = {}) {
       const answer = () => socket.write(gate.encodeFrame(JSON.stringify(message.method === "Target.createTarget"
         ? { id: message.id, result: { targetId: `tab:${message.params.url}` } }
         : { id: message.id, result: {} }), null));
-      if (message.method === "Target.createTarget" && createDelay) setTimeout(answer, createDelay);
+      if (message.method === "Target.createTarget" && createDelay?.then) createDelay.then(answer);
+      else if (message.method === "Target.createTarget" && createDelay) setTimeout(answer, createDelay);
       else answer();
       return Buffer.alloc(0);
     });
@@ -347,18 +349,24 @@ test("identify reads the real client process: an undeclared one is refused, the 
   assert.equal(fs.readFileSync(join(home, "notices"), "utf8").trim().split("\n").length, 2);
 });
 
-test("a client that hangs up while it is being identified never gets a Chrome connection", async (t) => {
+// A gate that connects anyway never goes idle; the test then times out.
+test("a client that hangs up while it is being identified never gets a Chrome connection", { timeout: 60000 }, async (t) => {
   const chrome = stubChrome();
   const chromePort = await listen(chrome.server);
-  let release;
-  const identified = new Promise((resolve) => { release = resolve; });
-  const server = gate.createGate({ chromePort, identify: async () => { await identified; return { client: "node (pid 1)", declaration: { what: "flow", current: () => background, live: () => true } }; } });
+  let idle;
+  const done = new Promise((resolve) => { idle = resolve; });
+  // The gate's sockets stay half open, so the hang-up it sees is the client's
+  // end. Identification finishes only after it, and the gate then goes idle.
+  const identify = async (socket) => {
+    await new Promise((resolve) => socket.once("end", resolve));
+    server.whenIdle(idle);
+    return { client: "node (pid 1)", declaration: { what: "flow", current: () => background, live: () => true } };
+  };
+  const server = gate.createGate({ chromePort, identify });
   const port = await listen(server);
   t.after(() => { chrome.destroy(); server.close(); chrome.server.close(); server.closeAllConnections(); });
   await upgrade(port, { hangUp: true });
-  await new Promise((resolve) => setTimeout(resolve, 50));
-  release();
-  await new Promise((resolve) => setTimeout(resolve, 100));
+  await done;
   assert.equal(chrome.commands.length, 0);
 });
 
@@ -455,30 +463,41 @@ test("a large ancestor environment still supplies its session token", async () =
   assert.deepEqual(processes[0].tokens, ["large-chain"]);
 });
 
-test("the gate notices its own code changing, once", async () => {
+test("the gate notices its own code changing, once", { timeout: 60000 }, async (t) => {
   const dir = fs.mkdtempSync(join(tmpdir(), "agent-chrome-gate-"));
   const file = join(dir, "agent-chrome-gate");
   fs.writeFileSync(file, "one");
   let changes = 0;
   gate.onCodeChange([file], () => { changes += 1; }, 20);
-  await new Promise((resolve) => setTimeout(resolve, 60));
-  fs.writeFileSync(`${file}.new`, "two");
-  fs.utimesSync(`${file}.new`, new Date(), new Date(Date.now() + 5000));
-  fs.renameSync(`${file}.new`, file);
-  await new Promise((resolve) => setTimeout(resolve, 200));
-  fs.writeFileSync(file, "three");
-  await new Promise((resolve) => setTimeout(resolve, 100));
+  // A replacement, as an update installs one, until the watcher has seen it:
+  // a change made before its first look is its starting point, not a change.
+  let version = 0;
+  const replace = (text) => {
+    version += 1;
+    fs.writeFileSync(`${file}.new`, text);
+    fs.utimesSync(`${file}.new`, new Date(), new Date(Date.now() + 5000 * version));
+    fs.renameSync(`${file}.new`, file);
+  };
+  // Each wait takes the test's signal, so a timeout ends the loop too.
+  const tick = () => require("node:timers/promises").setTimeout(40, undefined, { signal: t.signal });
+  while (changes === 0) { replace("two"); await tick(); }
+  // A later change, seen by a watcher of the test's own on the same poll.
+  let seen = false;
+  const own = () => { seen = true; };
+  fs.watchFile(file, { interval: 20, persistent: false }, own);
+  while (!seen) { replace("three"); await tick(); }
+  fs.unwatchFile(file, own);
   assert.equal(changes, 1);
 });
 
-test("chain reads a real process's session token from its environment, and names it from its arguments only", async (t) => {
+test("chain reads a real process's session token from its environment, and names it from its arguments only", { timeout: 60000 }, async (t) => {
   const id = "real-ps-token-test";
-  const child = require("node:child_process").spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)", "probe.cjs"], {
+  const child = require("node:child_process").spawn(process.execPath, ["-e", "process.stdout.write('up'); setInterval(() => {}, 1000)", "probe.cjs"], {
     env: { ...process.env, [session.ENV]: id, FLOW_HINT: "see /tmp/trap.cjs" },
-    stdio: "ignore",
+    stdio: ["ignore", "pipe", "ignore"],
   });
   t.after(() => child.kill("SIGKILL"));
-  await new Promise((resolve) => setTimeout(resolve, 300));
+  await new Promise((resolve) => child.stdout.once("data", resolve));
   const processes = await gate.chain(child.pid);
   assert.equal(processes[0].pid, child.pid);
   assert.deepEqual(processes[0].tokens, [id]);
@@ -540,18 +559,21 @@ test("when a session ends the gate closes the tabs it opened, and no other sessi
   assert.equal(closed().length, 2);
 });
 
-test("a tab whose createTarget answer comes after its client has gone is still closed when the session ends", async (t) => {
-  const { chrome, server, live, killedAfter, closed } = await twoSessions(t, { createDelay: 300 });
+test("a tab whose createTarget answer comes after its client has gone is still closed when the session ends", { timeout: 60000 }, async (t) => {
+  let answer;
+  const answered = new Promise((resolve) => { answer = resolve; });
+  const { chrome, server, live, killedAfter, closed } = await twoSessions(t, { createDelay: answered });
   await killedAfter("a", { id: 7, method: "Target.createTarget", params: { url: "about:blank#late" } });
   assert.equal(chrome.commands.filter(({ method }) => method === "Target.createTarget").length, 1);
   live.a = false;
   let idle = false;
-  server.whenIdle(() => { idle = true; });
+  const idled = new Promise((resolve) => server.whenIdle(() => { idle = true; resolve(); }));
   await server.closeEnded();
   assert.deepEqual(closed(), []);
   assert.equal(idle, false, "Chrome's side stays open for the answer");
-  await new Promise((resolve) => setTimeout(resolve, 400));
-  assert.equal(idle, true, "and closes once it is in");
+  answer();
+  // "and closes once it is in": a gate that stays open fails by the test's timeout.
+  await idled;
   await server.closeEnded();
   assert.deepEqual(closed(), ["tab:about:blank#late"]);
 });

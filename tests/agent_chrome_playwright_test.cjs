@@ -79,6 +79,10 @@ test("a Chrome or gate that never answers fails the tab opening instead of hangi
   await assert.rejects(openBackgroundTab("about:blank#x", `http://127.0.0.1:${server.address().port}`, 200), /did not answer within 0\.2s/);
 });
 
+// A CDP deadline longer than any test's timeout: a test that passes it fails
+// by timing out if the runner waits instead of acting on what it was sent.
+const NEVER = 120000;
+
 // A local stand-in for the agent Chrome behind the gate. By default it answers
 // /json/version and accepts the WebSocket; `command` gets each CDP command
 // and a reply function, and answers nothing unless it calls it.
@@ -126,10 +130,10 @@ async function fakeChrome(t, { version, upgrade, command = () => {} } = {}) {
 test("a WebSocket upgrade that is never answered fails the tab opening", async (t) => {
   const { openBackgroundTab } = require("../scripts/agent-chrome-playwright");
   const chrome = await fakeChrome(t, { upgrade: () => {} });
-  await assert.rejects(openBackgroundTab("about:blank#x", chrome.url, 200), /Opening a CDP connection: the agent Chrome did not answer within 0\.2s/);
+  await assert.rejects(openBackgroundTab("about:blank#x", chrome.url, { default: NEVER, "Opening a CDP connection": 200 }), /Opening a CDP connection: the agent Chrome did not answer within 0\.2s/);
 });
 
-test("the CLI exits once it has reported, whatever the flow left open", { timeout: 10000 }, async (t) => {
+test("the CLI exits once it has reported, whatever the flow left open", { timeout: 60000 }, async (t) => {
   const { spawn } = require("node:child_process");
   const fs = require("node:fs");
   const { join } = require("node:path");
@@ -137,18 +141,24 @@ test("the CLI exits once it has reported, whatever the flow left open", { timeou
   const dir = fs.mkdtempSync(join(tmpdir(), "agent-chrome-playwright-flow-"));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   // Fails before any session or browser work, with a timer still running.
+  // Its 4 MiB on stderr is still queued when the runner reports: pipes on
+  // macOS are written asynchronously, so an exit that does not wait for the
+  // flush loses the rest, the runner's own error line included.
   const flow = join(dir, "flow.cjs");
-  fs.writeFileSync(flow, "setInterval(() => {}, 1000);\nmodule.exports = 'not a function';\n");
+  const printed = "x".repeat(1 << 22) + "\n";
+  fs.writeFileSync(flow, `process.stderr.write(${JSON.stringify(printed)});\nsetInterval(() => {}, 1000);\nmodule.exports = 'not a function';\n`);
   const child = spawn(require.resolve("../scripts/agent-chrome-playwright"), ["--minutes", "1", "--what", "test", flow], { stdio: ["ignore", "ignore", "pipe"] });
   t.after(() => child.kill("SIGKILL"));
   let stderr = "";
   child.stderr.on("data", (chunk) => { stderr += chunk; });
-  const code = await Promise.race([new Promise((resolve) => child.once("exit", resolve)), new Promise((resolve) => setTimeout(resolve, 5000, "still running"))]);
+  // The interval keeps a runner that does not exit alive until the test times out.
+  const code = await new Promise((resolve) => child.once("exit", resolve));
   assert.equal(code, 1);
-  assert.match(stderr, /must export a function/);
+  assert.ok(stderr.startsWith(printed), `stderr has ${stderr.length} of the flow's ${printed.length} characters`);
+  assert.match(stderr.slice(printed.length), /must export a function/);
 });
 
-test("a second signal exits through the session's stop, after its notice and with 128 + the signal", { timeout: 10000 }, async (t) => {
+test("a second signal exits through the session's stop, after its notice and with 128 + the second signal", { timeout: 60000 }, async (t) => {
   const { spawn } = require("node:child_process");
   const fs = require("node:fs");
   const { join } = require("node:path");
@@ -157,82 +167,96 @@ test("a second signal exits through the session's stop, after its notice and wit
   const home = fs.mkdtempSync(join(tmpdir(), "agent-chrome-playwright-"));
   t.after(() => fs.rmSync(home, { recursive: true, force: true }));
   const log = join(home, "notices");
-  // The flow is still running at the second signal and ends while the slow
-  // stopped notice is going out.
+  // The flow is still running at the second signal and ends while the
+  // stopped notice is going out: the notice fails it, then waits for the
+  // runner's output to flush. The log records the flow's end, the notice and
+  // the exit in the order they happen, so an exit before the notice fails.
+  // The second signal is a SIGTERM after a SIGINT: the session's stop exits
+  // 143 for it, where the CLI's own exit would give 130 for the first.
   const flow = join(home, "flow.cjs");
   fs.writeFileSync(flow, `module.exports = () => new Promise((_, failed) => {
+  process.once("SIGINT", () => process.kill(process.pid, "SIGTERM"));
+  global.failFlow = () => { require("node:fs").appendFileSync(${JSON.stringify(log)}, "flow ended\\n"); failed(new Error("Target page, context or browser has been closed")); };
   process.kill(process.pid, "SIGINT");
-  setTimeout(() => process.kill(process.pid, "SIGINT"), 100);
-  setTimeout(() => failed(new Error("Target page, context or browser has been closed")), 200);
 });\n`);
   const script = `
     const fs = require('node:fs');
     const { cli } = require(${JSON.stringify(require.resolve("../scripts/agent-chrome-playwright"))});
     const session = require(${JSON.stringify(require.resolve("../scripts/agent-chrome-session"))});
     let marker;
+    // The notice waits on the runner's output, which holds no handle.
+    setInterval(() => {}, 1000);
+    process.on('exit', (code) => fs.appendFileSync(${JSON.stringify(log)}, 'exit ' + code + '\\n'));
     cli(['--minutes', '1', '--what', 'flow', ${JSON.stringify(flow)}], {
       ready: () => true, identityError: () => null, sleep: async () => {}, log: () => {},
       openTab: async (url) => { marker = url; return { targetId: 'own-target', close: async () => {} }; },
       connect: async () => ({ contexts: () => [{ pages: () => [{ url: () => marker, on: () => {} }] }], close: async () => {} }),
     }, {
       dir: () => session.stateDir(${JSON.stringify(home)}), now: Date.now, log: () => {},
-      notify: (message) => new Promise((resolve) => setTimeout(() => { fs.appendFileSync(${JSON.stringify(log)}, message + '\\n'); resolve(); }, 300)),
+      notify: async (message) => {
+        if (global.failFlow) {
+          global.failFlow();
+          // The run ends meanwhile; the notice waits for its output to flush.
+          await new Promise((resolve) => process.stdout.write('', () => process.stderr.write('', () => setImmediate(resolve))));
+        }
+        fs.appendFileSync(${JSON.stringify(log)}, message + '\\n');
+      },
     });
   `;
   const child = spawn(process.execPath, ["-e", script], { stdio: "ignore", env: { ...process.env, [session.ENV]: "" } });
   t.after(() => child.kill("SIGKILL"));
   const code = await new Promise((resolve) => child.once("exit", (exitCode, signal) => resolve(exitCode ?? signal)));
-  assert.equal(code, 130);
-  assert.match(fs.readFileSync(log, "utf8"), /flow: stopped after/);
+  assert.equal(code, 143);
+  const events = fs.readFileSync(log, "utf8").trim().split("\n").map((line) => line.replace(/ after .*/, " after"));
+  assert.deepEqual(events, ["flow. About 1 min, background tabs only.", "flow ended", "flow: stopped after", "exit 143"]);
   assert.deepEqual(fs.readdirSync(session.stateDir(home)), []);
 });
 
-test("a malformed CDP message from the peer fails the pending command instead of the process", { timeout: 5000 }, async (t) => {
+test("a malformed CDP message from the peer fails the pending command instead of the process", { timeout: 60000 }, async (t) => {
   const { randomBytes } = require("node:crypto");
   const { encodeFrame } = require("../scripts/agent-chrome-gate");
   const { openBackgroundTab } = require("../scripts/agent-chrome-playwright");
   // Not JSON, JSON that is not an object, and a masked frame, which a server must never send.
   for (const frame of [encodeFrame("not json"), encodeFrame("null"), encodeFrame(JSON.stringify({ id: 1, result: { targetId: "own-target" } }), randomBytes(4))]) {
     const chrome = await fakeChrome(t, { command: (message, reply, socket) => socket.write(frame) });
-    await assert.rejects(openBackgroundTab("about:blank#x", chrome.url, 2000), /Target\.createTarget: the agent Chrome sent a malformed CDP message/);
+    await assert.rejects(openBackgroundTab("about:blank#x", chrome.url, NEVER), /Target\.createTarget: the agent Chrome sent a malformed CDP message/);
   }
 });
 
-test("a 101 without the right Sec-WebSocket-Accept fails the handshake at once", { timeout: 5000 }, async (t) => {
+test("a 101 without the right Sec-WebSocket-Accept fails the handshake at once", { timeout: 60000 }, async (t) => {
   const { openBackgroundTab } = require("../scripts/agent-chrome-playwright");
   for (const accept of ["", "Sec-WebSocket-Accept: d3Jvbmc=\r\n"]) {
     const chrome = await fakeChrome(t, { upgrade: (req, socket) => socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n${accept}\r\n`) });
-    const started = Date.now();
-    await assert.rejects(openBackgroundTab("about:blank#x", chrome.url, 2000), /did not complete the WebSocket handshake/);
-    assert.ok(Date.now() - started < 500, `rejected after ${Date.now() - started}ms`);
+    // "At once": with no deadline before the test's own, waiting fails the test.
+    await assert.rejects(openBackgroundTab("about:blank#x", chrome.url, NEVER), /did not complete the WebSocket handshake/);
   }
 });
 
-test("a /json/version body that never ends fails the tab opening", { timeout: 5000 }, async (t) => {
+test("a /json/version body that never ends fails the tab opening", { timeout: 60000 }, async (t) => {
   const { openBackgroundTab } = require("../scripts/agent-chrome-playwright");
   const chrome = await fakeChrome(t, { version: (req, res) => { res.writeHead(200, { "Content-Type": "application/json" }); res.write("{"); } });
   await assert.rejects(openBackgroundTab("about:blank#x", chrome.url, 200), /Reading \/json\/version: the agent Chrome did not answer within 0\.2s/);
 });
 
-test("a peer that takes the WebSocket but never answers: createTarget times out and the connection is let go", { timeout: 5000 }, async (t) => {
+test("a peer that takes the WebSocket but never answers: createTarget times out and the connection is let go", { timeout: 60000 }, async (t) => {
   const { openBackgroundTab } = require("../scripts/agent-chrome-playwright");
   const chrome = await fakeChrome(t);
-  await assert.rejects(openBackgroundTab("about:blank#x", chrome.url, 200), /Target\.createTarget: the agent Chrome did not answer within 0\.2s/);
+  await assert.rejects(openBackgroundTab("about:blank#x", chrome.url, { default: NEVER, "Target.createTarget": 200, "Target.getTargets": 200 }), /Target\.createTarget: the agent Chrome did not answer within 0\.2s/);
   // Waiting on the closing handshake kept the process alive for good.
-  const letGo = await Promise.race([chrome.closed[0].then(() => true), new Promise((resolve) => setTimeout(resolve, 1500, false))]);
-  assert.equal(letGo, true, "the runner closed its CDP socket");
+  // A runner that waits for the handshake never closes it; the test times out.
+  await chrome.closed[0];
 });
 
-test("a runner that cannot reach the agent Chrome exits instead of hanging", { timeout: 10000 }, async (t) => {
+test("a runner that cannot reach the agent Chrome exits instead of hanging", { timeout: 60000 }, async (t) => {
   const { spawn } = require("node:child_process");
   const chrome = await fakeChrome(t);
-  const child = spawn(process.execPath, ["-e", `require(${JSON.stringify(require.resolve("../scripts/agent-chrome-playwright"))}).openBackgroundTab("about:blank#x", ${JSON.stringify(chrome.url)}, 200).catch(() => {})`], { stdio: "ignore" });
+  const child = spawn(process.execPath, ["-e", `require(${JSON.stringify(require.resolve("../scripts/agent-chrome-playwright"))}).openBackgroundTab("about:blank#x", ${JSON.stringify(chrome.url)}, { default: ${NEVER}, "Target.createTarget": 200, "Target.getTargets": 200 }).catch(() => {})`], { stdio: "ignore" });
   t.after(() => child.kill("SIGKILL"));
-  const exited = await Promise.race([new Promise((resolve) => child.once("exit", () => resolve(true))), new Promise((resolve) => setTimeout(resolve, 5000, false))]);
-  assert.equal(exited, true, "the process exited within 5s");
+  // A runner kept alive by its socket never exits; the test times out.
+  await new Promise((resolve) => child.once("exit", resolve));
 });
 
-test("closing the tab after the agent Chrome dropped the connection fails at once", { timeout: 5000 }, async (t) => {
+test("closing the tab after the agent Chrome dropped the connection fails at once", { timeout: 60000 }, async (t) => {
   const { openBackgroundTab } = require("../scripts/agent-chrome-playwright");
   const chrome = await fakeChrome(t, {
     command: (message, reply, socket) => {
@@ -240,14 +264,13 @@ test("closing the tab after the agent Chrome dropped the connection fails at onc
       setTimeout(() => socket.destroy(), 50);
     },
   });
-  const tab = await openBackgroundTab("about:blank#x", chrome.url, 2000);
+  const tab = await openBackgroundTab("about:blank#x", chrome.url, NEVER);
   await chrome.closed[0];
-  const started = Date.now();
+  // "At once": with no deadline before the test's own, waiting fails the test.
   await assert.rejects(tab.close(), /Target\.closeTarget: the agent Chrome closed the connection/);
-  assert.ok(Date.now() - started < 500, `rejected after ${Date.now() - started}ms`);
 });
 
-test("a tab whose createTarget answer comes too late is found by its marker and closed", { timeout: 5000 }, async (t) => {
+test("a tab whose createTarget answer comes too late is found by its marker and closed", { timeout: 60000 }, async (t) => {
   const { openBackgroundTab } = require("../scripts/agent-chrome-playwright");
   const closedTargets = [];
   const marker = "about:blank#screen-free-late";
@@ -260,7 +283,7 @@ test("a tab whose createTarget answer comes too late is found by its marker and 
       }
     },
   });
-  await assert.rejects(openBackgroundTab(marker, chrome.url, 200), /Target\.createTarget: the agent Chrome did not answer/);
+  await assert.rejects(openBackgroundTab(marker, chrome.url, { default: NEVER, "Target.createTarget": 200 }), /Target\.createTarget: the agent Chrome did not answer/);
   assert.deepEqual(closedTargets, ["late"]);
 });
 
@@ -401,7 +424,7 @@ test("a stop during the start notice skips readiness and reports stopped", async
   assert.match(notices[1], /^flow: stopped after/);
 });
 
-test("a stop during blocking readiness opens no tab and reports stopped", async (t) => {
+test("a stop during blocking readiness opens no tab and reports stopped", { timeout: 60000 }, async (t) => {
   const { spawn } = require("node:child_process");
   const fs = require("node:fs");
   const { join } = require("node:path");
@@ -429,7 +452,8 @@ test("a stop during blocking readiness opens no tab and reports stopped", async 
   const child = spawn(process.execPath, ["-e", script], { detached: true, stdio: "ignore", env: { ...process.env, AGENT_CHROME_SESSION: "" } });
   t.after(() => { try { process.kill(-child.pid, "SIGKILL"); } catch { /* gone */ } });
   const gone = new Promise((resolve) => child.once("exit", (code) => resolve(code)));
-  for (let i = 0; i < 100 && !fs.existsSync(marker); i += 1) await sleep(25);
+  // No deadline: a readiness child that never starts fails by the test's timeout.
+  while (!fs.existsSync(marker) && child.exitCode === null) await sleep(25);
   assert.ok(fs.existsSync(marker), "readiness child started");
   process.kill(-child.pid, "SIGINT");
   assert.equal(await gone, 1);
@@ -439,11 +463,17 @@ test("a stop during blocking readiness opens no tab and reports stopped", async 
 
 // Runs a flow through the agent-chrome-session CLI (twice when nested), as the
 // rules require, waits for the runner to reach `phase`, then signals the
-// session's process group as a terminal's Ctrl-C does, or only its pid. In the
-// create phase, opening the tab takes `createDelay` ms.
+// session's process group as a terminal's Ctrl-C does, or only its pid.
+// Attaching (the connect phase) and opening the tab (the create phase) last
+// until the runner has had the signal, so the stop always lands mid-step.
+// Attaching then ends 1s later, and in the create phase the tab opens
+// `createDelay` ms later; "stderr" waits
+// for the runner's stopping line instead, "never" never opens it, and
+// "release" opens it only once the test has seen the run end.
 // direct runs the runner without agent-chrome-session around it; second sends
 // the signal again that many ms later; kill SIGKILLs the group that many ms
 // after the signal, as a harness does after its grace period.
+// How long a second signal waits for the tab is recorded in `patience`.
 async function stopUnderSession(t, { phase, nested = false, direct = false, group = true, signal = "SIGINT", createDelay = 1000, second, kill }) {
   const { spawn } = require("node:child_process");
   const fs = require("node:fs");
@@ -469,13 +499,24 @@ async function stopUnderSession(t, { phase, nested = false, direct = false, grou
     const { setTimeout: sleep } = require("node:timers/promises");
     const { cli } = require(${JSON.stringify(require.resolve("../scripts/agent-chrome-playwright"))});
     const event = (name) => fs.appendFileSync(${JSON.stringify(events)}, name + "\\n");
+    fs.writeFileSync(${JSON.stringify(join(home, "runner.pid"))}, String(process.pid));
+    // Waiting on a signal holds no handle; this keeps the runner up meanwhile.
+    setInterval(() => {}, 1000);
+    const signalled = new Promise((resolve) => { for (const name of ["SIGINT", "SIGTERM", "SIGHUP"]) process.once(name, resolve); });
+    const said = new Promise((resolve) => {
+      const write = process.stderr.write.bind(process.stderr);
+      process.stderr.write = (text, ...rest) => { if (String(text).includes("stopping:")) resolve(); return write(text, ...rest); };
+    });
+    const released = async () => { while (!fs.existsSync(${JSON.stringify(join(home, "release"))})) await sleep(25); };
+    const opened = { stderr: () => said, never: () => new Promise(() => {}), release: released }[${JSON.stringify(String(createDelay))}] ?? (() => sleep(${Number(createDelay) || 0}));
     let marker;
     cli(["--minutes", "1", "--what", "flow", ${JSON.stringify(flow)}], {
       ready: () => true, identityError: () => null, sleep: async () => {}, log: () => {},
-      openTab: async (url) => { marker = url; ${phase === "create" ? `event("opening"); await sleep(${createDelay});` : ""} return { targetId: "own-target", close: async () => { await sleep(200); event("tab closed"); global.tabClosed?.(); } }; },
+      patience: (ms) => { fs.appendFileSync(${JSON.stringify(join(home, "patience"))}, ms + "\\n"); return sleep(ms); },
+      openTab: async (url) => { marker = url; ${phase === "create" ? `event("opening"); await signalled; await opened();` : ""} return { targetId: "own-target", close: async () => { await sleep(200); event("tab closed"); global.tabClosed?.(); } }; },
       connect: async () => {
         event("connecting");
-        await sleep(${phase === "connect" ? 2000 : 0});
+        ${phase === "connect" ? "await signalled; await sleep(1000);" : ""}
         return { contexts: () => [{ pages: () => [{ url: () => marker, on: () => {} }] }], close: async () => {} };
       },
     });
@@ -494,22 +535,22 @@ async function stopUnderSession(t, { phase, nested = false, direct = false, grou
   const exit = new Promise((resolve) => child.once("exit", (code, signal) => resolve(code ?? signal)));
   const reached = { connect: "connecting", create: "opening" }[phase] ?? "flow started";
   const seen = () => fs.existsSync(events) && fs.readFileSync(events, "utf8").includes(reached);
-  for (let i = 0; i < 200 && !seen(); i += 1) await new Promise((resolve) => setTimeout(resolve, 25));
+  // No deadline: a runner that never gets there fails by the test's timeout.
+  while (!seen() && child.exitCode === null) await new Promise((resolve) => setTimeout(resolve, 25));
   assert.equal(child.exitCode, null, `the runner reached "${reached}" and is still running`);
   const target = group ? -child.pid : child.pid;
-  const signalled = Date.now();
   process.kill(target, signal);
   if (second !== undefined) setTimeout(() => process.kill(target, signal), second);
   if (kill !== undefined) setTimeout(() => process.kill(target, "SIGKILL"), kill);
   const code = await exit;
-  const elapsed = Date.now() - signalled;
-  return { code, elapsed, stderr, home, log, events: fs.readFileSync(events, "utf8").trim().split("\n"), notices: fs.readFileSync(log, "utf8"), left: fs.readdirSync(session.stateDir(home)) };
+  const read = (name) => (fs.existsSync(join(home, name)) ? fs.readFileSync(join(home, name), "utf8").trim().split("\n").filter(Boolean) : []);
+  return { code, stderr, home, log, events: read("events"), patience: read("patience"), runner: Number(read("runner.pid")[0]), notices: fs.readFileSync(log, "utf8"), left: fs.readdirSync(session.stateDir(home)) };
 }
 
 // Review r3 of agent-chrome-playwright-attach: under agent-chrome-session, the
 // route the rules require, the runner had no signal handling of its own, so a
 // Ctrl-C killed it before it closed its tab.
-test("one Ctrl-C under agent-chrome-session closes the flow's tab and the session still says done", { timeout: 10000 }, async (t) => {
+test("one Ctrl-C under agent-chrome-session closes the flow's tab and the session still says done", { timeout: 60000 }, async (t) => {
   const result = await stopUnderSession(t, { phase: "flow" });
   assert.deepEqual(result.events, ["connecting", "flow started", "tab closed"]);
   assert.equal(result.code, 130);
@@ -520,7 +561,7 @@ test("one Ctrl-C under agent-chrome-session closes the flow's tab and the sessio
 // Review r1 of playwright-session-signals: the session forwards the Ctrl-C the
 // runner already got, and that second copy exited before anything closed the
 // tab opened for the attach.
-test("one Ctrl-C while Playwright attaches still closes the flow's tab", { timeout: 10000 }, async (t) => {
+test("one Ctrl-C while Playwright attaches still closes the flow's tab", { timeout: 60000 }, async (t) => {
   const result = await stopUnderSession(t, { phase: "connect" });
   assert.deepEqual(result.events, ["connecting", "tab closed"]);
   assert.equal(result.code, 130);
@@ -532,7 +573,7 @@ test("one Ctrl-C while Playwright attaches still closes the flow's tab", { timeo
 // opening did not wait for it, so the tab opened after the runner had gone.
 for (const nested of [false, true]) {
   for (const [signal, code] of [["SIGINT", 130], ["SIGTERM", 143], ["SIGHUP", 129]]) {
-    test(`${signal} under ${nested ? "a nested session" : "agent-chrome-session"} while the tab opens still closes it`, { timeout: 10000 }, async (t) => {
+    test(`${signal} under ${nested ? "a nested session" : "agent-chrome-session"} while the tab opens still closes it`, { timeout: 60000 }, async (t) => {
       const result = await stopUnderSession(t, { phase: "create", nested, signal });
       assert.deepEqual(result.events, ["opening", "tab closed"]);
       assert.equal(result.code, code);
@@ -544,7 +585,7 @@ for (const nested of [false, true]) {
 
 // Review r2 of playwright-session-signals: the runner waited 3s for the tab
 // and then exited, but a createTarget may take up to its 15s deadline.
-test("one Ctrl-C under agent-chrome-session waits for a slow tab to open and closes it", { timeout: 15000 }, async (t) => {
+test("one Ctrl-C under agent-chrome-session waits for a slow tab to open and closes it", { timeout: 60000 }, async (t) => {
   const result = await stopUnderSession(t, { phase: "create", createDelay: 4500 });
   assert.deepEqual(result.events, ["opening", "tab closed"]);
   assert.equal(result.code, 130);
@@ -554,7 +595,7 @@ test("one Ctrl-C under agent-chrome-session waits for a slow tab to open and clo
 
 // Review r1 of playwright-session-signals: the inner session took the outer
 // one's forward as a second Ctrl-C and SIGKILLed the runner.
-test("one Ctrl-C under a nested session closes the flow's tab", { timeout: 10000 }, async (t) => {
+test("one Ctrl-C under a nested session closes the flow's tab", { timeout: 60000 }, async (t) => {
   const result = await stopUnderSession(t, { phase: "flow", nested: true });
   assert.deepEqual(result.events, ["connecting", "flow started", "tab closed"]);
   assert.equal(result.code, 130);
@@ -564,7 +605,7 @@ test("one Ctrl-C under a nested session closes the flow's tab", { timeout: 10000
 
 // Review r1 of playwright-session-signals: a runner stopped by one signal
 // exited 1, and the owner was told the flow failed.
-test("a signal sent only to the session is reported stopped, not failed", { timeout: 10000 }, async (t) => {
+test("a signal sent only to the session is reported stopped, not failed", { timeout: 60000 }, async (t) => {
   const result = await stopUnderSession(t, { phase: "flow", group: false });
   assert.deepEqual(result.events, ["connecting", "flow started", "tab closed"]);
   assert.equal(result.code, 130);
@@ -574,7 +615,7 @@ test("a signal sent only to the session is reported stopped, not failed", { time
 
 // Review r3 of agent-chrome-playwright-attach: a flow that closed its own tab
 // made the runner's Target.closeTarget fail, and the run exited 1.
-test("a flow that ends with page.close() succeeds, and the runner still closes a tab that is open", { timeout: 5000 }, async (t) => {
+test("a flow that ends with page.close() succeeds, and the runner still closes a tab that is open", { timeout: 60000 }, async (t) => {
   const { encodeFrame } = require("../scripts/agent-chrome-gate");
   const { openBackgroundTab } = require("../scripts/agent-chrome-playwright");
   const open = new Set();
@@ -594,7 +635,7 @@ test("a flow that ends with page.close() succeeds, and the runner still closes a
     const { calls, page, deps } = harness();
     page.close = async () => { open.delete("own-target"); };
     // The harness's openTab only records the marker; the tab is the fake Chrome's.
-    const openTab = async (marker) => { await deps.openTab(marker); return openBackgroundTab(marker, chrome.url, 2000); };
+    const openTab = async (marker) => { await deps.openTab(marker); return openBackgroundTab(marker, chrome.url, NEVER); };
     assert.equal(await run(async (own) => { if (closesItself) await own.close(); return "read"; }, { ...deps, openTab }), "read");
     assert.equal(open.size, 0);
     assert.equal(calls.at(-1), "disconnect");
@@ -603,18 +644,20 @@ test("a flow that ends with page.close() succeeds, and the runner still closes a
 
 // Review r3 of playwright-session-signals: nothing pinned the 3s wait for a
 // second Ctrl-C when the runner runs directly; at 15s it waited for the tab.
-test("run directly, a second Ctrl-C while the tab opens exits after 3s", { timeout: 15000 }, async (t) => {
-  const result = await stopUnderSession(t, { phase: "create", direct: true, createDelay: 4500, second: 100 });
+// The tab never opens, so only the 3s wait can end the run.
+test("run directly, a second Ctrl-C while the tab opens exits after 3s", { timeout: 60000 }, async (t) => {
+  const result = await stopUnderSession(t, { phase: "create", direct: true, createDelay: "never", second: 100 });
   assert.equal(result.code, 130);
-  assert.ok(result.elapsed >= 2900 && result.elapsed < 3600, `exited after ${result.elapsed}ms`);
+  assert.deepEqual(result.patience, ["3000"]);
   assert.deepEqual(result.events, ["opening"]);
   assert.match(result.notices, /flow: stopped after/);
 });
 
 // Review r3 of playwright-session-signals: one Ctrl-C against a slow Chrome
 // waited up to 15s under a session and printed nothing meanwhile.
-test("one Ctrl-C that waits for the agent Chrome says so on stderr", { timeout: 15000 }, async (t) => {
-  const result = await stopUnderSession(t, { phase: "create", createDelay: 2000 });
+test("one Ctrl-C that waits for the agent Chrome says so on stderr", { timeout: 60000 }, async (t) => {
+  // The tab opens only once the runner has said it is waiting for it.
+  const result = await stopUnderSession(t, { phase: "create", createDelay: "stderr" });
   assert.equal(result.code, 130);
   assert.deepEqual(result.events, ["opening", "tab closed"]);
   assert.match(result.stderr, /^agent-chrome-playwright: stopping: closing the flow's tab once the agent Chrome answers \(it has 15s per step\)\. Ctrl-C again stops now, and the gate closes the tab when the run ends\.$/m);
@@ -626,16 +669,22 @@ test("one Ctrl-C that waits for the agent Chrome says so on stderr", { timeout: 
 // Review r3 of playwright-session-signals: a harness that sends SIGTERM and
 // SIGKILLs the group before a slow createTarget answers kills the session
 // before its notice. The gate's sweep must then say done, and nothing may run on.
-test("a harness SIGTERM then SIGKILL during a slow tab opening leaves the done notice to the gate's sweep", { timeout: 15000 }, async (t) => {
-  const result = await stopUnderSession(t, { phase: "create", signal: "SIGTERM", createDelay: 3000, kill: 500 });
+test("a harness SIGTERM then SIGKILL during a slow tab opening leaves the done notice to the gate's sweep", { timeout: 60000 }, async (t) => {
+  const result = await stopUnderSession(t, { phase: "create", signal: "SIGTERM", createDelay: "release", kill: 500 });
   assert.equal(result.code, "SIGKILL");
   assert.deepEqual(result.events, ["opening"]);
   assert.doesNotMatch(result.notices, /stopped after/);
   assert.equal(result.left.length, 1);
   // The watchdog takes the runner down with the session, so the tab's late
-  // opening never comes.
-  await new Promise((resolve) => setTimeout(resolve, 3000));
-  assert.deepEqual(require("node:fs").readFileSync(require("node:path").join(result.home, "events"), "utf8").trim().split("\n"), ["opening"]);
+  // opening never comes: a runner still alive opens and closes it once
+  // released, then exits.
+  const fs = require("node:fs");
+  fs.writeFileSync(require("node:path").join(result.home, "release"), "");
+  assert.ok(Number.isInteger(result.runner) && result.runner > 1, `runner pid ${result.runner}`);
+  const alive = () => { try { process.kill(result.runner, 0); return true; } catch { return false; } };
+  // The runner has its own group, out of the t.after kill's reach; the signal ends the poll.
+  while (alive()) await require("node:timers/promises").setTimeout(25, undefined, { signal: t.signal });
+  assert.deepEqual(fs.readFileSync(require("node:path").join(result.home, "events"), "utf8").trim().split("\n"), ["opening"]);
   const session = require("../scripts/agent-chrome-session");
   const notices = [];
   await session.sweep({ dir: () => session.stateDir(result.home), notify: async (message) => { notices.push(message); }, log: () => {}, now: Date.now });
