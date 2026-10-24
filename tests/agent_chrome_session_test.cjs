@@ -1,3 +1,4 @@
+require("./lib/agent-chrome-test-env.cjs");
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const { spawn } = require("node:child_process");
@@ -278,4 +279,133 @@ test("signals while the done notice goes out wait for it, and nothing is left be
     assert.match(fs.readFileSync(log, "utf8"), /flow: finished after under a minute\. Done/, `${signals} signal(s)`);
     assert.deepEqual(fs.readdirSync(session.stateDir(home)), [], `${signals} signal(s)`);
   }
+});
+
+const running = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+
+// A shell that ignores the stop signals, with a grandchild that inherits that
+// and writes its pid, as a command with a helper of its own does.
+function stubborn(pidFile) {
+  return ["/bin/sh", "-c", `trap "" INT TERM HUP; /bin/sleep 60 >/dev/null 2>&1 & echo $! > ${pidFile}; wait; wait`];
+}
+
+// Follow-up of playwright-session-signals review r2: a real second Ctrl-C
+// SIGKILLed only the command, and what it had started kept running.
+test("a second signal kills everything the command started, not just the command", async (t) => {
+  const { home } = sandbox();
+  const log = join(home, "notices");
+  const pidFile = join(home, "grandchild.pid");
+  const child = cli(home, log, stubborn(pidFile));
+  const grandchild = await until(() => fs.existsSync(pidFile) && Number(fs.readFileSync(pidFile, "utf8")));
+  t.after(() => { try { process.kill(grandchild, "SIGKILL"); } catch { /* gone */ } });
+  child.kill("SIGINT");
+  await sleep(200);
+  const code = new Promise((resolve) => child.once("exit", (status, signal) => resolve(status ?? signal)));
+  child.kill("SIGINT");
+  assert.equal(await code, 137);
+  await until(() => !running(grandchild));
+  assert.match(fs.readFileSync(log, "utf8"), /long check: stopped after/);
+});
+
+// The command's own process group must not let it outlive a harness that
+// SIGKILLs the session, as it did when the command shared the session's group.
+test("a session SIGKILLed by its harness takes its command and what it started down with it", async (t) => {
+  const { home } = sandbox();
+  const log = join(home, "notices");
+  const pidFile = join(home, "grandchild.pid");
+  const child = cli(home, log, stubborn(pidFile));
+  const grandchild = await until(() => fs.existsSync(pidFile) && Number(fs.readFileSync(pidFile, "utf8")));
+  t.after(() => { try { process.kill(grandchild, "SIGKILL"); } catch { /* gone */ } });
+  child.kill("SIGKILL");
+  await until(() => !running(grandchild));
+});
+
+// What each process's group is, as the command sees it.
+const GROUPS = `printf '%s %s\\n' "$(ps -o pgid= -p $PPID | tr -d ' ')" "$(ps -o pgid= -p $$ | tr -d ' ')"`;
+
+test("without a terminal the command gets its own process group; from a terminal it keeps the terminal's", async () => {
+  const { home } = sandbox();
+  const log = join(home, "notices");
+  const piped = cli(home, log, ["/bin/sh", "-c", GROUPS]);
+  let out = "";
+  piped.stdout.on("data", (chunk) => { out += chunk; });
+  assert.equal(await exited(piped), 0);
+  const [sessionGroup, commandGroup] = out.trim().split(" ");
+  assert.notEqual(commandGroup, sessionGroup);
+  // script(1) runs the helper on a pseudo-terminal, as a person's shell does.
+  const command = [process.execPath, HELPER, "--minutes", "3", "--what", "long check", "--", "/bin/sh", "-c", GROUPS];
+  const tty = spawn("/usr/bin/script", ["-q", "/dev/null", ...command], {
+    env: { ...process.env, AGENT_CHROME_STATE_HOME: home, AGENT_CHROME_SESSION_TEST_NOTIFY_LOG: log, [session.ENV]: "" },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let seen = "";
+  tty.stdout.on("data", (chunk) => { seen += chunk; });
+  assert.equal(await exited(tty), 0);
+  // script echoes the ^D it sends for the closed stdin before the output.
+  const [ttySession, ttyCommand] = seen.match(/\d+/g).slice(-2);
+  assert.equal(ttyCommand, ttySession);
+});
+
+// Review r1 of agent-chrome-session-orphans: nothing pinned that a nested
+// session leaves its command in the outer session's group, where the outer
+// one's second signal and watchdog reach it.
+test("a nested session keeps its command in the outer session's process group", async () => {
+  const { home } = sandbox();
+  const log = join(home, "notices");
+  const nested = cli(home, log, [process.execPath, HELPER, "--minutes", "1", "--what", "inner check", "--", "/bin/sh", "-c", GROUPS]);
+  let out = "";
+  nested.stdout.on("data", (chunk) => { out += chunk; });
+  assert.equal(await exited(nested), 0);
+  const [innerSessionGroup, commandGroup] = out.trim().split(" ");
+  assert.equal(commandGroup, innerSessionGroup);
+});
+
+// Review r1 of agent-chrome-session-orphans: the gate closed tabs apply
+// workers left open for the owner on purpose, and nothing told him they were left.
+test("the done notice says how many tabs the session kept for the owner, counting only this run's", async () => {
+  const { home, notices, deps, syncDeps, advance } = sandbox();
+  const record = (session, at) => ({ targetId: `tab-${at}`, what: "form to review", session, at });
+  const keepIn = (records) => fs.writeFileSync(session.tabsFile(deps.dir()), JSON.stringify({ sessions: [], kept: records }));
+  await session.withSession({ what: "apply flow", minutes: 5 }, async (env) => {
+    keepIn([record(env[session.ENV], 1_000_000), record(env[session.ENV], 1_000_001), record("other", 1_000_000)]);
+  }, deps);
+  assert.equal(notices.at(-1), "apply flow: finished after under a minute. Done with the agent Chrome, and left 2 tabs open for you.");
+  // A lease's id comes back; a tab kept under an earlier lease is not this one's.
+  keepIn([record("axi-default", 999_000)]);
+  session.lease({ id: "axi-default", what: "axi", minutes: 1 }, syncDeps);
+  keepIn([record("axi-default", 999_000), record("axi-default", 1_000_000)]);
+  advance(120000);
+  await session.sweep(deps);
+  assert.equal(notices.at(-1), "axi: finished after 1 min. Done with the agent Chrome, and left 1 tab open for you.");
+});
+
+test("keep runs only inside a session, and needs a reason and one target id", async () => {
+  const { home } = sandbox();
+  const keep = (args, env = {}) => new Promise((resolve) => {
+    const child = spawn(process.execPath, [HELPER, "keep", ...args], { env: { ...process.env, AGENT_CHROME_STATE_HOME: home, [session.ENV]: "", ...env }, stdio: ["ignore", "pipe", "pipe"] });
+    let err = "";
+    child.stderr.on("data", (chunk) => { err += chunk; });
+    child.once("close", (code) => resolve({ code, err }));
+  });
+  for (const args of [["tab-1"], ["--what", "form", "tab-1", "tab-2"], ["--what", "form"]]) {
+    const { code, err } = await keep(args);
+    assert.equal(code, 2);
+    assert.match(err, /Usage: agent-chrome-session keep --what/);
+  }
+  const outside = await keep(["--what", "form to review", "tab-1"]);
+  assert.equal(outside.code, 2);
+  assert.match(outside.err, /inside the session that opened the tab/);
+  await assert.rejects(session.keepTab("tab-1", " "), /--what must say/);
+});
+
+test("keep against a gate from before keep (Chrome's 404) says the tab stays; any other refusal still fails", async (t) => {
+  const http = require("node:http");
+  let status = 404;
+  const server = http.createServer((req, res) => res.writeHead(status).end(status === 403 ? "refused\n" : "")).listen(0, "127.0.0.1");
+  t.after(() => server.close());
+  await new Promise((resolve) => server.once("listening", resolve));
+  const url = `http://127.0.0.1:${server.address().port}`;
+  assert.match(await session.keepTab("tab-1", "form to review", url), /stays open anyway/);
+  status = 403;
+  await assert.rejects(session.keepTab("tab-1", "form to review", url), /refused/);
 });

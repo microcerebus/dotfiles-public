@@ -2,15 +2,19 @@
 // Run a written, screen-free flow in its own background agent Chrome tab.
 // The run is an agent-chrome-session: the owner is notified before it and when it
 // ends, and scripts/agent-chrome-gate lets only declared sessions through.
+// When the run ends, the runner closes its tab and the gate closes every other
+// tab the run opened. A tab the flow leaves for the owner on purpose (a form for
+// him to review, a sign-in he finishes) is kept with the flow's second
+// argument: module.exports = async (page, { keep }) => { ...; await keep(tab, "why"); }.
 const { spawnSync } = require("node:child_process");
 const { createHash, randomBytes, randomUUID } = require("node:crypto");
 const http = require("node:http");
 const { homedir } = require("node:os");
 const { basename, join, resolve } = require("node:path");
 const { setTimeout: sleep } = require("node:timers/promises");
-const { agentChromeFlagsError, AGENT_CHROME_URL } = require("./chrome-devtools-axi");
+const { agentChromeFlagsError } = require("./chrome-devtools-axi");
 const { frameHeader, encodeFrame } = require("./agent-chrome-gate");
-const { withSession, current, SIGNALS } = require("./agent-chrome-session");
+const { withSession, current, keepTab, SIGNALS, GATE_URL } = require("./agent-chrome-session");
 
 // pnpm prints warnings on stdout too: pnpm 12 warns about --global inside a
 // project that pins packageManager, which broke job-tracker's runs on
@@ -102,7 +106,7 @@ const CLOSE_FRAME = Buffer.from([0x88, 0x80, 0, 0, 0, 0]);
 // supported." (job-tracker, 2026-10-22). Target.createTarget loads the profile
 // again. With no window left, Chrome opens one for the tab and, as the tab is
 // a background one, orders it behind every other window instead of in front.
-async function openBackgroundTab(marker, url = AGENT_CHROME_URL, timeout = CDP_TIMEOUT) {
+async function openBackgroundTab(marker, url = GATE_URL, timeout = CDP_TIMEOUT) {
   const reading = new AbortController();
   const version = await within(fetch(`${url}/json/version`, { signal: reading.signal })
     .then(async (response) => ({ status: response.status, ok: response.ok, body: await response.text() })),
@@ -180,6 +184,8 @@ async function openBackgroundTab(marker, url = AGENT_CHROME_URL, timeout = CDP_T
     const { targetId } = await send("Target.createTarget", { url: marker, background: true });
     return {
       targetId,
+      // A tab the flow kept stays open; the runner only hangs up.
+      release: async () => hangUp(),
       // A flow may close its own tab with page.close(); then the tab is
       // already gone, which is what closing it was for.
       close: async () => {
@@ -201,11 +207,20 @@ async function openBackgroundTab(marker, url = AGENT_CHROME_URL, timeout = CDP_T
   }
 }
 
+// A Playwright page's CDP target id, which the gate knows the tab by.
+async function targetIdOf(page) {
+  const cdp = await page.context().newCDPSession(page);
+  try { return (await cdp.send("Target.getTargetInfo")).targetInfo.targetId; }
+  finally { await cdp.detach().catch(() => {}); }
+}
+
 const defaults = {
   ready: () => spawnSync(join(__dirname, "agent-chrome-ready"), [], { stdio: "inherit" }).status === 0,
   identityError: () => agentChromeFlagsError(),
   openTab: (marker) => openBackgroundTab(marker),
-  connect: () => playwright().chromium.connectOverCDP(AGENT_CHROME_URL),
+  connect: () => playwright().chromium.connectOverCDP(GATE_URL),
+  targetId: targetIdOf,
+  keepTab: (targetId, why) => keepTab(targetId, why, GATE_URL),
   sleep,
   log: (message) => process.stderr.write(`agent-chrome-playwright: ${message}\n`),
   // Aborting closes the flow's tab, so a stopped run leaves nothing behind.
@@ -236,8 +251,15 @@ async function run(flow, deps = defaults) {
   // A stop can come while the tab is still opening, so closing waits for it.
   // However many signals ask, the tab is closed once.
   const opening = deps.openTab(marker);
+  // Tabs the flow kept for the owner, by target id; the gate leaves them open.
+  const kept = new Set();
+  const keep = async (tab, why) => {
+    const targetId = await deps.targetId(tab);
+    await deps.keepTab(targetId, why);
+    kept.add(targetId);
+  };
   let closing;
-  const closeOwnTab = () => (closing ??= opening.then((tab) => tab.close()));
+  const closeOwnTab = () => (closing ??= opening.then((tab) => (kept.has(tab.targetId) ? tab.release() : tab.close())));
   deps.onCloseTab?.(closeOwnTab);
   await opening;
   let browser;
@@ -270,7 +292,7 @@ async function run(flow, deps = defaults) {
     }
     if (deps.signal?.aborted) throw new Error("Stopped before the flow started.");
     deps.signal?.addEventListener("abort", () => { closeOwnTab().catch(() => {}); }, { once: true });
-    return await flow(page);
+    return await flow(page, { keep });
   } finally {
     if (newPage) context.newPage = newPage;
     try {
@@ -285,7 +307,11 @@ async function run(flow, deps = defaults) {
 const USAGE = 'Usage: agent-chrome-playwright [--minutes N] [--what "what it does"] [--keep-popups] <flow.cjs>\n'
   + "the owner gets a notification (what, about how long) before the flow starts and when it ends.\n"
   + "Popups the flow opens are closed unless --keep-popups is passed.\n"
-  + "The file must export async function(page); never bring tabs to the front or close the browser.\n";
+  + "The file must export async function(page, { keep }); never bring tabs to the front or close the browser.\n"
+  + "When the run ends its tabs close; await keep(tab, \"why\") leaves one open for the owner.\n";
+// What a stop that waits for the agent Chrome prints after a second, so one
+// Ctrl-C against a slow or wedged Chrome does not look hung.
+const STOPPING = "stopping: closing the flow's tab once the agent Chrome answers (it has 15s per step). Ctrl-C again stops now, and the gate closes the tab when the run ends.";
 // Calls written before the notifications passed only the flow file; they keep
 // working, with the file name and five minutes in the notice.
 const DEFAULT_MINUTES = 5;
@@ -314,6 +340,7 @@ function parseArgs(args) {
 function cli(args, deps = defaults, sessionDeps = undefined) {
   let stopped = null;
   let first = null;
+  let waiting;
   let closeTab = async () => {};
   return Promise.resolve().then(() => {
     const { file, missing, keepPopups, ...spec } = parseArgs(args);
@@ -321,17 +348,23 @@ function cli(args, deps = defaults, sessionDeps = undefined) {
     const flow = require(resolve(file));
     if (typeof flow !== "function") throw new Error("The flow must export a function that receives its own page.");
     // The first signal closes the flow's tab, which ends the flow. A second
-    // exits once the tab is closed, or after 3s. Under agent-chrome-session one
-    // Ctrl-C arrives twice, from the terminal and forwarded by the session, so
-    // there the runner waits up to the CDP deadline for a tab still being
-    // created. A real second Ctrl-C makes the session SIGKILL the runner, and
-    // such a tab then stays open.
+    // exits once the tab is closed, or after 3s. Under agent-chrome-session
+    // run from a terminal, one Ctrl-C arrives twice, from the terminal and
+    // forwarded by the session, so there the runner waits up to the CDP
+    // deadline for a tab still being created. A real second Ctrl-C ends the
+    // runner: agent-chrome-session SIGKILLs it, and from a terminal, nested,
+    // it SIGKILLs the inner session and the gate cuts the runner off once the
+    // outer one has ended. Run directly, a second Ctrl-C while createTarget
+    // takes over 3s exits before the tab opens. Either way the gate closes
+    // that tab when the session ends.
     const patience = current() ? CDP_TIMEOUT : 3000;
     const stopping = new AbortController();
     const onSignal = (signal, count, stop) => {
       if (count === 1) {
         first = signal;
         stopping.abort();
+        waiting = setTimeout(() => process.stderr.write(`agent-chrome-playwright: ${STOPPING}\n`), 1000);
+        waiting.unref();
       } else stopped ??= Promise.race([closeTab().catch(() => {}), sleep(patience)]).then(() => stop(signal));
     };
     return withSession({ ...spec, onSignal },
@@ -342,6 +375,7 @@ function cli(args, deps = defaults, sessionDeps = undefined) {
     // session reports it stopped rather than failed.
     process.exitCode = first ? 128 + SIGNALS[first] : 1;
   }).finally(() => {
+    clearTimeout(waiting);
     // Once the session has ended, the run is over: a socket or timer the flow
     // or a wedged peer left open must not keep it alive. What it printed is
     // flushed first; pipes on macOS are written asynchronously. After a second
@@ -351,5 +385,5 @@ function cli(args, deps = defaults, sessionDeps = undefined) {
   });
 }
 
-module.exports = { run, cli, parseArgs, playwrightDirectory, openBackgroundTab };
+module.exports = { run, cli, defaults, parseArgs, playwrightDirectory, openBackgroundTab, targetIdOf };
 if (require.main === module) cli(process.argv.slice(2));

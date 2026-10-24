@@ -21,12 +21,14 @@
 # deletes everything but the runner's own _temp and _PipelineMapping.
 # Afterwards it lists what is left: only containermanagerd's two directories
 # in the home (Library/ContainerManager and
-# Library/Caches/com.apple.containermanagerd) and the directories on the way
-# to them may stay. Anything else left fails the hook, so the job that left
-# it fails instead of passing. The hook wipes all three dirs before it fails,
-# so the next job, which still runs (job-started does not check again), gets
-# only what could not be wiped. A wipe that succeeds sets each dir back to
-# 0700.
+# Library/Caches/com.apple.containermanagerd), the directories on the way to
+# them, and Library/Preferences and Library/Application Support, emptied, may
+# stay. Their extended attributes, and those of HOME, TMPDIR and the work
+# dir, are cleared, all but containermanagerd's. Anything else left fails the
+# hook, so the job that left it fails instead of passing. The hook wipes all
+# three dirs before it fails, so the next job, which still runs (job-started
+# does not check again), gets only what could not be wiped. A wipe that
+# succeeds sets each dir back to 0700.
 # Not covered: a process the job leaves running. It can write into HOME,
 # TMPDIR or the work dir again after the wipe, or relock files while the
 # wipe runs (which then fails the hook).

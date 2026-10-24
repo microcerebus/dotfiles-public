@@ -5,6 +5,7 @@
 // and fail to act in Chrome Beta until it was brought to the front (2026-10-17).
 // The sentences are matched exactly on purpose: job-tracker's control skill carries the same text, so rewording them
 // here means updating this test and passing the new wording on.
+import "./lib/agent-chrome-test-env.cjs";
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';

@@ -1,8 +1,11 @@
+require("./lib/agent-chrome-test-env.cjs");
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const { readFileSync } = require("node:fs");
 const { join } = require("node:path");
 const { run, AGENT_CHROME_URL, AGENT_CHROME_LABEL, AGENT_CHROME_FLAGS } = require("../scripts/chrome-devtools-axi");
+// The URL axi hands the real binary: the agent Chrome gate, a dead port under tests/lib/agent-chrome-test-env.cjs.
+const { GATE_URL } = require("../scripts/agent-chrome-session");
 
 const CHROME_BETA = "/Applications/Google Chrome Beta.app/Contents/MacOS/Google Chrome Beta";
 const PROFILE = "--user-data-dir=/Users/myuser/Library/Application Support/AgentChrome";
@@ -39,7 +42,7 @@ function harness({ up = [true], installed = true, browser = [FLAGGED], pages = N
 test("routes to the agent Chrome by default", () => {
   const { calls, deps, io } = harness();
   assert.equal(run(["open", "https://example.com"], {}, deps, io), 0);
-  assert.equal(calls.spawn[0].env.CHROME_DEVTOOLS_AXI_BROWSER_URL, AGENT_CHROME_URL);
+  assert.equal(calls.spawn[0].env.CHROME_DEVTOOLS_AXI_BROWSER_URL, GATE_URL);
   assert.equal(calls.spawn[0].env.CHROME_DEVTOOLS_AXI_AUTO_CONNECT, undefined);
   assert.equal(calls.kickstart, 0);
 });
@@ -118,7 +121,7 @@ test("starts the agent Chrome through launchd when it is down", () => {
   const { calls, deps, io } = harness({ up: [false, false, true] });
   assert.equal(run(["open", "https://example.com"], { CHROME_DEVTOOLS_AXI_BROWSER_URL: AGENT_CHROME_URL }, deps, io), 0);
   assert.equal(calls.kickstart, 1);
-  assert.equal(calls.spawn[0].env.CHROME_DEVTOOLS_AXI_BROWSER_URL, AGENT_CHROME_URL);
+  assert.equal(calls.spawn[0].env.CHROME_DEVTOOLS_AXI_BROWSER_URL, GATE_URL);
   // Chrome listens behind the gate, so the kickstart starts both launchd agents.
   const started = [];
   require("../scripts/chrome-devtools-axi").defaultDeps.kickstart((file, args) => started.push([file, args[1].replace(/^gui\/\d+\//, "")]));
@@ -239,7 +242,7 @@ test("open gives a session without a tab a background one first", () => {
   assert.match(blank[1], /^about:blank#claude-f1966707-[0-9a-f]{8}$/);
   assert.deepEqual(blank, ["newpage", blank[1], "--background"]);
   assert.deepEqual(open, ["open", PAGE]);
-  for (const call of calls.spawn) assert.equal(call.env.CHROME_DEVTOOLS_AXI_BROWSER_URL, AGENT_CHROME_URL);
+  for (const call of calls.spawn) assert.equal(call.env.CHROME_DEVTOOLS_AXI_BROWSER_URL, GATE_URL);
   const script = harness();
   run(["run"], env, script.deps, script.io);
   assert.equal(script.calls.spawn[1].args[0], "newpage");

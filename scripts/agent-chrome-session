@@ -13,6 +13,15 @@
 // carries AGENT_CHROME_SESSION=<id> in its environment.
 // Leases are for long-lived clients such as the chrome-devtools-axi bridge: no
 // owning process, live until they expire, and the gate's sweep says done.
+// When a session ends, the gate closes the tabs it opened. To leave one open
+// for the owner, run `agent-chrome-session keep --what "why" <targetId>` from
+// inside the session (or PUT /agent-chrome/keep/<targetId>?what=<why> on the
+// gate); the done notice then says how many tabs were left for him. A raw-CDP
+// script keeps the tab it opened like this:
+//   const { targetId } = await cdp.send("Target.createTarget", { url, background: true });
+//   const kept = await fetch(`http://127.0.0.1:9333/agent-chrome/keep/${targetId}?what=${encodeURIComponent("form for the owner to review")}`, { method: "PUT" });
+//   // 404: the live gate predates keep and never closes session tabs, so the tab stays anyway.
+//   if (!kept.ok && kept.status !== 404) throw new Error(`keep refused (${kept.status}): ${await kept.text()}`);
 // Tests: tests/agent_chrome_session_test.cjs.
 const { execFile, spawn, spawnSync } = require("node:child_process");
 const { randomUUID } = require("node:crypto");
@@ -23,10 +32,33 @@ const { join } = require("node:path");
 const ENV = "AGENT_CHROME_SESSION";
 const TITLE = "Agent Chrome";
 const USAGE = 'Usage: agent-chrome-session --minutes N --what "what it does" [--foreground] -- <command> [args...]\n'
-  + "It notifies the owner before the command touches the agent Chrome and again when it ends.\n";
+  + "It notifies the owner before the command touches the agent Chrome and again when it ends.\n"
+  + "When it ends, the gate closes the tabs the command opened, except kept ones.\n"
+  + 'Keep a tab for the owner, from inside the session that opened it: agent-chrome-session keep --what "why" <targetId>\n';
+const KEEP_USAGE = 'Usage: agent-chrome-session keep --what "why it stays open" <targetId>\n'
+  + "Run it inside the session that opened the tab; the gate refuses any other tab.\n";
+// Test hook only: tests point keep at a gate of their own.
+// Tests set AGENT_CHROME_SESSION_TEST_GATE_URL to a dead port (tests/lib/agent-chrome-test-env.cjs);
+// the runner and chrome-devtools-axi (its probe and the URL it hands the real
+// binary) reach the gate through this one value. The verify-agent-board
+// skill's board.mjs reads the same variable itself, because its copied test
+// checkout cannot require this script.
+const GATE_URL = process.env.AGENT_CHROME_SESSION_TEST_GATE_URL || "http://127.0.0.1:9333";
 
 function stateDir(home = process.env.AGENT_CHROME_STATE_HOME || homedir()) {
   return join(home, ".local/state/agent-chrome/sessions");
+}
+
+// The gate's record of the tabs sessions opened and kept (agent-chrome-gate tabTracker).
+function tabsFile(dir = stateDir()) {
+  return join(dir, "../tabs.json");
+}
+
+// How many tabs a session kept for the owner, by the gate's record. A lease's id
+// comes back each time, so only tabs kept since this one started count.
+function keptBy({ id, started }, dir = stateDir()) {
+  const saved = read(tabsFile(dir));
+  return Array.isArray(saved?.kept) ? saved.kept.filter((record) => record?.session === id && record.at >= started).length : 0;
 }
 
 function checkSpec({ what, minutes }, { lease = false } = {}) {
@@ -99,8 +131,9 @@ function startMessage({ what, minutes, foreground }) {
   return `${what}. About ${minutes} min${foreground ? ", in a foreground tab you may need to click" : ", background tabs only"}.`;
 }
 
-function doneMessage({ what, started }, outcome, now = Date.now()) {
-  return `${what}: ${outcome} after ${minutesSince(started, now)}. Done with the agent Chrome.`;
+function doneMessage({ what, started }, outcome, now = Date.now(), kept = 0) {
+  const left = kept ? `, and left ${kept} tab${kept === 1 ? "" : "s"} open for you` : "";
+  return `${what}: ${outcome} after ${minutesSince(started, now)}. Done with the agent Chrome${left}.`;
 }
 
 const NOTIFY = ["-e", "on run argv", "-e", "display notification (item 1 of argv) with title (item 2 of argv)", "-e", "end run"];
@@ -158,7 +191,7 @@ async function withSession(spec, fn, deps = defaults) {
     ending ??= (async () => {
       const owned = file && claim(file);
       if (!owned) return;
-      await tell(deps, doneMessage(declaration, outcome, deps.now()));
+      await tell(deps, doneMessage(declaration, outcome, deps.now(), keptBy(declaration, dir)));
       fs.rmSync(owned, { force: true });
     })();
     return ending;
@@ -218,7 +251,7 @@ function endLease(id, deps = syncDefaults) {
 function endSync(file, declaration, outcome, deps) {
   const owned = claim(file);
   if (!owned) return;
-  tellSync(deps, doneMessage(declaration, outcome, Math.min(deps.now(), declaration.until ?? Infinity)));
+  tellSync(deps, doneMessage(declaration, outcome, Math.min(deps.now(), declaration.until ?? Infinity), keptBy(declaration, deps.dir())));
   fs.rmSync(owned, { force: true });
 }
 
@@ -260,33 +293,94 @@ async function sweep(deps = defaults, graceUntil = Infinity) {
     const owned = claim(file);
     if (!owned) continue;
     const outcome = declaration.pid === undefined || declaration.adopted ? "finished" : "stopped without saying so";
-    await tell(deps, doneMessage(declaration, outcome, Math.min(now, declaration.until ?? Infinity, declaration.adopted ? graceUntil : Infinity)));
+    await tell(deps, doneMessage(declaration, outcome, Math.min(now, declaration.until ?? Infinity, declaration.adopted ? graceUntil : Infinity), keptBy(declaration, deps.dir())));
     fs.rmSync(owned, { force: true });
   }
 }
 
-async function main(args, deps = defaults) {
+// Without a terminal on stdin, as when an agent's harness runs the helper, the
+// command gets a process group of its own, so a signal reaches everything it
+// started exactly once, and a second one SIGKILLs all of it. A process outside
+// the terminal's foreground group cannot read the terminal: it would stop at
+// its first read, and with a session of its own it has no /dev/tty for
+// password or passphrase prompts. So from a terminal the command stays in the
+// terminal's group, where each Ctrl-C reaches every process directly and a
+// second one SIGKILLs the command alone.
+// The test is stdin alone. A person who pipes into the helper from a terminal
+// (`cat x | agent-chrome-session ... -- cmd`) gets a group of its own, so the
+// command loses /dev/tty and its prompts. Agents have no /dev/tty at all, so
+// checking for one would gain nothing for them.
+// A command that calls setsid itself, or spawns a detached child, leaves the
+// group: neither the second signal's SIGKILL nor the watchdog reaches it. The
+// gate still cuts its connections and closes its tabs once the session ends.
+// A group of its own would let the command outlive a harness that SIGKILLs the
+// helper's group, which used to take the command down too. A watchdog in a
+// session of its own reads a pipe from the helper; if the pipe closes before
+// the helper says the command ended, it SIGKILLs the command's group.
+function lifeline(group) {
+  const watchdog = spawn("/bin/sh", ["-c", 'read _ || kill -s KILL -- "-$1" 2>/dev/null', "sh", String(group)], { detached: true, stdio: ["pipe", "ignore", "ignore"] });
+  watchdog.once("error", () => {});
+  watchdog.stdin.on("error", () => {});
+  watchdog.unref();
+  watchdog.stdin.unref();
+  return () => new Promise((resolve) => watchdog.stdin.end("\n", resolve));
+}
+
+// Asks the gate to leave a tab open after the session ends. The caller is
+// identified as for CDP, so this must run inside the session that opened the
+// tab; the gate's refusal says why it did not keep one.
+async function keepTab(targetId, why, url = GATE_URL, timeout = 15000) {
+  if (typeof targetId !== "string" || !targetId) throw new Error(`keep needs the tab's target id.\n${KEEP_USAGE}`);
+  if (typeof why !== "string" || !why.trim() || why.length > 120) throw new Error(`--what must say in under 120 characters why the tab stays open (no personal data).\n${KEEP_USAGE}`);
+  const answer = await fetch(`${url}/agent-chrome/keep/${encodeURIComponent(targetId)}?what=${encodeURIComponent(why.trim())}`, { method: "PUT", signal: AbortSignal.timeout(timeout) });
+  const body = (await answer.text()).trim();
+  // 404: the live gate predates keep and never closes session tabs, so the tab stays anyway.
+  if (answer.status === 404) return "the gate predates keep and closes no session tabs, so this tab stays open anyway.";
+  if (!answer.ok) throw new Error(body || `the gate answered ${answer.status} to keep.`);
+  return body;
+}
+
+async function keepCommand(args, deps) {
+  let why;
+  const targets = [];
+  for (let i = 0; i < args.length; i += 1) {
+    if (args[i] === "--what") why = args[++i];
+    else targets.push(args[i]);
+  }
+  if (targets.length !== 1 || why === undefined) throw new Error(KEEP_USAGE);
+  if (!current(process.env, deps.dir())) throw new Error(`keep runs inside the session that opened the tab, and this process is in none.\n${KEEP_USAGE}`);
+  process.stdout.write(`${await keepTab(targets[0], why)}\n`);
+  return 0;
+}
+
+async function main(args, deps = defaults, stdinIsTerminal = Boolean(process.stdin.isTTY)) {
+  if (args[0] === "keep") return keepCommand(args.slice(1), deps);
   const spec = parseArgs(args);
   const [command, ...rest] = spec.command;
   let child;
   let pending;
-  // Nested, the outer session forwards each signal as well, so a second one is
-  // usually the same Ctrl-C, and only the outer session SIGKILLs. It kills
-  // only its own child, this session, so a command here that ignores a real
-  // second Ctrl-C keeps running; once the outer session has ended, the gate
-  // closes that command's connections to the agent Chrome.
+  // Nested, the outer session has put this one in a group of its own, or in
+  // the terminal's, so every signal also reaches the command directly, and only
+  // the outer session SIGKILLs. From a terminal it kills only its own child,
+  // this session, so a command here that ignores a real second Ctrl-C keeps
+  // running; once the outer session has ended, the gate closes that command's
+  // connections to the agent Chrome and its tabs.
   const nested = Boolean(current(process.env, deps.dir()));
+  const grouped = !nested && !stdinIsTerminal;
+  const send = (signal) => {
+    try { process.kill(grouped ? -child.pid : child.pid, signal); } catch { /* already gone */ }
+  };
   const code = await withSession({
     ...spec,
     // A signal during the start notice means the command never starts; a
     // second one kills a child that ignored the first. A Playwright runner
-    // that is still creating its tab when that SIGKILL comes leaves the tab
-    // open.
+    // that is still creating its tab when that SIGKILL comes leaves the tab to
+    // the gate, which closes it once the session has ended.
     onSignal: (signal, count, stop) => {
       if (!child && count > 1) stop(signal);
       else if (!child) pending = signal;
-      else if (count === 1) child.kill(signal);
-      else if (!nested) child.kill("SIGKILL");
+      else if (count === 1) send(signal);
+      else if (!nested) send("SIGKILL");
     },
     outcome: (status) => (status === 0 ? "finished" : status > 128 ? "stopped" : `failed (exit ${status})`),
   }, (env) => new Promise((resolve) => {
@@ -294,14 +388,17 @@ async function main(args, deps = defaults) {
       resolve(128 + SIGNALS[pending]);
       return;
     }
-    child = spawn(command, rest, { stdio: "inherit", env });
-    child.once("error", (error) => { deps.log(error.message); resolve(127); });
-    child.once("close", (status, signal) => resolve(status ?? 128 + (signal === "SIGKILL" ? 9 : signal === "SIGINT" ? 2 : 15)));
+    child = spawn(command, rest, { stdio: "inherit", env, detached: grouped });
+    const ended = grouped && child.pid ? lifeline(child.pid) : async () => {};
+    child.once("error", (error) => { deps.log(error.message); ended().then(() => resolve(127)); });
+    child.once("close", (status, signal) => {
+      ended().then(() => resolve(status ?? 128 + (signal === "SIGKILL" ? 9 : signal === "SIGINT" ? 2 : 15)));
+    });
   }), deps);
   return code;
 }
 
-module.exports = { ENV, SIGNALS, stateDir, parseArgs, isLive, declarations, current, withSession, lease, endLease, adopt, sweep, startMessage, doneMessage, main };
+module.exports = { ENV, SIGNALS, GATE_URL, stateDir, tabsFile, keptBy, keepTab, parseArgs, isLive, declarations, current, withSession, lease, endLease, adopt, sweep, startMessage, doneMessage, main };
 if (require.main === module) {
   main(process.argv.slice(2)).then((code) => { process.exitCode = code; }, (error) => {
     process.stderr.write(`agent-chrome-session: ${error.message}${error.message.endsWith("\n") ? "" : "\n"}`);

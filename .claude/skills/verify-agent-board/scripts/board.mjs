@@ -27,7 +27,8 @@ const SELF = fileURLToPath(import.meta.url);
 const CHECKOUT = path.resolve(path.dirname(SELF), '../../../..');
 const BOARD = path.join(CHECKOUT, 'files/bin/agent-board.mjs');
 const STATE = process.env.VERIFY_AGENT_BOARD_STATE ?? path.join(os.homedir(), '.local/state/verify-agent-board');
-const AGENT_CHROME = 'http://127.0.0.1:9333/json/version';
+// The agent Chrome gate; tests point it at a dead port with scripts/agent-chrome-session's test variable.
+const AGENT_CHROME_GATE = process.env.AGENT_CHROME_SESSION_TEST_GATE_URL || 'http://127.0.0.1:9333';
 const LIVE_DATA = {
   AGENT_BOARD_T3_DB: path.join(os.homedir(), '.t3/userdata/statev2.sqlite'),
   AGENT_BOARD_CLAUDE_PROJECTS: path.join(os.homedir(), '.claude/projects'),
@@ -329,9 +330,15 @@ async function doctor(args) {
   for (const [k, v] of Object.entries(run.env)) if (k !== 'AGENT_BOARD_PORT') console.log(`     ${k}=${v}`);
   const left = Math.round((Date.parse(run.expiresAt) - Date.now()) / 60_000);
   check(left > 5 ? true : 'warn', 'ttl', `${left} min left${left > 5 ? '' : '; finish up, or stop and relaunch with a longer --ttl'}`);
-  const chrome = await get(AGENT_CHROME, 2000);
-  check(chrome.status === 200 ? true : 'warn', 'agent Chrome',
-    chrome.status === 200 ? '127.0.0.1:9333 answers' : '127.0.0.1:9333 does not answer; curl evidence still works, screenshots do not');
+  // Parsed here, so a bad test URL fails this check only, not every subcommand.
+  const agentChrome = URL.parse('/json/version', AGENT_CHROME_GATE);
+  if (!agentChrome) {
+    check(false, 'agent Chrome', `AGENT_CHROME_SESSION_TEST_GATE_URL=${AGENT_CHROME_GATE} is not a URL; unset it, or set a test gate such as http://127.0.0.1:9`);
+  } else {
+    const chrome = await get(agentChrome, 2000);
+    check(chrome.status === 200 ? true : 'warn', 'agent Chrome',
+      `${agentChrome.host} ${chrome.status === 200 ? 'answers' : 'does not answer; curl evidence still works, screenshots do not'}`);
+  }
   console.log(`evidence: ${run.evidence}`);
   console.log(failed ? 'not worth driving: fix the FAIL lines or stop and relaunch' : `ready: ${run.urls.local}/ and ${run.urls.local}/map`);
   process.exit(failed ? 1 : 0);

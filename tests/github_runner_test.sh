@@ -270,8 +270,8 @@ run_protected() { local script="$protected_script"; run "$@"; }
 # what the runner user may do to its own files: a locked file, a locked
 # directory, an append-only file, a directory under a deny ACL, a directory
 # it closed with a locked file inside, locked files named like options, and
-# a locked link under a deny ACL to a locked file outside the tree (made by
-# outside_target), which must stay as it is.
+# locked links under a deny ACL to the files outside the tree (made by
+# outside_target), which must stay as they are.
 leave_locked() {
   mkdir -p "$1/locked-dir/sub" "$1/acl-dir/sub" "$1/closed/inner"
   touch "$1/locked-file" "$1/append-only" "$1/locked-dir/sub/f" "$1/acl-dir/sub/f" "$1/closed/inner/f" \
@@ -281,19 +281,32 @@ leave_locked() {
   chflags uappnd "$1/append-only"
   chmod +a "everyone deny list,search,add_file,add_subdirectory,delete,delete_child" "$1/acl-dir"
   chmod 000 "$1/closed"
-  ln -s "$tmp/outside/victim" "$1/link-out"
-  chmod -h +a "everyone deny delete" "$1/link-out"
-  chflags -h uchg "$1/link-out"
+  link_out "$1"
 }
+# link_out <dir>: a locked link under a deny ACL in <dir> to each file
+# outside the tree.
+link_out() {
+  local v
+  for v in acl uchg; do lock_link "$tmp/outside/$v" "$1/link-out-$v"; done
+}
+# lock_link <target> <link>: a link to <target>, locked and under a deny ACL.
+lock_link() {
+  ln -s "$1" "$2"
+  chmod -h +a "everyone deny delete" "$2"
+  chflags -h uchg "$2"
+}
+# outside_target: two files outside the tree, one under a deny ACL and one
+# locked. On one file the lock would refuse a chmod -N that followed a link
+# to it, so the ACL would stay and the follow would not show.
 outside_target() {
   [ ! -e "$tmp/outside" ] || scrub "$tmp/outside"
-  mkdir -p "$tmp/outside" && touch "$tmp/outside/victim"
-  chmod +a "everyone deny delete" "$tmp/outside/victim"
-  chflags uchg "$tmp/outside/victim"
+  mkdir -p "$tmp/outside" && touch "$tmp/outside/acl" "$tmp/outside/uchg"
+  chmod +a "everyone deny delete" "$tmp/outside/acl"
+  chflags uchg "$tmp/outside/uchg"
 }
-# outside_intact: the file outside the tree kept its flag and its ACL.
+# outside_intact: the files outside the tree kept their ACL and their flag.
 outside_intact() {
-  [ "$(stat -f %Sf "$tmp/outside/victim")" = uchg ] && [ -n "$(find "$tmp/outside/victim" -acl)" ]
+  [ -n "$(find "$tmp/outside/acl" -acl)" ] && [ "$(stat -f %Sf "$tmp/outside/uchg")" = uchg ]
 }
 
 # seed <dir>: files a job might leave, including dotfiles and a read-only dir.
@@ -483,13 +496,16 @@ else bad "job-started copies into the tree, never through a link an earlier job 
   "outside: $(ls -A "$tmp/elsewhere-tool")"; fi
 rm -rf "$tmp/elsewhere-tool"
 
-# A job replaces the tool cache itself with a link to a locked file outside
-# the tree. Unlocking the tool cache unlocks the link, never what it points at.
-fresh; outside_target; ln -s "$tmp/outside/victim" "$r/work/_tool"; run job-started
-if [ "$code" = 0 ] && outside_intact && [ ! -L "$r/work/_tool" ] && [ "$(node_says)" = v22.23.2 ]; then
-  ok "job-started unlocks a tool cache link, never its target outside the tree"
-else bad "job-started unlocks a tool cache link, never its target outside the tree" "exit $code" "$out" \
-  "victim: $(stat -f %Sf "$tmp/outside/victim")"; fi
+# A job replaces the tool cache itself with a locked link to a file outside
+# the tree under a deny ACL or a lock. Unlocking the tool cache unlocks the
+# link, never what it points at.
+for v in acl uchg; do
+  fresh; outside_target; lock_link "$tmp/outside/$v" "$r/work/_tool"; run job-started
+  if [ "$code" = 0 ] && outside_intact && [ ! -L "$r/work/_tool" ] && [ "$(node_says)" = v22.23.2 ]; then
+    ok "job-started unlocks a tool cache link, never its target outside the tree ($v)"
+  else bad "job-started unlocks a tool cache link, never its target outside the tree ($v)" "exit $code" "$out" \
+    "outside: $(ls -lOe "$tmp/outside")"; fi
+done
 
 # A job closes the work dir to its owner; the next job still gets its copy.
 fresh; chmod 000 "$r/work"; run job-started
@@ -567,6 +583,128 @@ if [ "$code" = 0 ] && grep -q "not registered" <<<"$out" && [ ! -e "$r/home/Libr
   ok "start runs despite a protected directory in the home"
 else bad "start runs despite a protected directory in the home" "exit $code" "$out"; fi
 
+# macOS also makes Library/Preferences and Library/Application Support in
+# the runner's home, empty, and they outlive the runner user's rm (protect
+# stands in for that here). start must not fail on them.
+fresh; mkdir -p "$r/home/Library/Preferences" "$r/home/Library/Application Support" \
+  "$r/home/Library/ContainerManager" "$r/home/Library/Caches/com.apple.containermanagerd"
+protect "$r/home/Library/Preferences" "$r/home/Library/Application Support" \
+  "$r/home/Library/ContainerManager" "$r/home/Library/Caches/com.apple.containermanagerd"
+run_protected start
+if [ "$code" = 0 ] && grep -q "not registered" <<<"$out" && ! grep -q "^could not wipe" <<<"$out" \
+  && grep -qxF "kept, emptied, what macOS makes: $r/home/Library/Preferences $r/home/Library/Application Support" <<<"$out" \
+  && [ -d "$r/home/Library/Preferences" ] && [ -d "$r/home/Library/Application Support" ]; then
+  ok "start runs when macOS's Preferences and Application Support stay in the home"
+else bad "start runs when macOS's Preferences and Application Support stay in the home" "exit $code" "$out"; fi
+
+# They stay as directories only: what a job put inside them, and in their
+# extended attributes, still goes. Library is locked here so that the two
+# outlive rm while what is inside them does not.
+fresh; mkdir -p "$r/home/Library/Preferences" "$r/home/Library/Application Support/app"
+touch "$r/home/Library/Preferences/p.plist" "$r/home/Library/Application Support/app/f"
+xattr -w user.stash job-data "$r/home/Library/Preferences"
+protect "$r/home/Library"
+run_protected job-completed
+left="$(cd "$r/home" && find . -mindepth 1 | sort | tr '\n' ' ')"
+if [ "$code" = 0 ] && [ "$left" = "./Library ./Library/Application Support ./Library/Preferences " ] \
+  && ! xattr "$r/home/Library/Preferences" | grep -q user.stash && grep -q "^wiped job state" <<<"$out"; then
+  ok "job-completed wipes what a job put inside macOS's Preferences and Application Support"
+else bad "job-completed wipes what a job put inside macOS's Preferences and Application Support" "exit $code" "$out" "left: $left" \
+  "xattrs: $(xattr "$r/home/Library/Preferences" | tr '\n' ' ')"; fi
+
+# The same goes for the extended attributes of the job dirs themselves and
+# of the directories on the way to what macOS protects, but not for
+# containermanagerd's own. On the live machine those carry no file flags,
+# so here only a file inside one is locked, and its xattr must stay.
+fresh; mkdir -p "$r/home/Library/ContainerManager" "$r/home/Library/Caches/com.apple.containermanagerd"
+touch "$r/home/Library/ContainerManager/boot.txt"
+stashed=("$r/home" "$r/tmp" "$r/work" "$r/home/Library" "$r/home/Library/Caches")
+for path in "${stashed[@]}"; do xattr -w user.stash job-data "$path"; done
+xattr -w user.cm macos "$r/home/Library/ContainerManager"
+protect "$r/home/Library/ContainerManager/boot.txt" "$r/home/Library/Caches/com.apple.containermanagerd"
+run_protected job-completed
+left="$(for path in "${stashed[@]}"; do if xattr "$path" | grep -q user.stash; then echo "$path"; fi; done)"
+if [ "$code" = 0 ] && [ -z "$left" ] && [ -d "$r/home/Library/Caches" ] && grep -q "^wiped job state" <<<"$out" \
+  && xattr "$r/home/Library/ContainerManager" | grep -q user.cm; then
+  ok "job-completed clears what a job put in the xattrs of the directories that may stay"
+else bad "job-completed clears what a job put in the xattrs of the directories that may stay" "exit $code" "$out" \
+  "still stashed: $left" "ContainerManager: $(xattr "$r/home/Library/ContainerManager" | tr '\n' ' ')"; fi
+
+# It clears them on a wipe that fails too, as the next job still runs.
+fresh; mkdir -p "$r/home/Library/ContainerManager" "$r/home/Library/Caches/com.apple.containermanagerd"
+for path in "${stashed[@]}"; do xattr -w user.stash job-data "$path"; done
+touch "$r/work/locked"
+protect "$r/home/Library/ContainerManager" "$r/home/Library/Caches/com.apple.containermanagerd" "$r/work/locked"
+run_protected job-completed
+left="$(for path in "${stashed[@]}"; do if xattr "$path" | grep -q user.stash; then echo "$path"; fi; done)"
+if [ "$code" != 0 ] && [ -z "$left" ] && grep -qx "could not wipe: $r/work/locked" <<<"$out"; then
+  ok "job-completed clears the xattrs when the wipe fails"
+else bad "job-completed clears the xattrs when the wipe fails" "exit $code" "$out" "still stashed: $left"; fi
+
+# A process the job left running could swap a directory that may stay for a
+# FIFO between the check and the clear. The clear must not block on it: a
+# copy of the script makes that swap just before the clear.
+cat >"$stubs/race" <<'STUB'
+#!/bin/sh
+[ "$1" = "${STUB_LOG%/log}/home" ] || exit 0
+/usr/bin/chflags nouchg "$1/Library" && rmdir "$1/Library/Preferences" && mkfifo "$1/Library/Preferences"
+STUB
+chmod +x "$stubs/race"
+race_script="$tmp/github-runner-race"
+if ! awk -v line='  for path in "${stays[@]}"; do' -v hook="  $stubs/race \"\$dir\"" \
+  '$0 == line { print hook; n++ } { print } END { exit n != 1 }' "$protected_script" >"$race_script"; then
+  echo "FAIL the race copy of the script has no clear to run before"; exit 1
+fi
+fresh; mkdir -p "$r/home/Library/Preferences"
+protect "$r/home/Library"
+(PATH="$stubs:/usr/bin:/bin" STUB_LOG="$r/log" "$BASH" "$race_script" job-completed "$r/conf" >"$r/log/race.out" 2>&1
+  echo "$?" >"$r/log/race.code") &
+racer=$! hung=0
+for _ in $(seq 100); do [ ! -s "$r/log/race.code" ] || break; sleep 0.1; done
+if [ ! -s "$r/log/race.code" ]; then
+  # Hung: open the FIFO, so the blocked open returns and nothing is left.
+  hung=1
+  for _ in $(seq 50); do [ ! -s "$r/log/race.code" ] || break; [ ! -p "$r/home/Library/Preferences" ] || : <>"$r/home/Library/Preferences"; sleep 0.1; done
+  [ -s "$r/log/race.code" ] || kill "$racer" 2>/dev/null || true
+fi
+wait "$racer" || true
+if [ "$hung" = 0 ] && [ -p "$r/home/Library/Preferences" ] && [ "$(cat "$r/log/race.code")" = 0 ] \
+  && grep -q "^wiped job state" "$r/log/race.out"; then
+  ok "job-completed does not block on a FIFO swapped in for a directory that may stay"
+else bad "job-completed does not block on a FIFO swapped in for a directory that may stay" "hung $hung" \
+  "exit $(cat "$r/log/race.code" 2>/dev/null)" "$(cat "$r/log/race.out")"; fi
+
+# What stays inside them fails the wipe.
+fresh; mkdir -p "$r/home/Library/Preferences"; touch "$r/home/Library/Preferences/p.plist"
+protect "$r/home/Library/Preferences/p.plist" "$r/home/Library/Preferences"
+run_protected job-completed
+if [ "$code" != 0 ] && grep -qx "could not wipe: $r/home/Library/Preferences/p.plist" <<<"$out" \
+  && [ "$(grep -c "^could not wipe" <<<"$out")" = 1 ] && ! grep -q "^wiped job state" <<<"$out"; then
+  ok "job-completed fails when a file stays inside macOS's Preferences"
+else bad "job-completed fails when a file stays inside macOS's Preferences" "exit $code" "$out"; fi
+
+# A link named Preferences is not macOS's directory, and the wipe clears no
+# xattrs through it.
+fresh; mkdir -p "$r/home/Library" "$tmp/linked-prefs"
+xattr -w user.own outside "$tmp/linked-prefs"
+ln -s "$tmp/linked-prefs" "$r/home/Library/Preferences"
+chflags -h uchg "$r/home/Library/Preferences"; echo "$r/home/Library/Preferences" >>"$r/log/protected"
+run_protected job-completed
+if [ "$code" != 0 ] && grep -qx "could not wipe: $r/home/Library/Preferences" <<<"$out" \
+  && ! grep -q "^kept" <<<"$out" && ! grep -q "^wiped job state" <<<"$out" \
+  && xattr "$tmp/linked-prefs" | grep -q user.own; then
+  ok "job-completed fails when a link stands where macOS's Preferences would be"
+else bad "job-completed fails when a link stands where macOS's Preferences would be" "exit $code" "$out"; fi
+
+# Nor is a file named Preferences.
+fresh; mkdir -p "$r/home/Library"; touch "$r/home/Library/Preferences"
+protect "$r/home/Library/Preferences"
+run_protected job-completed
+if [ "$code" != 0 ] && grep -qx "could not wipe: $r/home/Library/Preferences" <<<"$out" \
+  && ! grep -q "^kept" <<<"$out" && ! grep -q "^wiped job state" <<<"$out"; then
+  ok "job-completed fails when a file stands where macOS's Preferences would be"
+else bad "job-completed fails when a file stands where macOS's Preferences would be" "exit $code" "$out"; fi
+
 # A job locks what it leaves, so the wipe cannot delete it: in its home, its
 # temp dir, the work dir, a tool in the tool cache, and an action with its
 # .completed marker, which the runner would trust for the next job. The wipe
@@ -635,13 +773,15 @@ if [ "$code" != 0 ] && grep -qx "could not wipe: $r/home/Library/Caches/d" <<<"$
   ok "job-completed is not fooled by a leftover named like rm's errors"
 else bad "job-completed is not fooled by a leftover named like rm's errors" "exit $code" "$out"; fi
 
-# A locked file nested past PATH_MAX (1024 bytes) still goes.
-fresh; seg="$(printf 'd%.0s' $(seq 1 200))"
-(cd "$r/work" && for _ in 1 2 3 4 5 6; do mkdir "$seg" && cd "$seg"; done && touch f && chflags uchg f)
+# A locked file and locked links nested past PATH_MAX (1024 bytes) still go,
+# and what the links point at outside the tree stays as it is.
+fresh; outside_target; seg="$(printf 'd%.0s' $(seq 1 200))"
+(cd "$r/work" && for _ in 1 2 3 4 5 6; do mkdir "$seg" && cd "$seg"; done && touch f && chflags uchg f && link_out .)
 run job-completed
-if [ "$code" = 0 ] && empty_dir "$r/work" && grep -q "^wiped job state" <<<"$out"; then
-  ok "job-completed wipes a locked file nested deeper than PATH_MAX"
-else bad "job-completed wipes a locked file nested deeper than PATH_MAX" "exit $code" "$out" "$(ls -A "$r/work")"; fi
+if [ "$code" = 0 ] && empty_dir "$r/work" && outside_intact && grep -q "^wiped job state" <<<"$out"; then
+  ok "job-completed wipes what a job locked deeper than PATH_MAX, never what its links point at"
+else bad "job-completed wipes what a job locked deeper than PATH_MAX, never what its links point at" \
+  "exit $code" "$out" "$(ls -A "$r/work")" "outside: $(ls -lOe "$tmp/outside")"; fi
 
 # The same past PATH_MAX in bytes, under multibyte names and the runner's
 # UTF-8 locale (nix/github-runner.nix), where the path is under 1000
@@ -710,13 +850,16 @@ if [ "$code" = 0 ] && empty_dir "$r/work"; then
   ok "job-completed unlocks a locked read-only directory before opening it"
 else bad "job-completed unlocks a locked read-only directory before opening it" "exit $code" "$out"; fi
 
-# What macOS protects stays only in the home: the same paths in the temp
-# dir or the work dir are a job's, and fail the wipe.
-fresh; mkdir -p "$r/work/Library/ContainerManager" "$r/tmp/Library/Caches/com.apple.containermanagerd"
-protect "$r/work/Library/ContainerManager" "$r/tmp/Library/Caches/com.apple.containermanagerd"
+# What macOS protects or makes stays only in the home: the same paths in the
+# temp dir or the work dir are a job's, and fail the wipe, even when empty.
+fresh; mkdir -p "$r/work/Library/ContainerManager" "$r/tmp/Library/Caches/com.apple.containermanagerd" \
+  "$r/work/Library/Preferences"
+protect "$r/work/Library/ContainerManager" "$r/tmp/Library/Caches/com.apple.containermanagerd" \
+  "$r/work/Library/Preferences"
 run_protected job-completed
 if [ "$code" != 0 ] && grep -qx "could not wipe: $r/work/Library/ContainerManager" <<<"$out" \
   && grep -qx "could not wipe: $r/tmp/Library/Caches/com.apple.containermanagerd" <<<"$out" \
+  && grep -qx "could not wipe: $r/work/Library/Preferences" <<<"$out" \
   && ! grep -q "^kept" <<<"$out"; then
   ok "job-completed keeps macOS's home directories only in the home"
 else bad "job-completed keeps macOS's home directories only in the home" "exit $code" "$out"; fi
@@ -733,15 +876,28 @@ if [ "$code" = 0 ] && [ "$left" = "./Library ./Library/ContainerManager " ] \
 else bad "job-completed unlocks a job's directory batched with one macOS protects" "exit $code" "$out" "left: $left"; fi
 
 # BSD chflags and chmod read a -- after the flags or mode as a file, and
-# chmod -N follows a link. A link named -- in the hook's working directory
-# must not lose its target's ACL.
-fresh; mkdir -p "$tmp/cwd" "$tmp/dash"; touch "$tmp/dash/victim" "$r/work/f"
-chmod +a "everyone deny delete" "$tmp/dash/victim" "$r/work/f"
-ln -sfn "$tmp/dash/victim" "$tmp/cwd/--"
-cd "$tmp/cwd"; run job-completed; cd - >/dev/null
-if [ "$code" = 0 ] && empty_dir "$r/work" && [ -n "$(find "$tmp/dash/victim" -acl)" ]; then
-  ok "job-completed takes no -- in its working directory for a file"
-else bad "job-completed takes no -- in its working directory for a file" "exit $code" "$out"; fi
+# chmod -N follows a link. An unlock batch of each kind (locked directories,
+# links and files) runs from the hook's working directory, where a link to a
+# file under a deny ACL, a locked file or a closed directory named -- must
+# stay as it is. Each -- carries its own deny ACL too, and the count covers
+# the link's target. find stays on the parents: it cannot read a closed --.
+dash_state() { echo "$(stat -f '%Sf %Sp' "$tmp/cwd/--") acl:$(find "$tmp/cwd" "$tmp/dash" -mindepth 1 -maxdepth 1 -acl | wc -l | tr -d ' ')"; }
+for kind in link file dir; do
+  fresh; leftovers; scrub "$tmp/cwd"; scrub "$tmp/dash"; mkdir -p "$tmp/cwd" "$tmp/dash"
+  case "$kind" in
+    link) touch "$tmp/dash/victim" && chmod +a "everyone deny delete" "$tmp/dash/victim" \
+      && ln -s "$tmp/dash/victim" "$tmp/cwd/--" && chmod -h +a "everyone deny delete" "$tmp/cwd/--" ;;
+    file) touch "$tmp/cwd/--" && chmod +a "everyone deny delete" "$tmp/cwd/--" && chflags uchg "$tmp/cwd/--" ;;
+    dir) mkdir -m 000 "$tmp/cwd/--" && chmod +a "everyone deny delete" "$tmp/cwd/--" ;;
+  esac
+  before="$(dash_state)"
+  cd "$tmp/cwd"; run job-completed; cd - >/dev/null
+  after="$(dash_state)"
+  if [ "$code" = 0 ] && empty_dir "$r/work" && [ "$after" = "$before" ]; then
+    ok "job-completed leaves a $kind named -- in its working directory as it is"
+  else bad "job-completed leaves a $kind named -- in its working directory as it is" "exit $code" "$out" \
+    "before: $before" "after: $after"; fi
+done
 
 # A job opens its dirs to everyone; the wipe closes them again.
 fresh; seed "$r/home"; chmod 0777 "$r/home" "$r/tmp"; chmod 0755 "$r/work"; run job-completed

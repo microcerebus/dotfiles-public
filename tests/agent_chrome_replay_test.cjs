@@ -2,6 +2,7 @@
 // the agent Chrome: a job-tracker verifier (pw-pr84) attached Playwright to
 // 9333 with no notice and called browser.newContext() for each user, which
 // opened windows on the owner's screen. Real playwright-core talks to the real gate.
+require("./lib/agent-chrome-test-env.cjs");
 const { test, before, after } = require("node:test");
 const assert = require("node:assert/strict");
 const { execFile, spawn } = require("node:child_process");
@@ -247,4 +248,133 @@ test("through the gate and the helper, the runner's own CDP connection opens its
   assert.match(stdout, /^title: runner replay$/m);
   const after = (await (await fetch(`http://127.0.0.1:${chromePort}/json/list`)).json()).filter((target) => target.type === "page").map((target) => target.id);
   assert.deepEqual(after.sort(), before.sort());
+});
+
+// Follow-up of playwright-session-signals review r2: a client killed right
+// after it asked for a tab left that tab open in the shared Chrome for good.
+const KILLED = `
+const marker = process.argv[2];
+(async () => {
+  const { webSocketDebuggerUrl } = await (await fetch("http://127.0.0.1:" + process.argv[1] + "/json/version")).json();
+  const socket = new WebSocket(webSocketDebuggerUrl);
+  socket.addEventListener("open", () => {
+    socket.send(JSON.stringify({ id: 1, method: "Target.createTarget", params: { url: marker, background: true } }));
+    socket.addEventListener("message", () => process.kill(process.pid, "SIGKILL"));
+  });
+})();
+`;
+
+test("a client SIGKILLed after opening a tab leaves no tab once its session ends", { skip }, async () => {
+  const marker = `about:blank#killed-${process.pid}`;
+  const open = async () => (await (await fetch(`http://127.0.0.1:${chromePort}/json/list`)).json()).filter(({ url }) => url === marker);
+  const result = await run(process.execPath, [HELPER, "--minutes", "1", "--what", "killed client replay", "--",
+    process.execPath, "-e", KILLED, String(strict.port), marker], { env: strict.env }).catch((error) => error);
+  assert.equal(result.code, 137);
+  assert.ok(lines(strict.notices).some((line) => /^killed client replay: stopped after/.test(line)));
+  for (let i = 0; i < 50 && (await open()).length; i += 1) await sleep(100);
+  assert.deepEqual(await open(), []);
+});
+
+// Review r1 of agent-chrome-session-orphans: apply workers leave review tabs
+// open for the owner (their helper opens one with a raw Target.createTarget, then
+// navigates it), and the gate closed them when the session ended.
+const pageUrls = async () => (await (await fetch(`http://127.0.0.1:${chromePort}/json/list`)).json()).filter(({ type }) => type === "page").map(({ id, url }) => ({ id, url }));
+const keptRecords = () => {
+  try { return JSON.parse(fs.readFileSync(session.tabsFile(session.stateDir(strict.home)), "utf8")).kept; } catch { return []; }
+};
+
+async function settled(tag, expected) {
+  const tagged = async () => (await pageUrls()).filter(({ url }) => url.includes(tag));
+  for (let i = 0; i < 50 && (await tagged()).length !== expected; i += 1) await sleep(100);
+  // A few more sweeps: a kept tab must stay, not just outlast the first one.
+  await sleep(500);
+  return tagged();
+}
+
+test("a flow keeps a tab opened the apply way; the gate closes its sibling and the runner's tab, and leaves the kept one", { skip }, async () => {
+  const tag = `apply-${process.pid}`;
+  const flow = `
+    const { run, openBackgroundTab, targetIdOf } = require(${JSON.stringify(require.resolve("../scripts/agent-chrome-playwright"))});
+    const session = require(${JSON.stringify(HELPER)});
+    const { chromium } = require(process.env.PLAYWRIGHT_CORE);
+    const url = "http://127.0.0.1:" + process.argv[1];
+    const tag = process.argv[2];
+    const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+    run(async (page, { keep }) => {
+      const context = page.context();
+      const cdp = await context.browser().newBrowserCDPSession();
+      const marker = "about:blank#" + tag + "-kept";
+      await cdp.send("Target.createTarget", { url: marker, background: true });
+      let tab;
+      for (let i = 0; i < 100 && !tab; i += 1) { tab = context.pages().find((candidate) => candidate.url() === marker); if (!tab) await sleep(50); }
+      await tab.goto("data:text/html,<title>" + tag + "-kept</title>");
+      const sibling = await context.newPage();
+      await sibling.goto("data:text/html,<title>" + tag + "-sibling</title>");
+      await keep(tab, "form for the owner to review");
+      console.log("kept");
+    }, {
+      ready: () => true, identityError: () => null,
+      openTab: (marker) => openBackgroundTab(marker, url),
+      connect: () => chromium.connectOverCDP(url),
+      targetId: targetIdOf,
+      keepTab: (targetId, why) => session.keepTab(targetId, why, url),
+      sleep, log: () => {},
+    }).catch((error) => { console.error(error.message); process.exit(1); });
+  `;
+  const before = (await pageUrls()).map(({ id }) => id);
+  const { stdout } = await run(process.execPath, [HELPER, "--minutes", "1", "--what", "apply replay", "--",
+    process.execPath, "-e", flow, String(strict.port), tag], { env: strict.env });
+  assert.match(stdout, /^kept$/m);
+  const left = await settled(tag, 1);
+  assert.equal(left.length, 1);
+  assert.match(decodeURIComponent(left[0].url), /-kept<\/title>$/);
+  assert.deepEqual((await pageUrls()).map(({ id }) => id).filter((id) => !before.includes(id)), [left[0].id], "the runner's own tab and the sibling are closed");
+  assert.ok(lines(strict.notices).some((line) => /^apply replay: finished after .*, and left 1 tab open for you\.$/.test(line)));
+  assert.deepEqual(keptRecords().filter(({ targetId }) => targetId === left[0].id).map(({ what }) => what), ["form for the owner to review"]);
+  // the owner closes it; the gate forgets it.
+  await fetch(`http://127.0.0.1:${chromePort}/json/close/${left[0].id}`);
+  for (let i = 0; i < 50 && keptRecords().some(({ targetId }) => targetId === left[0].id); i += 1) await sleep(100);
+  assert.equal(keptRecords().some(({ targetId }) => targetId === left[0].id), false);
+});
+
+// A raw-CDP script keeps one tab with the CLI and one with the fetch line
+// documented in agent-chrome-session, and leaves a third.
+const RAW_KEEP = `
+const { execFileSync } = require("node:child_process");
+const [port, tag, helper] = process.argv.slice(1);
+(async () => {
+  const { webSocketDebuggerUrl } = await (await fetch("http://127.0.0.1:" + port + "/json/version")).json();
+  const socket = new WebSocket(webSocketDebuggerUrl);
+  await new Promise((resolve) => socket.addEventListener("open", resolve));
+  const replies = new Map();
+  let id = 0;
+  socket.addEventListener("message", (event) => { const message = JSON.parse(event.data); replies.get(message.id)?.(message); });
+  const create = (url) => new Promise((resolve) => {
+    id += 1;
+    replies.set(id, (message) => resolve(message.result.targetId));
+    socket.send(JSON.stringify({ id, method: "Target.createTarget", params: { url, background: true } }));
+  });
+  const cliTab = await create("about:blank#" + tag + "-cli");
+  const targetId = await create("about:blank#" + tag + "-fetch");
+  await create("about:blank#" + tag + "-sibling");
+  console.log(execFileSync(process.execPath, [helper, "keep", "--what", "sign-in for the owner", cliTab], { encoding: "utf8" }).trim());
+  const kept = await fetch(\`http://127.0.0.1:\${port}/agent-chrome/keep/\${targetId}?what=\${encodeURIComponent("form for the owner to review")}\`, { method: "PUT" });
+  if (!kept.ok && kept.status !== 404) throw new Error(\`keep refused (\${kept.status}): \${await kept.text()}\`);
+  try { execFileSync(process.execPath, [helper, "keep", "--what", "not mine", "no-such-tab"], { stdio: ["ignore", "pipe", "pipe"] }); }
+  catch (error) { console.log("refused: " + error.stderr.toString().trim()); }
+  socket.close();
+  process.exit(0);
+})().catch((error) => { console.error(error.message); process.exit(1); });
+`;
+
+test("a raw-CDP script keeps tabs with agent-chrome-session keep and the documented fetch, and the gate closes the rest", { skip }, async () => {
+  const tag = `raw-${process.pid}`;
+  const { stdout } = await run(process.execPath, [HELPER, "--minutes", "1", "--what", "raw keep replay", "--",
+    process.execPath, "-e", RAW_KEEP, String(strict.port), tag, HELPER], { env: { ...strict.env, AGENT_CHROME_SESSION_TEST_GATE_URL: `http://127.0.0.1:${strict.port}` } });
+  assert.match(stdout, /^kept \S+: the gate leaves it open after "raw keep replay" ends\.$/m);
+  assert.match(stdout, /^refused: agent-chrome-session: agent-chrome-gate: refused to keep tab no-such-tab .*may keep only a tab it opened itself/m);
+  const left = (await settled(tag, 2)).map(({ url }) => url.slice(url.indexOf("#") + 1)).sort();
+  assert.deepEqual(left, [`${tag}-cli`, `${tag}-fetch`]);
+  assert.ok(lines(strict.notices).some((line) => /^raw keep replay: finished after .*, and left 2 tabs open for you\.$/.test(line)));
+  for (const { id, url } of await pageUrls()) if (url.includes(tag)) await fetch(`http://127.0.0.1:${chromePort}/json/close/${id}`);
 });

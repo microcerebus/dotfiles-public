@@ -1,6 +1,8 @@
 // Run: node --test tests/verify_agent_board_test.mjs
 // Tests the verify-agent-board helper (.claude/skills/verify-agent-board/scripts/board.mjs) on a copy of the files it
 // runs, with its state in a temp dir, so nothing touches the live board, ~/.local/state or the real data.
+// The helper comes first: doctor checks the agent Chrome, and must find a dead port, not the live gate on 9333.
+import './lib/agent-chrome-test-env.cjs';
 import { spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
 import { createHash } from 'node:crypto';

@@ -14,6 +14,18 @@
 // also refuses new browser contexts, new windows, tab activation, window
 // resizing and Browser.close, and turns new tabs into background tabs, unless
 // the session was declared with --foreground.
+// When a session ends, the gate closes the tabs it opened and only those, so a
+// run that is killed while its tab is still opening leaves nothing behind. It
+// learns each tab from Chrome's answer to Target.createTarget (or /json/new),
+// and keeps the Chrome side of a connection open for answers still due after
+// the client has gone. The list survives a restart in tabs.json beside the
+// declarations.
+// A tab left for the owner on purpose (a form to review, a sign-in he finishes)
+// is kept with PUT /agent-chrome/keep/<targetId>?what=<why> from inside the
+// session that opened it, which the runner's keep(tab, why) and
+// `agent-chrome-session keep` call. The gate never closes a kept tab, and
+// refuses to keep a tab the session did not open. A keep from a process in no
+// live session is refused without adopting it, so the owner gets no notice.
 // It reads the client's process and environment with lsof and ps; it never
 // logs them beyond the executable name.
 // Tests: tests/agent_chrome_gate_test.cjs.
@@ -21,7 +33,7 @@ const { execFile } = require("node:child_process");
 const fs = require("node:fs");
 const http = require("node:http");
 const net = require("node:net");
-const { basename } = require("node:path");
+const { basename, join } = require("node:path");
 const { promisify } = require("node:util");
 const session = require("./agent-chrome-session");
 const execute = promisify(execFile);
@@ -128,9 +140,12 @@ function encodeFrame(text, mask) {
 // guardrail against copied patterns, not a sandbox.
 const INSPECT_LIMIT = 1 << 20;
 class FrameStream {
-  constructor(write, onText = null) {
+  // wants() says whether to hold frames for onText at all, so a direction
+  // the gate reads only now and then is not held up the rest of the time.
+  constructor(write, onText = null, wants = () => true) {
     this.write = write;
     this.onText = onText;
+    this.wants = wants;
     this.header = Buffer.alloc(0);
     this.remaining = 0;
     this.held = null;
@@ -166,7 +181,7 @@ class FrameStream {
       const bytes = this.header;
       this.header = Buffer.alloc(0);
       this.remaining = header.length;
-      if (this.onText && header.fin && header.opcode === 1 && header.rsv === 0 && header.length <= INSPECT_LIMIT) {
+      if (this.onText && header.fin && header.opcode === 1 && header.rsv === 0 && header.length <= INSPECT_LIMIT && this.wants()) {
         this.held = { header, bytes, parts: [] };
       } else {
         this.write(bytes);
@@ -279,6 +294,8 @@ function reader(found, graceUntil = GRACE_UNTIL) {
   let latest = found.declaration;
   const read = () => { try { return JSON.parse(fs.readFileSync(found.file, "utf8")); } catch { return null; } };
   return {
+    id: latest.id,
+    file: found.file,
     what: latest.what,
     current: () => {
       latest = read() ?? latest;
@@ -302,17 +319,161 @@ async function identify(socket, deps = {}) {
   return found ? { client, pid, name, declaration: reader(found, graceUntil) } : { client, pid, name };
 }
 
+// --- Tabs a session opened ---------------------------------------------------
+
+// Closing one tab through Chrome's HTTP endpoint, which needs no WebSocket.
+// True if Chrome closed it; false if it was already gone.
+function closeTab(chromePort, targetId, timeout = 3000) {
+  return new Promise((resolve, reject) => {
+    const request = http.get({ host: "127.0.0.1", port: chromePort, path: `/json/close/${encodeURIComponent(targetId)}`, timeout }, (answer) => {
+      answer.resume();
+      if (answer.statusCode === 200) resolve(true);
+      else if (answer.statusCode === 404) resolve(false);
+      else reject(new Error(`Chrome answered ${answer.statusCode}`));
+    });
+    request.once("timeout", () => request.destroy(new Error(`no answer within ${timeout / 1000}s`)));
+    request.once("error", reject);
+  });
+}
+
+// The ids of the tabs Chrome has open, through its HTTP endpoint.
+function listTabs(chromePort, timeout = 3000) {
+  return new Promise((resolve, reject) => {
+    const request = http.get({ host: "127.0.0.1", port: chromePort, path: "/json/list", timeout }, (answer) => {
+      const body = [];
+      answer.on("data", (chunk) => body.push(chunk));
+      answer.once("end", () => {
+        try { resolve(new Set(JSON.parse(Buffer.concat(body).toString("utf8")).map((target) => target.id))); }
+        catch (error) { reject(error); }
+      });
+    });
+    request.once("timeout", () => request.destroy(new Error(`no answer within ${timeout / 1000}s`)));
+    request.once("error", reject);
+  });
+}
+
+// The tabs each session opened, by declaration, closed once it has ended,
+// and the tabs sessions kept for the owner, which the gate never closes.
+// A session may keep only a tab in its own set; keeping moves it out of the
+// set, so a later session that drives the tab never takes it over. A kept
+// record goes once Chrome no longer lists the tab.
+// Declarations that are files are saved to file, so a restarted gate still
+// closes them; the tests' declarations have no file and stay in memory.
+// The file is { sessions: [...], kept: [{ targetId, what, session, at }] };
+// a bare array, as the gate wrote before keeping, is the sessions.
+function tabTracker({ chromePort, file = null, graceUntil = GRACE_UNTIL, log = () => {}, close = closeTab, list = listTabs, now = Date.now } = {}) {
+  const sessions = new Map();
+  const kept = new Map();
+  const save = () => {
+    if (!file) return;
+    const saved = {
+      sessions: [...sessions.values()].filter((entry) => entry.file).map(({ id, file: declaration, what, targets }) => ({ id, file: declaration, what, targets: [...targets] })),
+      kept: [...kept.values()],
+    };
+    try {
+      fs.mkdirSync(join(file, ".."), { recursive: true, mode: 0o700 });
+      fs.writeFileSync(`${file}.tmp`, JSON.stringify(saved), { mode: 0o600 });
+      fs.renameSync(`${file}.tmp`, file);
+    } catch (error) { log(`could not save the session tabs: ${error.message}`); }
+  };
+  if (file) {
+    let saved = [];
+    try { saved = JSON.parse(fs.readFileSync(file, "utf8")); } catch { /* none yet */ }
+    const savedSessions = Array.isArray(saved) ? saved : saved?.sessions;
+    for (const { id, file: declaration, what, targets } of Array.isArray(savedSessions) ? savedSessions : []) {
+      if (typeof id !== "string" || typeof declaration !== "string" || !Array.isArray(targets)) continue;
+      sessions.set(id, { id, file: declaration, what, targets: new Set(targets), live: reader({ file: declaration, declaration: { id, what } }, graceUntil).live });
+    }
+    for (const record of Array.isArray(saved?.kept) ? saved.kept : []) {
+      if (typeof record?.targetId === "string") kept.set(record.targetId, record);
+    }
+  }
+  return {
+    opened(declaration, targetId) {
+      if (typeof targetId !== "string" || !targetId) return;
+      const key = declaration.id ?? declaration;
+      if (!sessions.has(key)) sessions.set(key, { id: declaration.id, file: declaration.file, what: declaration.what, targets: new Set(), live: declaration.live });
+      sessions.get(key).targets.add(targetId);
+      save();
+    },
+    // Leaves a tab the session opened open after it ends. False if the tab is
+    // not in that session's set. A repeat keep by the same session, such as a
+    // retry after a lost answer, is true again.
+    keep(declaration, targetId, what) {
+      if (declaration.id !== undefined && kept.get(targetId)?.session === declaration.id) return true;
+      const entry = sessions.get(declaration.id ?? declaration);
+      if (!entry?.targets.delete(targetId)) return false;
+      kept.set(targetId, { targetId, what, session: declaration.id, at: now() });
+      save();
+      log(`kept a tab of "${declaration.what}" open for the owner: ${what}`);
+      return true;
+    },
+    // Closes the tabs of every session that has ended, and forgets kept tabs
+    // Chrome no longer lists.
+    async closeEnded() {
+      const ended = [...sessions].filter(([, entry]) => !entry.live());
+      for (const [key] of ended) sessions.delete(key);
+      await Promise.all(ended.map(async ([, { what, targets }]) => {
+        const results = await Promise.all([...targets].map((targetId) => close(chromePort, targetId)
+          .catch((error) => { log(`could not close a tab of "${what}": ${error.message}`); return false; })));
+        const closed = results.filter(Boolean).length;
+        if (closed) log(`closed ${closed} tab${closed === 1 ? "" : "s"} that "${what}" left open`);
+      }));
+      let gone = [];
+      if (kept.size) {
+        try {
+          const open = await list(chromePort);
+          gone = [...kept.keys()].filter((targetId) => !open.has(targetId));
+        } catch { /* Chrome did not answer: keep the records until it does */ }
+        for (const targetId of gone) kept.delete(targetId);
+      }
+      // Saved after the closes, so a gate that dies during them closes the
+      // tabs again after its restart (a repeat close only gets a 404).
+      if (ended.length || gone.length) save();
+    },
+  };
+}
+
 // --- The server --------------------------------------------------------------
+
+// PUT /agent-chrome/keep/<targetId>?what=<why>: leave a tab open after the
+// session ends, for the owner. The gate is the authority on which tabs a session
+// opened, so it, not the caller, decides.
+const KEEP_RULE = "A session may keep only a tab it opened itself through this gate (Target.createTarget or /json/new), and only while it runs; not another session's tab, the owner's own, or one already kept.";
+const KEEP_USAGE = "agent-chrome-gate: keep a tab with PUT /agent-chrome/keep/<targetId>?what=<why>.";
+// Every /agent-chrome path is the gate's own and never reaches Chrome, so the
+// gate never answers it with Chrome's 404: a keep that gets a 404 met a gate
+// from before keep, which closes no tabs.
+function answerKeep(req, res, path, client, declaration, tabs) {
+  const text = (status, body, headers = {}) => res.writeHead(status, { "Content-Type": "text/plain; charset=utf-8", ...headers }).end(`${body}\n`);
+  if (!declaration) return text(403, `agent-chrome-gate: refused to keep a tab for ${client}: this process is in no live session. ${KEEP_RULE}`);
+  const encoded = /^\/agent-chrome\/keep\/([^/]+)$/.exec(path)?.[1];
+  if (!encoded) return text(400, KEEP_USAGE);
+  if (req.method !== "PUT") return text(405, KEEP_USAGE, { Allow: "PUT" });
+  let targetId;
+  try { targetId = decodeURIComponent(encoded); } catch { targetId = encoded; }
+  const what = new URL(req.url ?? "", "http://gate").searchParams.get("what")?.trim();
+  if (!what || what.length > 120) return text(400, "agent-chrome-gate: say in under 120 characters why the tab stays open (no personal data): PUT /agent-chrome/keep/<targetId>?what=<why>.");
+  if (!tabs.keep(declaration, targetId, what)) return text(403, `agent-chrome-gate: refused to keep tab ${targetId} for "${declaration.what}". ${KEEP_RULE}`);
+  return text(200, `kept ${targetId}: the gate leaves it open after "${declaration.what}" ends.`);
+}
 
 function deny(socket, body) {
   socket.end(`HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: ${Buffer.byteLength(body)}\r\nConnection: close\r\n\r\n${body}`);
 }
 
-function createGate({ chromePort = CHROME_PORT, identify: find = identify, adopt = session.adopt, graceUntil = GRACE_UNTIL, now = Date.now, log = () => {} } = {}) {
+// How long the gate keeps Chrome's side of a connection open, after the client
+// has gone, for a Target.createTarget answer still due: the runner's own CDP
+// deadline (scripts/agent-chrome-playwright CDP_TIMEOUT) and a margin.
+const ANSWER_GRACE = 20000;
+
+function createGate({ chromePort = Number(process.env.AGENT_CHROME_GATE_CHROME_PORT || CHROME_PORT), identify: find = identify, adopt = session.adopt, graceUntil = GRACE_UNTIL, now = Date.now, log = () => {}, tabsFile = null, closeTab: closer = closeTab, listTabs: lister = listTabs, answerGrace = ANSWER_GRACE } = {}) {
+  const tabs = tabTracker({ chromePort, file: tabsFile, graceUntil, log, close: closer, list: lister, now });
   // One notice per undeclared process, however many connections it opens at once.
   const adopting = new Map();
+  const identifyClient = (socket) => Promise.resolve().then(() => find(socket, { graceUntil })).catch(() => ({ client: "an unknown process (could not read it)" }));
   const who = async (socket) => {
-    const found = await Promise.resolve().then(() => find(socket, { graceUntil })).catch(() => ({ client: "an unknown process (could not read it)" }));
+    const found = await identifyClient(socket);
     if (found.declaration || !found.pid || now() >= graceUntil) return found;
     if (!adopting.has(found.pid)) {
       const adopted = Promise.resolve().then(() => adopt({ pid: found.pid, what: found.name }))
@@ -334,6 +495,17 @@ function createGate({ chromePort = CHROME_PORT, identify: find = identify, adopt
     identifying += 1;
     try {
       const path = (req.url ?? "").split("?")[0].replace(/\/$/, "");
+      // A tab opened through /json/new is the session's too.
+      let opener = null;
+      // Only the live session that opened a tab may keep it, and a process
+      // adopted now has opened none, so a keep identifies its caller without
+      // adopting it: the owner hears nothing about a keep that is refused anyway.
+      if (path === "/agent-chrome" || path.startsWith("/agent-chrome/")) {
+        const { client, declaration } = await identifyClient(req.socket);
+        if (!declaration) log(`refused HTTP ${path} from ${client}`);
+        answerKeep(req, res, path, client, declaration, tabs);
+        return;
+      }
       if (!(req.method === "GET" && PROBES.has(path))) {
         const { client, declaration } = await who(req.socket);
         if (!declaration) {
@@ -345,9 +517,17 @@ function createGate({ chromePort = CHROME_PORT, identify: find = identify, adopt
           res.writeHead(403, { "Content-Type": "text/plain; charset=utf-8" }).end(`${REFUSALS.front}\n`);
           return;
         }
+        if (/^\/json\/new\b/.test(path)) opener = declaration;
       }
       const upstream = http.request({ host: "127.0.0.1", port: chromePort, method: req.method, path: req.url, headers: req.headers }, (answer) => {
         res.writeHead(answer.statusCode ?? 502, answer.headers);
+        if (opener && answer.statusCode === 200) {
+          const body = [];
+          answer.on("data", (chunk) => body.push(chunk));
+          answer.once("end", () => {
+            try { tabs.opened(opener, JSON.parse(Buffer.concat(body).toString("utf8")).id); } catch { /* not a tab */ }
+          });
+        }
         answer.pipe(res);
       });
       upstream.on("error", () => { if (!res.headersSent) res.writeHead(502).end("agent-chrome-gate: the agent Chrome is not answering on its DevTools port.\n"); else res.destroy(); });
@@ -385,26 +565,53 @@ function createGate({ chromePort = CHROME_PORT, identify: find = identify, adopt
       // CDP is many small request-reply frames; Nagle would delay each one.
       client.setNoDelay(true);
       upstream.setNoDelay(true);
-      const connection = { declaration, close: () => { client.destroy(); upstream.destroy(); } };
-      connections.add(connection);
-      const close = () => {
-        connection.close();
+      // Target.createTarget commands Chrome has not answered yet, by session
+      // and id. Their answers name the tabs this session opened.
+      const creating = new Set();
+      let draining = null;
+      // Once the client has gone, Chrome's side stays open only for those answers.
+      const finish = () => {
+        clearTimeout(draining);
+        client.destroy();
+        upstream.destroy();
         if (connections.delete(connection)) checkIdle();
       };
-      upstream.on("error", close);
+      const close = () => {
+        client.destroy();
+        if (creating.size === 0 || upstream.destroyed) finish();
+        else draining ??= setTimeout(finish, answerGrace);
+      };
+      const connection = { declaration, close, closing: false };
+      connections.add(connection);
+      upstream.on("error", finish);
       client.on("close", close);
       // A hang-up on either side ends the other, after what is already in flight.
-      client.on("end", () => upstream.end());
+      client.on("end", () => (creating.size ? close() : upstream.end()));
       upstream.on("end", () => client.end());
-      upstream.on("close", () => client.end(close));
-      const toClient = new FrameStream((bytes) => client.write(bytes));
+      upstream.on("close", () => (client.destroyed ? finish() : client.end(finish)));
+      const toClient = new FrameStream((bytes) => { if (!client.destroyed) client.write(bytes); }, (text) => {
+        let answer;
+        try { answer = JSON.parse(text); } catch { return null; }
+        const key = `${answer?.sessionId ?? ""} ${answer?.id}`;
+        if (!creating.delete(key)) return null;
+        tabs.opened(declaration, answer.result?.targetId);
+        if (client.destroyed && creating.size === 0) finish();
+        return null;
+      }, () => creating.size > 0);
       const toChrome = new FrameStream((bytes) => upstream.write(bytes), (text, mask) => {
         if (!declaration.live()) {
           log(`closed a connection from ${name}: its session "${declaration.what}" has ended`);
           close();
           return Buffer.alloc(0);
         }
-        return filterCommand(text, mask, declaration, (bytes) => toClient.inject(bytes), log);
+        const replacement = filterCommand(text, mask, declaration, (bytes) => toClient.inject(bytes), log);
+        if (replacement?.length !== 0 && text.includes("Target.createTarget")) {
+          try {
+            const command = JSON.parse(text);
+            if (command.method === "Target.createTarget") creating.add(`${command.sessionId ?? ""} ${command.id}`);
+          } catch { /* filterCommand passed it through unread */ }
+        }
+        return replacement;
       });
       // Chrome's 101 response comes before its frames.
       let opening = Buffer.alloc(0);
@@ -435,14 +642,16 @@ function createGate({ chromePort = CHROME_PORT, identify: find = identify, adopt
 
   // Close connections whose session ended while they sat idle. The gate runs
   // this with each sweep; a command on an ended session closes it at once.
+  // It also closes the tabs of sessions that have ended, and returns that work.
   server.closeEnded = () => {
     for (const connection of connections) {
-      if (connection.declaration.live()) continue;
+      if (connection.closing || connection.declaration.live()) continue;
+      connection.closing = true;
       log(`closed a connection: its session "${connection.declaration.what}" has ended`);
       connection.close();
-      connections.delete(connection);
     }
     checkIdle();
+    return tabs.closeEnded();
   };
   // Wait for CDP sockets and identification/adoption work already in flight.
   server.whenIdle = (callback) => {
@@ -467,14 +676,15 @@ function onCodeChange(files, callback, interval = 60000) {
   for (const file of files) fs.watchFile(file, { interval, persistent: false }, listener);
 }
 
-module.exports = { LISTEN_PORT, CHROME_PORT, GRACE_UNTIL, policy, frameHeader, encodeFrame, unmask, FrameStream, filterCommand, clientPid, chain, match, reader, identify, createGate, onCodeChange, refusal, REFUSALS };
+module.exports = { LISTEN_PORT, CHROME_PORT, GRACE_UNTIL, ANSWER_GRACE, policy, frameHeader, encodeFrame, unmask, FrameStream, filterCommand, clientPid, chain, match, reader, identify, closeTab, listTabs, tabTracker, createGate, onCodeChange, refusal, REFUSALS };
 if (require.main === module) {
   const port = Number(process.env.AGENT_CHROME_GATE_PORT || LISTEN_PORT);
   const chromePort = Number(process.env.AGENT_CHROME_GATE_CHROME_PORT || CHROME_PORT);
   const log = (message) => process.stderr.write(`${new Date().toISOString()} agent-chrome-gate: ${message}\n`);
   // Test hook only: tests/agent_chrome_replay_test.cjs runs a gate past the window.
   const graceUntil = Number(process.env.AGENT_CHROME_GATE_TEST_GRACE_UNTIL || GRACE_UNTIL);
-  const server = createGate({ chromePort, graceUntil, log });
+  const tabsFile = session.tabsFile();
+  const server = createGate({ chromePort, graceUntil, log, tabsFile });
   server.on("error", (error) => { log(error.message); process.exit(1); });
   server.listen(port, "127.0.0.1", () => log(`listening on 127.0.0.1:${port}, Chrome on ${chromePort}`));
   const sweep = () => session.sweep(undefined, graceUntil).catch((error) => log(`sweep failed: ${error.message}`)).then(() => server.closeEnded());

@@ -96,25 +96,37 @@ unlock() {
 }
 
 # What macOS's containermanagerd puts in the runner's home and the runner
-# user may not change, relative to the home. The wipe leaves these and the
-# directories on the way to them, and nothing else, in any job dir.
+# user may not change, relative to the home. Only these, home_dirs below and
+# the directories on the way to them may stay, and only in the home.
 home_keeps=(Library/ContainerManager Library/Caches/com.apple.containermanagerd)
+
+# Directories macOS makes in the runner's home that outlive the runner
+# user's rm (seen 2026-10-24, empty and without file flags): either it may
+# not remove them or macOS makes them again. The wipe leaves them as real
+# directories but still wipes all inside them, and anything left there
+# fails the wipe.
+home_dirs=(Library/Preferences "Library/Application Support")
 
 # empty <dir> [keep...]: delete everything inside <dir> except the named
 # top-level entries, after unlocking all of <dir>, then set <dir> back to
 # 0700. What stays is listed, not guessed from rm's errors: in the home,
-# home_keeps and the directories on the way to them may stay, as real
-# directories. Anything else that stays, at any depth, fails the wipe.
+# home_keeps, home_dirs and the directories on the way to them may stay, as
+# real directories. Anything else that stays, at any depth, fails the wipe.
+# A job could stash data in extended attributes, so those of <dir> and of
+# what may stay in the home are cleared; macOS's own (such as
+# com.apple.provenance) cannot be. The top-level keeps and home_keeps are
+# left alone: nobody knows what protects the latter.
 empty() {
   local dir="$1" keep path ok
   shift
   [ -d "$dir" ] || return 0
   # find never enters the top-level keeps or home_keeps; it lists the latter.
-  local internal=(-false) may_stay=(-false) allowed=() kept=() left=() found=' '
+  # It does enter home_dirs, so what is left inside them fails the wipe.
+  local internal=(-false) may_stay=(-false) allowed=() kept=() emptied=() left=() found=' ' stays=("$dir")
   for keep in "$@"; do internal+=(-o -path "./$keep"); done
   if [ "$dir" = "$home" ]; then
-    for keep in "${home_keeps[@]}"; do
-      may_stay+=(-o -path "./$keep")
+    for keep in "${home_keeps[@]}"; do may_stay+=(-o -path "./$keep"); done
+    for keep in "${home_keeps[@]}" "${home_dirs[@]}"; do
       path="./$keep"
       while allowed+=("$path") && path="${path%/*}" && [ "$path" != . ]; do :; done
     done
@@ -134,6 +146,7 @@ empty() {
         for keep in ${allowed[@]+"${allowed[@]}"}; do [ "$path" != "$keep" ] || ok=1; done
         if [ "$ok" = 1 ] && [ -d "$dir/$path" ] && [ ! -L "$dir/$path" ]; then
           found+="$path "
+          stays+=("$dir/${path#./}")
         else
           left+=("$dir/${path#./}")
         fi
@@ -145,7 +158,18 @@ empty() {
   for keep in "${home_keeps[@]}"; do
     case "$found" in *" ./$keep "*) kept+=("$dir/$keep") ;; esac
   done
+  for keep in "${home_dirs[@]}"; do
+    case "$found" in *" ./$keep "*) emptied+=("$dir/$keep") ;; esac
+  done
+  # From inside, as cd takes only a directory: a process the job left running
+  # could swap one for a FIFO after the check, and xattr would block opening
+  # it. A link swapped in is followed, to what the runner user may write.
+  for path in "${stays[@]}"; do
+    for keep in "${home_keeps[@]}"; do [ "$path" != "$dir/$keep" ] || continue 2; done
+    (cd -- "$path" && exec /usr/bin/xattr -c .) 2>/dev/null || true
+  done
   if [ "${#kept[@]}" != 0 ]; then echo "kept what the runner user may not change: ${kept[*]}"; fi
+  if [ "${#emptied[@]}" != 0 ]; then echo "kept, emptied, what macOS makes: ${emptied[*]}"; fi
   if [ "${#left[@]}" != 0 ]; then
     # A job names what it leaves: none of its newlines reach the log.
     for path in "${left[@]:0:20}"; do echo "could not wipe: ${path//[$'\n\r']/?}" >&2; done
@@ -492,7 +516,9 @@ case "$cmd" in
       [ -e "$seed/node/${dir##*/}" ] && continue
       echo "::warning::setup-node downloaded node ${dir##*/}; the runner seeds ${pins:-nothing}; bump node in nix/github-runner.nix"
     done
-    # _temp and _PipelineMapping belong to the runner, which resets them per job.
+    # _temp and _PipelineMapping belong to the runner and stay, with what is in
+    # them. The runner empties _temp after each job; it never resets
+    # _PipelineMapping.
     wipe_jobs _temp _PipelineMapping
     echo "wiped job state: $home, $tmp, $work"
     ;;

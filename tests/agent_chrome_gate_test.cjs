@@ -1,3 +1,4 @@
+require("./lib/agent-chrome-test-env.cjs");
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const { createHash } = require("node:crypto");
@@ -162,12 +163,16 @@ test("a connection's declaration is live while its file is, and an adopted one o
 // --- A gate in front of a stub Chrome ---------------------------------------
 
 // Answers /json/version and accepts CDP WebSockets, recording every command
-// and answering each with an empty result.
-function stubChrome() {
+// and answering each with an empty result. Target.createTarget answers, after
+// createDelay, with a targetId made from its url; /json/new opens "new-tab".
+function stubChrome({ createDelay = 0 } = {}) {
   const commands = [];
+  const paths = [];
   const sockets = new Set();
   const server = http.createServer((req, res) => {
-    res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ path: req.url, host: req.headers.host }));
+    paths.push(req.url);
+    const body = req.url.startsWith("/json/new") ? { id: "new-tab" } : { path: req.url, host: req.headers.host };
+    res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(body));
   });
   server.on("upgrade", (req, socket) => {
     const accept = createHash("sha1").update(`${req.headers["sec-websocket-key"]}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`).digest("base64");
@@ -177,14 +182,18 @@ function stubChrome() {
     const stream = new gate.FrameStream(() => {}, (text) => {
       const message = JSON.parse(text);
       commands.push(message);
-      socket.write(gate.encodeFrame(JSON.stringify({ id: message.id, result: {} }), null));
+      const answer = () => socket.write(gate.encodeFrame(JSON.stringify(message.method === "Target.createTarget"
+        ? { id: message.id, result: { targetId: `tab:${message.params.url}` } }
+        : { id: message.id, result: {} }), null));
+      if (message.method === "Target.createTarget" && createDelay) setTimeout(answer, createDelay);
+      else answer();
       return Buffer.alloc(0);
     });
     socket.on("data", (chunk) => stream.push(chunk));
     socket.on("error", () => {});
   });
   // Upgraded sockets leave the server's tracking, so they are destroyed here.
-  return { server, commands, destroy: () => { for (const socket of sockets) socket.destroy(); } };
+  return { server, commands, paths, destroy: () => { for (const socket of sockets) socket.destroy(); } };
 }
 
 const listen = (server) => new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve(server.address().port)));
@@ -476,4 +485,273 @@ test("chain reads a real process's session token from its environment, and names
   assert.equal(processes[0].command, "node");
   assert.equal(processes[0].script, "probe.cjs");
   assert.ok(processes.some(({ pid }) => pid === process.pid));
+});
+
+// --- Tabs a session leaves open ---------------------------------------------
+
+// Two sessions, a and b, in front of one stub Chrome; each connection says
+// which session it is with its first request's order.
+async function twoSessions(t, chromeOptions = {}) {
+  const chrome = stubChrome(chromeOptions);
+  const chromePort = await listen(chrome.server);
+  const live = { a: true, b: true };
+  const declarations = {
+    a: { id: "a", what: "flow a", current: () => foreground, live: () => live.a },
+    b: { id: "b", what: "flow b", current: () => background, live: () => live.b },
+  };
+  const order = [];
+  const logs = [];
+  const server = gate.createGate({ chromePort, identify: async () => ({ client: "node (pid 1)", declaration: declarations[order.shift()] }), log: (line) => logs.push(line), answerGrace: 2000 });
+  const port = await listen(server);
+  t.after(() => { chrome.destroy(); server.close(); chrome.server.close(); server.closeAllConnections(); chrome.server.closeAllConnections(); });
+  const as = (name) => { order.push(name); return connect(port); };
+  // A client that sends one command and drops its socket, as a killed one does.
+  const killedAfter = (name, message) => new Promise((resolve, reject) => {
+    order.push(name);
+    const req = http.request({ host: "127.0.0.1", port, path: "/devtools/browser/x", headers: { Connection: "Upgrade", Upgrade: "websocket", "Sec-WebSocket-Version": "13", "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ==" } });
+    req.on("upgrade", (res, socket) => {
+      socket.write(gate.encodeFrame(JSON.stringify(message), Buffer.from([1, 2, 3, 4])), () => setTimeout(() => { socket.destroy(); resolve(); }, 50));
+    });
+    req.on("error", reject);
+    req.end();
+  });
+  const closed = () => chrome.paths.filter((path) => path.startsWith("/json/close/")).map((path) => decodeURIComponent(path.slice("/json/close/".length)));
+  return { port, chrome, server, live, logs, as, killedAfter, closed, order };
+}
+
+// Follow-up of playwright-session-signals review r2: a run killed while its
+// tab was opening left that tab open in the shared agent Chrome for good.
+test("when a session ends the gate closes the tabs it opened, and no other session's", async (t) => {
+  const { port, server, live, logs, as, closed, order } = await twoSessions(t);
+  const a = await as("a");
+  const b = await as("b");
+  assert.equal((await a.send({ id: 1, method: "Target.createTarget", params: { url: "about:blank#a" } })).result.targetId, "tab:about:blank#a");
+  await b.send({ id: 1, method: "Target.createTarget", params: { url: "about:blank#b" } });
+  order.push("a");
+  assert.equal((await get(port, "/json/new?about:blank")).status, 200);
+  await server.closeEnded();
+  assert.deepEqual(closed(), []);
+  live.a = false;
+  await server.closeEnded();
+  assert.deepEqual(closed().sort(), ["new-tab", "tab:about:blank#a"]);
+  assert.ok(logs.some((line) => line === 'closed 2 tabs that "flow a" left open'));
+  // Once closed, a tab is not closed again.
+  await server.closeEnded();
+  assert.equal(closed().length, 2);
+});
+
+test("a tab whose createTarget answer comes after its client has gone is still closed when the session ends", async (t) => {
+  const { chrome, server, live, killedAfter, closed } = await twoSessions(t, { createDelay: 300 });
+  await killedAfter("a", { id: 7, method: "Target.createTarget", params: { url: "about:blank#late" } });
+  assert.equal(chrome.commands.filter(({ method }) => method === "Target.createTarget").length, 1);
+  live.a = false;
+  let idle = false;
+  server.whenIdle(() => { idle = true; });
+  await server.closeEnded();
+  assert.deepEqual(closed(), []);
+  assert.equal(idle, false, "Chrome's side stays open for the answer");
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  assert.equal(idle, true, "and closes once it is in");
+  await server.closeEnded();
+  assert.deepEqual(closed(), ["tab:about:blank#late"]);
+});
+
+test("a restarted gate still closes the tabs of a session that ends after the restart", async (t) => {
+  const home = fs.mkdtempSync(join(tmpdir(), "agent-chrome-gate-tabs-"));
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  const file = join(home, "tabs.json");
+  const declarationFile = join(home, "s.json");
+  fs.writeFileSync(declarationFile, JSON.stringify({ id: "s", what: "flow s", pid: process.pid, started: Date.now() }));
+  const closedTabs = [];
+  const close = async (port, targetId) => { closedTabs.push(targetId); return true; };
+  const before = gate.tabTracker({ chromePort: 1, file, close });
+  before.opened(gate.reader({ file: declarationFile, declaration: { id: "s", what: "flow s" } }), "tab-s");
+  const after = gate.tabTracker({ chromePort: 1, file, close });
+  await after.closeEnded();
+  assert.deepEqual(closedTabs, []);
+  fs.rmSync(declarationFile);
+  await after.closeEnded();
+  assert.deepEqual(closedTabs, ["tab-s"]);
+  assert.deepEqual(JSON.parse(fs.readFileSync(file, "utf8")), { sessions: [], kept: [] });
+});
+
+function put(port, path) {
+  return new Promise((resolve, reject) => {
+    const req = http.request({ host: "127.0.0.1", port, path, method: "PUT" }, (res) => {
+      let body = "";
+      res.on("data", (chunk) => { body += chunk; });
+      res.on("end", () => resolve({ status: res.statusCode, body }));
+    });
+    req.on("error", reject);
+    req.end();
+  });
+}
+
+// Review r1 of agent-chrome-session-orphans: apply workers leave tabs open for
+// the owner on purpose, and the gate closed them when the session ended.
+test("a session keeps a tab it opened for the owner; no other session can keep it, and the gate leaves it open", async (t) => {
+  const { port, chrome, server, live, logs, as, closed, order } = await twoSessions(t);
+  const a = await as("a");
+  const b = await as("b");
+  for (const url of ["about:blank#form", "about:blank#scratch"]) await a.send({ id: url.length, method: "Target.createTarget", params: { url } });
+  await b.send({ id: 1, method: "Target.createTarget", params: { url: "about:blank#b" } });
+  const keep = (name, targetId, what = "form%20to%20review") => { order.push(name); return put(port, `/agent-chrome/keep/${encodeURIComponent(targetId)}?what=${what}`); };
+  // Another session's tab, and a tab no session opened, are refused with the rule.
+  for (const refused of [await keep("b", "tab:about:blank#form"), await keep("a", "unknown-tab")]) {
+    assert.equal(refused.status, 403);
+    assert.match(refused.body, /may keep only a tab it opened itself/);
+  }
+  assert.equal((await keep("a", "tab:about:blank#form", "")).status, 400);
+  order.push("a");
+  assert.equal((await get(port, "/agent-chrome/keep/tab%3Aabout%3Ablank%23form?what=x")).status, 405);
+  // The gate answers every /agent-chrome path itself, never with Chrome's 404,
+  // so a 404 there can only come from a gate that predates keep.
+  for (const path of ["/agent-chrome/keep", "/agent-chrome/keep/", "/agent-chrome/keep/a/b?what=x", "/agent-chrome/other"]) {
+    order.push("a");
+    const usage = await put(port, path);
+    assert.equal(usage.status, 400, path);
+    assert.match(usage.body, /PUT \/agent-chrome\/keep\/<targetId>\?what=<why>/);
+  }
+  const kept = await keep("a", "tab:about:blank#form");
+  assert.equal(kept.status, 200, kept.body);
+  assert.ok(logs.includes('kept a tab of "flow a" open for the owner: form to review'));
+  // A retry after a lost answer is kept again; once kept, no other session takes it over.
+  const again = await keep("a", "tab:about:blank#form");
+  assert.equal(again.status, 200, again.body);
+  assert.equal(logs.filter((line) => line.startsWith("kept a tab")).length, 1);
+  const taken = await keep("b", "tab:about:blank#form");
+  assert.equal(taken.status, 403);
+  assert.match(taken.body, /one already kept/);
+  assert.equal(chrome.paths.filter((path) => path.startsWith("/agent-chrome/")).length, 0, "keep never reaches Chrome");
+  // b drives the kept tab and ends; its end closes only its own tab.
+  await b.send({ id: 2, method: "Target.attachToTarget", params: { targetId: "tab:about:blank#form", flatten: true } });
+  live.b = false;
+  await server.closeEnded();
+  assert.deepEqual(closed(), ["tab:about:blank#b"]);
+  live.a = false;
+  await server.closeEnded();
+  assert.deepEqual(closed().sort(), ["tab:about:blank#b", "tab:about:blank#scratch"]);
+});
+
+// Review r2: a keep from a process in no live session was adopted first, so
+// the owner got an "is using the agent Chrome without agent-chrome-session" notice
+// for a keep the gate then refused.
+test("a keep from a process in no live session is refused without adopting it; an adopted one keeps its own tab", async (t) => {
+  const chrome = stubChrome();
+  const chromePort = await listen(chrome.server);
+  const home = fs.mkdtempSync(join(tmpdir(), "agent-chrome-gate-keep-"));
+  const adopted = [];
+  let adoptedFile = null;
+  const adopt = async (spec) => {
+    adopted.push(spec);
+    // A live pid, so the adopted declaration stands.
+    const declaration = { id: `adopted-${spec.pid}`, what: spec.what, pid: process.pid, foreground: false, adopted: true, started: Date.now() };
+    adoptedFile = join(home, "adopted.json");
+    fs.writeFileSync(adoptedFile, JSON.stringify(declaration));
+    return { file: adoptedFile, declaration };
+  };
+  // Session a's command, then a child it left running after a ended, then an
+  // undeclared script: the last two are in no live session.
+  const callers = {
+    a: { client: "node (pid 10)", pid: 10, name: "node", declaration: { id: "a", what: "flow a", current: () => background, live: () => live } },
+    child: { client: "node (pid 11)", pid: 11, name: "node" },
+    stray: { client: "curl (pid 12)", pid: 12, name: "curl" },
+    adopted: { client: "node (pid 13)", pid: 13, name: "node" },
+  };
+  let live = true;
+  const order = [];
+  const identify = async () => {
+    const caller = callers[order.shift()];
+    if (caller.pid === 13 && adoptedFile) return { ...caller, declaration: gate.reader({ file: adoptedFile, declaration: JSON.parse(fs.readFileSync(adoptedFile, "utf8")) }) };
+    return caller;
+  };
+  const logs = [];
+  const server = gate.createGate({ chromePort, identify, adopt, graceUntil: Date.now() + 60000, log: (line) => logs.push(line) });
+  const port = await listen(server);
+  t.after(() => { chrome.destroy(); server.close(); chrome.server.close(); server.closeAllConnections(); chrome.server.closeAllConnections(); fs.rmSync(home, { recursive: true, force: true }); });
+  order.push("a");
+  const a = await connect(port);
+  await a.send({ id: 1, method: "Target.createTarget", params: { url: "about:blank#a" } });
+  live = false;
+  for (const [name, path] of [["stray", "/agent-chrome/keep/tab%3Aabout%3Ablank%23a?what=x"], ["child", "/agent-chrome/keep/tab%3Aabout%3Ablank%23a?what=x"], ["stray", "/agent-chrome/keep"]]) {
+    order.push(name);
+    const refused = await put(port, path);
+    assert.equal(refused.status, 403, `${name} ${path}`);
+    assert.match(refused.body, /this process is in no live session/);
+  }
+  assert.deepEqual(adopted, [], "no adoption, so no notice to the owner");
+  assert.ok(!logs.some((line) => /without a declaration/.test(line)));
+  assert.equal(chrome.paths.filter((path) => path.startsWith("/agent-chrome")).length, 0, "keep never reaches Chrome");
+  // A process adopted through CDP in the migration window opened its tab, so it may keep it.
+  order.push("adopted");
+  const b = await connect(port);
+  await b.send({ id: 1, method: "Target.createTarget", params: { url: "about:blank#adopted" } });
+  assert.equal(adopted.length, 1);
+  order.push("adopted");
+  const kept = await put(port, "/agent-chrome/keep/tab%3Aabout%3Ablank%23adopted?what=sign-in");
+  assert.equal(kept.status, 200, kept.body);
+  assert.equal(adopted.length, 1);
+  a.close();
+  b.close();
+});
+
+test("kept tabs survive a restarted gate, and their record goes once Chrome stops listing them", async (t) => {
+  const home = fs.mkdtempSync(join(tmpdir(), "agent-chrome-gate-kept-"));
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  const file = join(home, "tabs.json");
+  const declarationFile = join(home, "s.json");
+  fs.writeFileSync(declarationFile, JSON.stringify({ id: "s", what: "flow s", pid: process.pid, started: Date.now() }));
+  const declaration = gate.reader({ file: declarationFile, declaration: { id: "s", what: "flow s" } });
+  const closedTabs = [];
+  // The saved record while each close runs: a gate that dies mid-close must
+  // still find the session's tabs after its restart.
+  const savedDuringClose = [];
+  const close = async (port, targetId) => {
+    savedDuringClose.push(JSON.parse(fs.readFileSync(file, "utf8")).sessions.map(({ id }) => id));
+    closedTabs.push(targetId);
+    return true;
+  };
+  const open = new Set(["tab-kept", "tab-other"]);
+  let answering = true;
+  const list = async () => { if (!answering) throw new Error("connect ECONNREFUSED"); return new Set(open); };
+  const before = gate.tabTracker({ chromePort: 1, file, close, list, now: () => 42 });
+  before.opened(declaration, "tab-kept");
+  before.opened(declaration, "tab-other");
+  assert.equal(before.keep(declaration, "tab-kept", "sign-in for the owner"), true);
+  assert.equal(before.keep({ id: "x", what: "flow x" }, "tab-other", "not mine"), false);
+  assert.equal(before.keep(declaration, "tab-kept", "sign-in for the owner"), true, "a repeat keep by its session");
+  assert.equal(before.keep({ id: "x", what: "flow x" }, "tab-kept", "not mine"), false);
+  // A declaration without an id is its own key, and no other one's repeat.
+  const anonymous = { what: "flow without id" };
+  const bare = gate.tabTracker({ chromePort: 1, close, list });
+  bare.opened(anonymous, "tab-anonymous");
+  assert.equal(bare.keep(anonymous, "tab-anonymous", "form"), true);
+  assert.equal(bare.keep({ what: "another without id" }, "tab-anonymous", "form"), false);
+  const after = gate.tabTracker({ chromePort: 1, file, close, list });
+  fs.rmSync(declarationFile);
+  await after.closeEnded();
+  assert.deepEqual(closedTabs, ["tab-other"]);
+  assert.deepEqual(savedDuringClose, [["s"]]);
+  assert.deepEqual(JSON.parse(fs.readFileSync(file, "utf8")), { sessions: [], kept: [{ targetId: "tab-kept", what: "sign-in for the owner", session: "s", at: 42 }] });
+  // the owner closes the tab while Chrome does not answer the list: the record
+  // stays until Chrome answers, and the next sweep then forgets it.
+  open.delete("tab-kept");
+  answering = false;
+  await after.closeEnded();
+  assert.deepEqual(JSON.parse(fs.readFileSync(file, "utf8")).kept.map(({ targetId }) => targetId), ["tab-kept"]);
+  answering = true;
+  await after.closeEnded();
+  assert.deepEqual(closedTabs, ["tab-other"]);
+  assert.deepEqual(JSON.parse(fs.readFileSync(file, "utf8")), { sessions: [], kept: [] });
+});
+
+test("a tabs.json from before keeping, a bare list of sessions, still loads", async (t) => {
+  const home = fs.mkdtempSync(join(tmpdir(), "agent-chrome-gate-old-"));
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  const file = join(home, "tabs.json");
+  fs.writeFileSync(file, JSON.stringify([{ id: "old", file: join(home, "gone.json"), what: "old flow", targets: ["tab-old"] }]));
+  const closedTabs = [];
+  const tracker = gate.tabTracker({ chromePort: 1, file, close: async (port, targetId) => { closedTabs.push(targetId); return true; } });
+  await tracker.closeEnded();
+  assert.deepEqual(closedTabs, ["tab-old"]);
 });

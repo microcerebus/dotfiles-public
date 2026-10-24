@@ -75,14 +75,15 @@ function resolveEnv(env) {
   // profile dir is a deliberate choice and passes through.
   if ((url === undefined && env.CHROME_DEVTOOLS_AXI_USER_DATA_DIR === undefined)
     || targetsPort(url ?? "", new URL(AGENT_CHROME_URL).port)) {
-    out.CHROME_DEVTOOLS_AXI_BROWSER_URL = AGENT_CHROME_URL;
+    // The same as AGENT_CHROME_URL unless a test points the gate at a dead port.
+    out.CHROME_DEVTOOLS_AXI_BROWSER_URL = agentChromeSession.GATE_URL;
     return { env: out, target: "agent" };
   }
   return { env: out, target: "other" };
 }
 
 function ensureAgentChrome(env, deps, io) {
-  if (deps.probe(AGENT_CHROME_URL)) return env;
+  if (deps.probe(agentChromeSession.GATE_URL)) return env;
   if (!deps.agentInstalled()) {
     io.stderr.write("chrome-devtools-axi: the agent Chrome is not set up yet (it arrives with the next `rebuild`), so this session uses a throwaway headless Chrome without sign-ins.\n");
     const out = { ...env };
@@ -91,10 +92,10 @@ function ensureAgentChrome(env, deps, io) {
   }
   deps.kickstart();
   for (let i = 0; i < 30; i += 1) {
-    if (deps.probe(AGENT_CHROME_URL)) return env;
+    if (deps.probe(agentChromeSession.GATE_URL)) return env;
     deps.sleep(500);
   }
-  io.stderr.write(`chrome-devtools-axi: the agent Chrome did not come up on ${AGENT_CHROME_URL} within 15s. See ~/Library/Logs/agent-chrome.log and ~/Library/Logs/agent-chrome-gate.log, or restart them with \`launchctl kickstart -k gui/$(id -u)/${AGENT_CHROME_LABEL}\` and \`launchctl kickstart -k gui/$(id -u)/${GATE_LABEL}\`.\n`);
+  io.stderr.write(`chrome-devtools-axi: the agent Chrome did not come up on ${agentChromeSession.GATE_URL} within 15s. See ~/Library/Logs/agent-chrome.log and ~/Library/Logs/agent-chrome-gate.log, or restart them with \`launchctl kickstart -k gui/$(id -u)/${AGENT_CHROME_LABEL}\` and \`launchctl kickstart -k gui/$(id -u)/${GATE_LABEL}\`.\n`);
   return null;
 }
 
@@ -188,7 +189,7 @@ function run(args, env, deps = defaultDeps, io = process) {
   if (resolved.target === "agent" && needsBrowser) {
     childEnv = ensureAgentChrome(childEnv, deps, io);
     if (!childEnv) return 1;
-    const flagsError = childEnv.CHROME_DEVTOOLS_AXI_BROWSER_URL === AGENT_CHROME_URL && agentChromeFlagsError(deps);
+    const flagsError = childEnv.CHROME_DEVTOOLS_AXI_BROWSER_URL === agentChromeSession.GATE_URL && agentChromeFlagsError(deps);
     if (flagsError) {
       io.stderr.write(flagsError);
       return 1;
@@ -196,7 +197,7 @@ function run(args, env, deps = defaultDeps, io = process) {
   }
   // the owner hears about the fallback once per bridge, not once per command: the
   // bridge outlives each call, so the session is a lease the gate times out.
-  if (childEnv.CHROME_DEVTOOLS_AXI_BROWSER_URL === AGENT_CHROME_URL && (needsBrowser || args[0] === "stop")) {
+  if (childEnv.CHROME_DEVTOOLS_AXI_BROWSER_URL === agentChromeSession.GATE_URL && (needsBrowser || args[0] === "stop")) {
     const id = `axi-${(childEnv.CHROME_DEVTOOLS_AXI_SESSION ?? "default").replace(/[^A-Za-z0-9_-]/g, "_")}`;
     if (args[0] === "stop") deps.endLease(id);
     // Leave five minutes after the bridge's idle exit before the gate cuts it.
