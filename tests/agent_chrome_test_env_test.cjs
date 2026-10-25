@@ -14,8 +14,11 @@ const { tmpdir } = require("node:os");
 const { join } = require("node:path");
 const { pathToFileURL } = require("node:url");
 const env = require("./lib/agent-chrome-test-env.cjs");
+// The unwrapped calls below build a child env by hand; under test-sandbox it needs the sandbox's temp settings too.
+const { withSandbox } = require("./lib/sandbox-env.cjs");
 
 const HELPER = join(__dirname, "lib/agent-chrome-test-env.cjs");
+const SANDBOX_ENV = join(__dirname, "lib/sandbox-env.cjs");
 const REPO = join(__dirname, "..");
 const SCRIPTS = join(REPO, "scripts");
 const BOARD = join(REPO, ".claude/skills/verify-agent-board/scripts/board.mjs");
@@ -210,7 +213,8 @@ const board = (args, extraEnv) => {
     "execSync(cmd, { env })": envOf(execSync("/usr/bin/env", handBuilt)),
     "fork(module, args, { env })": JSON.parse(await collect(fork(join(scratch, "print-env.cjs"), [], { env: handBuilt.env, silent: true, execArgv: [] }))),
     // Unwrapped and with no preload, so only the ESM import of the helper can supply the settings.
-    "an ESM test's spawnSync(cmd, args, { env })": JSON.parse(helper.original.execFileSync(process.execPath, [join(scratch, "esm-child.mjs")], handBuilt)),
+    "an ESM test's spawnSync(cmd, args, { env })": JSON.parse(helper.original.execFileSync(process.execPath, [join(scratch, "esm-child.mjs")],
+      { ...handBuilt, env: require(${JSON.stringify(SANDBOX_ENV)}).withSandbox(handBuilt.env) })),
   };
   // A test that passes an axi URL to a child on purpose keeps it there.
   out.childAxiUrl = spawnSync(process.execPath, ["-e", "process.stdout.write(String(process.env.CHROME_DEVTOOLS_AXI_BROWSER_URL))"],
@@ -308,7 +312,7 @@ test("a setting preset to a live port stops the test before anything runs", () =
   for (const [key, value] of [["AGENT_CHROME_SESSION_TEST_GATE_URL", "http://127.0.0.1:9333"], ["AGENT_CHROME_SESSION_TEST_GATE_URL", "http://127.0.0.1:9333/"],
     ["AGENT_CHROME_GATE_CHROME_PORT", "9334"], ["AGENT_CHROME_READY_TEST_PORT", "9222"]]) {
     let failure;
-    try { env.original.execFileSync(process.execPath, ["--require", HELPER, "-e", "process.stdout.write('ran')"], { env: { PATH: process.env.PATH, [key]: value }, encoding: "utf8", stdio: "pipe" }); }
+    try { env.original.execFileSync(process.execPath, ["--require", HELPER, "-e", "process.stdout.write('ran')"], { env: withSandbox({ PATH: process.env.PATH, [key]: value }), encoding: "utf8", stdio: "pipe" }); }
     catch (error) { failure = error; }
     assert.ok(failure, `${key}=${value} ran: the helper let a live preset through; see livePort() in tests/lib/agent-chrome-test-env.cjs.`);
     assert.match(String(failure.stderr), new RegExp(`${key}=${value} is the live port`));
@@ -317,7 +321,7 @@ test("a setting preset to a live port stops the test before anything runs", () =
 
 test("an axi test binary inherited from the shell, or outside the temp dir, stops the test before anything runs", () => {
   const run = (extra, script = "process.stdout.write('ran')") => {
-    try { return env.original.execFileSync(process.execPath, ["--require", HELPER, "-e", script], { env: { PATH: process.env.PATH, ...extra }, encoding: "utf8", stdio: "pipe" }); }
+    try { return env.original.execFileSync(process.execPath, ["--require", HELPER, "-e", script], { env: withSandbox({ PATH: process.env.PATH, ...extra }), encoding: "utf8", stdio: "pipe" }); }
     catch (error) { return error; }
   };
   const inherited = run({ CHROME_DEVTOOLS_AXI_TEST_BINARY: join(tmpdir(), "chrome-devtools-axi") });

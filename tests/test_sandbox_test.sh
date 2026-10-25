@@ -188,6 +188,14 @@ out=$("$ts" --scratch "$c/scratch" -- /bin/sh -c 'for d in "$TMPDIR" "$XDG_CACHE
   case "$d" in "$TEST_SANDBOX"/*) ;; *) echo "outside: $d" ;; esac; done; echo done' 2>&1) || true
 expect_eq "TMPDIR, XDG_CACHE_HOME and bare mktemp stay inside the scratch dir" "$out" "done"
 
+# A caller under set -u whose SHELLOPTS is exported (telegram-alert under an
+# inherited xtrace) starts the shim with nounset on. In bash 3.2, the shim's
+# /bin/bash, "${flags[@]}" of an empty array is then an unbound variable.
+# SHELLOPTS is readonly in the shell, so env sets it for the shim alone.
+out=$("$ts" --scratch "$c/scratch" -- /bin/sh -c 'd=$(/usr/bin/env SHELLOPTS=nounset mktemp) || { echo "mktemp failed"; exit 0; }
+  case "$d" in "$TEST_SANDBOX"/*) echo inside ;; *) echo "outside: $d" ;; esac' 2>&1) || true
+expect_eq "bare mktemp stays inside the scratch dir with nounset in an exported SHELLOPTS" "$out" "inside"
+
 # A scratch dir reused after an earlier run may hold links where the shim
 # goes. Installing it must not write through them.
 # shim_link <name> <link> <target>: plant the link, run, and the canary must

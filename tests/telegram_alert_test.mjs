@@ -11,6 +11,7 @@ import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
+import { withSandbox } from './lib/sandbox-env.cjs';
 
 const SCRIPT = process.env.TELEGRAM_ALERT_BIN ?? path.join(import.meta.dirname, '../scripts/telegram-alert');
 const TOKEN = '123456789:AAfake-token_for-tests-only0123456789';
@@ -123,10 +124,11 @@ async function run(bash, args, { keychain = BOTH, handlers = { sendMessage: sent
   }
   const fake = api ? null : await fakeApi(handlers);
   const child = spawn(SCRIPT, args, {
-    env: {
+    // Built from scratch so no real setting leaks in; under test-sandbox the sender's mktemp needs the sandbox's TMPDIR.
+    env: withSandbox({
       PATH: `${bin}:/usr/bin:/bin`, HOME: dir, USER: 'tester',
       FAKE_KEYCHAIN: items, FAKE_ARGV_LOG: argvLog, TELEGRAM_ALERT_API: api ?? fake.url, ...env,
-    },
+    }),
   });
   let stdout = '';
   let stderr = '';

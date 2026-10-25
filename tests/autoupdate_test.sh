@@ -20,8 +20,23 @@ fail=0
 ok() { echo "ok   $1"; }
 bad() { echo "FAIL $1"; shift; printf '  %s\n' "$@"; fail=1; }
 
-# Only the stubs and these real tools are on PATH, so nothing can reach the
-# real brew, pnpm, softwareupdate or darwin-rebuild.
+# Under scripts/test-sandbox every write outside its scratch dir fails, and
+# env -i drops TMPDIR, XDG_CACHE_HOME and the mktemp shim on PATH that keep
+# the updater's temp files in there. Hand those on there and only there:
+# outside the sandbox the clean env stays as it was. test-sandbox starts this
+# script with $TEST_SANDBOX/bin on PATH; a TEST_SANDBOX without its bin dir on
+# PATH is a stray export, not a sandbox (the rule in tests/lib/sandbox-env.cjs).
+sandbox_env=() sandbox_bin=
+if [ -n "${TEST_SANDBOX:-}" ] && [[ ":$PATH:" == *":$TEST_SANDBOX/bin:"* ]]; then
+  sandbox_env=(TEST_SANDBOX="$TEST_SANDBOX")
+  [ -z "${TMPDIR+set}" ] || sandbox_env+=(TMPDIR="$TMPDIR")
+  [ -z "${XDG_CACHE_HOME+set}" ] || sandbox_env+=(XDG_CACHE_HOME="$XDG_CACHE_HOME")
+  sandbox_bin="$TEST_SANDBOX/bin:"
+fi
+
+# Only the stubs, these real tools and, under test-sandbox, its shim dir
+# $sandbox_bin (after the stubs, so a stub always wins) are on PATH, so
+# nothing can reach the real brew, pnpm, softwareupdate or darwin-rebuild.
 real="$tmp/real"
 mkdir -p "$real"
 for t in git jq; do ln -s "$(command -v "$t")" "$real/$t"; done
@@ -320,16 +335,15 @@ commit_local() {
 }
 
 # as <home> cmd...: runs cmd with a clean environment, as launchd would, on
-# $as_path.
-as_path="$stubs:$real:/usr/bin:/bin:/usr/sbin:/sbin"
+# $as_path. Every as_path ends in $system_path, which carries the shim dir
+# under test-sandbox.
+system_path="$sandbox_bin/usr/bin:/bin:/usr/sbin:/sbin"
+as_path="$stubs:$real:$system_path"
 as() {
   local h=$1 v vars=()
   shift
   for v in $(compgen -e | grep -E '^(AUTOUPDATE|STUB)_'); do vars+=("$v=${!v}"); done
-  # The suite runs under scripts/test-sandbox, which may write only in its
-  # scratch dir: keep TMPDIR, and its mktemp shim ahead of macOS mktemp, which
-  # ignores TMPDIR.
-  env -i HOME="$h" TZ="$TZ" PATH="$TEST_SANDBOX/bin:$as_path" TMPDIR="$TMPDIR" FAKE_NOW="$FAKE_NOW" \
+  env -i ${sandbox_env[@]+"${sandbox_env[@]}"} HOME="$h" TZ="$TZ" PATH="$as_path" FAKE_NOW="$FAKE_NOW" \
     SYSTEMS="$SYSTEMS" HM_GCROOT="$HM_GCROOT" "${vars[@]}" "$@"
 }
 
@@ -518,7 +532,7 @@ at "2026-10-16 05:00"; tick; tick
 expect_alarm "an old flake.lock raises an alarm" \
   "^dotfiles auto-update: routine: flake.lock on origin/main was last updated 4 days ago; is the cloud update routine running\? \(claude\.ai/code/routines\)$"
 expect_report "an old flake.lock does not fail the sync" "^ok: sync: last good run 0 min ago$"
-legacy=$(env -i HOME="$home" TZ="$TZ" PATH="$stubs:/usr/bin:/bin" FAKE_NOW="$FAKE_NOW" \
+legacy=$(env -i ${sandbox_env[@]+"${sandbox_env[@]}"} HOME="$home" TZ="$TZ" PATH="$stubs:$sandbox_bin/usr/bin:/bin" FAKE_NOW="$FAKE_NOW" \
   AUTOUPDATE_HOME="$home" AUTOUPDATE_DAEMON_DIR="$AUTOUPDATE_DAEMON_DIR" AUTOUPDATE_SILL_APP="$AUTOUPDATE_SILL_APP" AUTOUPDATE_RUNNER_STATUS="$AUTOUPDATE_RUNNER_STATUS" AUTOUPDATE_RUNNER_RELOAD="$AUTOUPDATE_RUNNER_RELOAD" \
   /bin/bash "$script" status)
 expect_eq "the flake.lock alarm reads the same under macOS's bash 3.2" "$legacy" "$(report)"
@@ -603,7 +617,7 @@ ok: switch: last good run 2 h ago"
 expect_eq "status --alarms is the banner and SessionStart text" "$(alarms)" \
 "dotfiles auto-update: daily: brew upgrade failed for karabiner-elements; run autoupdate-now in a terminal, where sudo can prompt; see $home/Library/Logs/dotfiles-sync.log
   details: dotfiles-autoupdate status"
-legacy=$(env -i HOME="$home" TZ="$TZ" PATH="$stubs:/usr/bin:/bin" FAKE_NOW="$FAKE_NOW" \
+legacy=$(env -i ${sandbox_env[@]+"${sandbox_env[@]}"} HOME="$home" TZ="$TZ" PATH="$stubs:$sandbox_bin/usr/bin:/bin" FAKE_NOW="$FAKE_NOW" \
   AUTOUPDATE_HOME="$home" AUTOUPDATE_DAEMON_DIR="$AUTOUPDATE_DAEMON_DIR" AUTOUPDATE_SILL_APP="$AUTOUPDATE_SILL_APP" AUTOUPDATE_RUNNER_STATUS="$AUTOUPDATE_RUNNER_STATUS" AUTOUPDATE_RUNNER_RELOAD="$AUTOUPDATE_RUNNER_RELOAD" \
   /bin/bash "$script" status)
 expect_eq "status reads the same under macOS's bash 3.2" "$legacy" "$(report)"
@@ -696,7 +710,7 @@ for f in "$stubs"/*; do [ "${f##*/}" = timeout ] || ln -s "$f" "$terminal/"; don
 fresh
 export STUB_BREW_SUDO=1 STUB_TTY=1
 at "2026-10-12 05:00"
-as_path="$repo/scripts:$terminal:$real:/usr/bin:/bin:/usr/sbin:/sbin" \
+as_path="$repo/scripts:$terminal:$real:$system_path" \
   as "$home" script -q "$s/log/terminal" bash -c "$alias_cmd" </dev/null >/dev/null 2>&1 || true
 got=$(alarms)
 if grep -q timeout <<<"$got"; then bad "autoupdate-now runs on a shell PATH without timeout" "got: $got"
@@ -730,7 +744,7 @@ coreutils=$(nix eval --raw "$repo#darwinConfigurations.myhost.pkgs.coreutils.out
 fresh
 export STUB_TTY=1 STUB_PNPM_CTRL_C=1
 at "2026-10-12 05:00"
-as_path="$repo/scripts:$terminal:$real:/usr/bin:/bin:/usr/sbin:/sbin" \
+as_path="$repo/scripts:$terminal:$real:$system_path" \
   as "$home" "$coreutils/bin/env" --default-signal=INT \
   script -q "$s/log/terminal" bash -c "$alias_cmd" </dev/null >/dev/null 2>&1 || true
 expect_eq "Ctrl-C in a terminal run stops it before the next step" "$(calls brew)" 0
@@ -748,7 +762,7 @@ STUB_SILL_TEAM=ABCDE12345 expect_alarm "Sill signed by another team alarms with 
   "^dotfiles auto-update: sill: $AUTOUPDATE_SILL_APP is signed by team ABCDE12345, not its developer's team 9B2KKVM937; quit it and check the saffsanity/sill tap before opening it again$"
 STUB_SILL_TEAM="not set" expect_alarm "an ad hoc signed Sill alarms" "sill: .* is signed by no Developer ID, not"
 expect_alarm "an unsigned Sill alarms" "sill: .* is signed by no Developer ID, not"
-legacy=$(env -i HOME="$home" TZ="$TZ" PATH="$stubs:/usr/bin:/bin" FAKE_NOW="$FAKE_NOW" STUB_SILL_TEAM=ABCDE12345 \
+legacy=$(env -i ${sandbox_env[@]+"${sandbox_env[@]}"} HOME="$home" TZ="$TZ" PATH="$stubs:$sandbox_bin/usr/bin:/bin" FAKE_NOW="$FAKE_NOW" STUB_SILL_TEAM=ABCDE12345 \
   AUTOUPDATE_HOME="$home" AUTOUPDATE_DAEMON_DIR="$AUTOUPDATE_DAEMON_DIR" AUTOUPDATE_SILL_APP="$AUTOUPDATE_SILL_APP" AUTOUPDATE_RUNNER_STATUS="$AUTOUPDATE_RUNNER_STATUS" AUTOUPDATE_RUNNER_RELOAD="$AUTOUPDATE_RUNNER_RELOAD" \
   /bin/bash "$script" status)
 expect_eq "the Sill alarm reads the same under macOS's bash 3.2" "$legacy" "$(STUB_SILL_TEAM=ABCDE12345 report)"
@@ -1333,5 +1347,22 @@ expect_eq "and leaves no scratch file" "$(find "$AUTOUPDATE_DAEMON_DIR" -name 'r
 ln -sfn "$s/elsewhere" "$HM_GCROOT"
 at "2026-10-12 06:10"; tick
 expect_eq "so the next tick still repairs Home Manager" "$(running_rev) $(built | grep -c "$C")" "$C 2"
+
+# 35. as() hands the updater the clean env launchd would, and nothing else
+# from this shell. Under test-sandbox it adds only the sandbox's temp
+# settings and its shim dir, after the stubs. A TEST_SANDBOX without its bin
+# dir on PATH is a stray export and adds nothing.
+fresh
+want=("HOME=$home" "TZ=$TZ" "FAKE_NOW=$FAKE_NOW" "SYSTEMS=$SYSTEMS" "HM_GCROOT=$HM_GCROOT")
+for v in $(compgen -e | grep -E '^(AUTOUPDATE|STUB)_'); do want+=("$v=${!v}"); done
+if [ -n "${TEST_SANDBOX:-}" ] && [[ ":$PATH:" == *":$TEST_SANDBOX/bin:"* ]]; then
+  want+=("PATH=$stubs:$real:$TEST_SANDBOX/bin:/usr/bin:/bin:/usr/sbin:/sbin" "TEST_SANDBOX=$TEST_SANDBOX")
+  [ -z "${TMPDIR+set}" ] || want+=("TMPDIR=$TMPDIR")
+  [ -z "${XDG_CACHE_HOME+set}" ] || want+=("XDG_CACHE_HOME=$XDG_CACHE_HOME")
+else
+  want+=("PATH=$stubs:$real:/usr/bin:/bin:/usr/sbin:/sbin")
+fi
+expect_eq "the updater runs with exactly the clean env, and the sandbox's settings only under test-sandbox" \
+  "$(as "$home" /usr/bin/env | LC_ALL=C sort)" "$(printf '%s\n' "${want[@]}" | LC_ALL=C sort)"
 
 exit "$fail"

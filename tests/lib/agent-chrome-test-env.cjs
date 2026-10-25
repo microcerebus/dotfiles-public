@@ -10,9 +10,12 @@
 // - puts a curl first on PATH that refuses the live ports, since curl (as in
 //   scripts/agent-chrome-ready) is outside the node guard,
 // - adds the same settings to any env a test builds for a child process, and
-//   preloads this file there, so a hand-built env cannot drop them.
+//   preloads this file there, so a hand-built env cannot drop them,
+// - and, under scripts/test-sandbox, the sandbox's temp settings too
+//   (tests/lib/sandbox-env.cjs), so that child's temp files stay in scratch.
 // Checked by tests/agent_chrome_test_env_test.cjs.
 const { LIVE_PORTS } = require("./live-port-guard.cjs");
+const { withSandbox, DEFAULT_PATH } = require("./sandbox-env.cjs");
 const childProcess = require("node:child_process");
 const fs = require("node:fs");
 const { tmpdir } = require("node:os");
@@ -71,7 +74,7 @@ function livePort(value) {
 }
 
 function withDeadDefaults(env) {
-  const out = { ...env };
+  const out = withSandbox({ ...env });
   // A test port without a kickstart hook makes agent-chrome-ready refuse; only
   // add the no-op hook when this file supplies the port. The script reads "" as unset.
   if (!out.AGENT_CHROME_READY_TEST_PORT && !out.AGENT_CHROME_READY_TEST_KICKSTART) out.AGENT_CHROME_READY_TEST_KICKSTART = "true";
@@ -84,7 +87,7 @@ function withDeadDefaults(env) {
   // The test process's temp dir holds scratch, and a child given no TMPDIR has /tmp for tmpdir(), so both count.
   if (![dirname(scratch), tmpdir()].some((dir) => out.CHROME_DEVTOOLS_AXI_TEST_BINARY.startsWith(dir + "/"))) throw new Error(`agent-chrome-test-env: CHROME_DEVTOOLS_AXI_TEST_BINARY=${out.CHROME_DEVTOOLS_AXI_TEST_BINARY} is outside the test's temp dir ${dirname(scratch)}. Tests never run the real chrome-devtools-axi binary; leave it unset for the helper's stub.`);
   // A child env without PATH gets the shell's default PATH, with no guard: give it the guard and that default.
-  const path = out.PATH === undefined ? "/usr/bin:/bin:/usr/sbin:/sbin" : out.PATH;
+  const path = out.PATH === undefined ? DEFAULT_PATH : out.PATH;
   out.PATH = path.split(":").includes(CURL_GUARD) ? path : `${CURL_GUARD}:${path}`;
   const preload = `--require ${JSON.stringify(SELF)}`;
   if (!(out.NODE_OPTIONS ?? "").includes(SELF)) out.NODE_OPTIONS = `${out.NODE_OPTIONS ?? ""} ${preload}`.trim();
