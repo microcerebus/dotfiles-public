@@ -16,22 +16,42 @@
 #
 # The assertion fails evaluation (the daily routine's system.drvPath eval,
 # `darwin-rebuild` and `nix flake check` alike) when the built activate:
-# - lacks the function, defines `sudo` twice, or unsets it;
+# - lacks the function at the top level (a definition inside `( ... )`
+#   dies with the subshell), defines `sudo` twice, or unsets it;
 # - runs anything behind a PATH="/opt/homebrew..." prefix before the
 #   function is defined;
-# - has that prefix anywhere but the start of a command (the trimmed line
-#   start, or right after `$(`): `env PATH=... sudo` or
+# - has that prefix anywhere but the start of a command (its line, or
+#   right after a real `$(`): `env PATH=... sudo` or
 #   `bash -c 'PATH=... sudo'` hand it to a program that never sees the
 #   function;
 # - runs any command other than `sudo` or `/usr/bin/sudo` behind that prefix
 #   (env, launchctl, brew ... there would be looked up as root in a dir myuser
-#   owns);
+#   owns), or runs sudo there without `--user=X` or `-u X` naming a user
+#   other than root (root would look sudo's command up there), or with an
+#   option the lint does not read before the command;
 # - calls sudo through a form that skips functions (`command sudo`,
-#   `exec [-a name] sudo`, `builtin sudo`).
+#   `exec [-a name] sudo`, `builtin sudo`);
+# - has homebrew enabled but no Homebrew PATH line at all (nix-darwin may
+#   have moved brew bundle into a store script, which runs in a new shell
+#   without the function, or built the prefix from a variable, which this
+#   lint cannot see);
+# - has a heredoc that names the prefix or never ends, or text it cannot
+#   read (an unpaired quote or `$(`, a backtick, `case` inside `$(...)`).
+# The rules read logical lines the way bash nests quotes, `$(...)`,
+# `${...}` and arithmetic: a `\` continuation or a quoted string that spans
+# lines joins them, so `env \` or `bash -c '` above the prefix counts, and
+# each real `$(` starts a line of its own. Comments are dropped. Line
+# numbers in the messages are physical activate lines.
 # It reads the literal `PATH=/opt/homebrew`, `PATH="/opt/homebrew` or
-# `PATH='/opt/homebrew` forms. It does not see the prefix through a variable
-# such as $HOMEBREW_PREFIX, or later in the PATH list.
-# Comment lines in activate are skipped.
+# `PATH='/opt/homebrew` forms. If the only Homebrew PATH comes from a
+# variable such as $HOMEBREW_PREFIX, the missing literal line fails the
+# eval; a variable form next to a literal one, the prefix later in the
+# PATH list (PATH=$PATH:/opt/homebrew/bin, PATH+=...), or
+# `eval "$(/opt/homebrew/bin/brew shellenv)"`, it does not see. Nor does it
+# see a function that reaches a child shell (`export -f f; bash -c f`), an
+# alias under `shopt -s expand_aliases`, or the definition sitting in a
+# function body or an `if` branch that never runs (it tracks `( ... )` and
+# `$( ... )`, not braces or keywords).
 # The rules live in nix/activation-sudo-lint.nix and are pinned by
 # tests/activation_sudo_lint_test.nix.
 # Once nix-darwin calls /usr/bin/sudo itself, the function is a no-op and
@@ -42,7 +62,7 @@ let
   lint = import ./activation-sudo-lint.nix { inherit lib; };
   inherit (lint) fnDef;
   problems = lint.problems {
-    inherit (config.homebrew) prefix;
+    inherit (config.homebrew) prefix enable;
     inherit (config.system.activationScripts.script) text;
   };
 in
@@ -58,7 +78,7 @@ in
     {
       assertion = problems == [ ];
       message = "nix/activation-sudo.nix: root could run a command looked up in a directory myuser owns:\n"
-        + lib.concatMapStrings (p: "  - ${p}\n") problems;
+        + lib.concatMapStrings (p: "  - ${p.text}\n") problems;
     }
   ];
 }
