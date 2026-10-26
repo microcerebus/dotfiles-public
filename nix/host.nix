@@ -22,29 +22,11 @@
   # jemalloc (macOS calloc(3) mis-zeroes; tmux recommends jemalloc there).
   # Mirrors the nixpkgs master fix; drop this overlay once it reaches
   # nixpkgs-unstable (check: tmux builds without it).
-  #
-  # atuin 18.23.0's e2e tests that drive a bash shell fail every darwin
-  # build, on Hydra too, so atuin is not cached and the 16 Oct 2026 rebuild
-  # stopped on it (NixOS/nixpkgs#573527). Darwin builds run unsandboxed, so
-  # the tests' interactive bash reads nix-darwin's /etc/bashrc, which resets
-  # PATH away from the atuin under test. The open fix NixOS/nixpkgs#574509
-  # exports NOSYSBASHRC, but the test harness clears the environment before
-  # it starts that bash, and the tests still failed with it here. So skip
-  # only the bash cases: filtered_commands_leave_no_captured_output and the
-  # e2e_pty cases named *bash_preexec* (their zsh and fish cases still run),
-  # as nixpkgs already skips atuin's network tests. Drop this once atuin
-  # builds on nixpkgs-unstable without it.
   nixpkgs.overlays = [
     (final: prev: {
       tmux = prev.tmux.overrideAttrs (old: {
         buildInputs = old.buildInputs ++ [ final.jemalloc ];
         configureFlags = old.configureFlags ++ [ "--enable-jemalloc" ];
-      });
-      atuin = prev.atuin.overrideAttrs (old: {
-        checkFlags = (old.checkFlags or [ ]) ++ [
-          "--skip=filtered_commands_leave_no_captured_output"
-          "--skip=bash_preexec"
-        ];
       });
     })
   ];

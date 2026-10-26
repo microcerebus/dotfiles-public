@@ -218,7 +218,8 @@ Model defaults: `docs/model-routing.md` (Codex-first for new work, Claude fallba
   A job-tracker verifier attached Playwright to 9333 unannounced and called `browser.newContext()` per user; in headed Chrome each new context opens a new window on his screen.
   `scripts/agent-chrome-gate` (launchd `com.myuser.agent-chrome-gate`) now owns 9333: only clients declared by `scripts/agent-chrome-session` get through, and their connections close when the session ends.
   Nobody gets new browser contexts; new windows and bringing a tab to the front need a session declared `--foreground`.
-  It finds the client with `lsof` and its process ancestry and environment with `ps -E`.
+  It finds the client in the kernel's TCP table (`netstat -anv`), never with lsof, which can drain another process's socketpair handoff, and reads its ancestry, uid and environment with `ps`.
+  A client run by another user (the GitHub runner's) stays unknown and is refused.
   Chrome itself listens on 9334, which nothing gates: never connect to 9334 (only the axi wrapper refuses it).
   The gate guards against honest mistakes, not against a hostile process.
   The gate cannot see popups (`target=_blank`, `window.open`) or a client driving a tab it did not open; `scripts/agent-chrome-playwright` closes its flows' popups.

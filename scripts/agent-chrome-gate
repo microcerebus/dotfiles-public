@@ -26,7 +26,7 @@
 // `agent-chrome-session keep` call. The gate never closes a kept tab, and
 // refuses to keep a tab the session did not open. A keep from a process in no
 // live session is refused without adopting it, so the owner gets no notice.
-// It reads the client's process and environment with lsof and ps; it never
+// It reads the client's process and environment with netstat and ps; it never
 // logs them beyond the executable name.
 // Tests: tests/agent_chrome_gate_test.cjs.
 const { execFile } = require("node:child_process");
@@ -219,17 +219,41 @@ function filterCommand(text, mask, declaration, reply, log) {
 
 // --- Who is connecting -----------------------------------------------------
 
-// lsof and ps run once per connection; a hung one must not hold the client.
-const PROBE = { timeout: 3000, maxBuffer: 16 << 20 };
+// netstat and ps run once per connection; a hung one must not hold the client.
+// SIGKILL, because execFile sends its kill signal once at the timeout and
+// never escalates: a lookup that ignored SIGTERM would hold the client.
+const PROBE = { timeout: 3000, killSignal: "SIGKILL", maxBuffer: 16 << 20 };
+const NETSTAT = ["-anvW", "-f", "inet", "-p", "tcp"];
 
-async function clientPid(port, run = execute) {
+// The pid on the client's end of the connection, from the kernel's TCP table:
+// netstat -v reads it through the net.inet.tcp.pcblist_n sysctl and prints
+// each socket's last pid, the process that last connected, sent or received
+// on it. Do not go back to lsof here. lsof opens every fd of every process
+// with proc_pidfdinfo, and the iocount that takes can drain a socketpair
+// that another process is handing to its child at that moment, anywhere on
+// this Mac (XNU fileproc_drain; tests/agent_chrome_session_drain_test.py).
+// The gate ran it for every connection. A failed or timed-out netstat gives
+// no pid, so the client is refused, never guessed from partial output.
+async function clientPid({ remotePort, localPort }, run = execute) {
   let stdout;
-  try { ({ stdout } = await run("/usr/sbin/lsof", ["-b", "-w", "-nP", `-iTCP@127.0.0.1:${port}`, "-sTCP:ESTABLISHED", "-Fpn"], PROBE)); }
-  catch (error) { stdout = error.stdout ?? ""; }
-  let pid = null;
-  for (const line of stdout.split("\n")) {
-    if (line.startsWith("p")) pid = Number(line.slice(1));
-    else if (line.startsWith(`n127.0.0.1:${port}->`) && pid !== process.pid) return pid;
+  try { ({ stdout } = await run("/usr/sbin/netstat", NETSTAT, PROBE)); }
+  catch { return null; }
+  const lines = stdout.split("\n");
+  // Process names can contain spaces, so the owner is everything between the
+  // fixed columns before and after it, as the header places it. The header
+  // splits "Local Address" and "Foreign Address" into two words each.
+  const header = lines.find((line) => line.startsWith("Proto "))?.trim().split(/\s+/) ?? [];
+  const column = header.indexOf("process:pid");
+  if (column < 0 || header[4] !== "Address" || header[6] !== "Address") return null;
+  const before = column - 2;
+  const after = header.length - column - 1;
+  for (const line of lines) {
+    const words = line.trim().split(/\s+/);
+    if (words[0] !== "tcp4" || words.length < before + after + 1) continue;
+    if (words[3] !== `127.0.0.1.${remotePort}` || words[4] !== `127.0.0.1.${localPort}` || words[5] !== "ESTABLISHED") continue;
+    const owner = /:(\d+)$/.exec(words.slice(before, words.length - after).join(" "));
+    const pid = owner ? Number(owner[1]) : 0;
+    return pid > 0 && pid !== process.pid ? pid : null;
   }
   return null;
 }
@@ -242,10 +266,10 @@ async function clientPid(port, run = execute) {
 async function chain(pid, run = execute) {
   const table = new Map();
   try {
-    const { stdout } = await run("/bin/ps", ["-A", "-o", "pid=,ppid=,comm="], PROBE);
+    const { stdout } = await run("/bin/ps", ["-A", "-o", "pid=,ppid=,uid=,comm="], PROBE);
     for (const line of stdout.split("\n")) {
-      const found = /^\s*(\d+)\s+(\d+)\s(.*)$/.exec(line);
-      if (found) table.set(Number(found[1]), { ppid: Number(found[2]), comm: found[3].trim() });
+      const found = /^\s*(\d+)\s+(\d+)\s+(\d+)\s(.*)$/.exec(line);
+      if (found) table.set(Number(found[1]), { ppid: Number(found[2]), uid: Number(found[3]), comm: found[4].trim() });
     }
   } catch { return []; }
   const pids = [];
@@ -266,6 +290,7 @@ async function chain(pid, run = execute) {
   } catch { /* name without the script */ }
   return pids.map((current, index) => ({
     pid: current,
+    uid: table.get(current).uid,
     tokens: [...(environments.get(current) ?? "").matchAll(new RegExp(`(?:^|\\s)${session.ENV}=(\\S+)`, "g"))].map((found) => found[1]),
     command: basename(table.get(current).comm),
     script: index === 0 && script ? basename(script) : undefined,
@@ -309,9 +334,14 @@ function reader(found, graceUntil = GRACE_UNTIL) {
 }
 
 async function identify(socket, deps = {}) {
-  const pid = await clientPid(socket.remotePort, deps.run);
-  if (!pid) return { client: "an unknown process (not this user's, or already gone)" };
+  const pid = await clientPid(socket, deps.run);
+  const unknown = { client: "an unknown process (not this user's, gone, or the lookup failed)" };
+  if (!pid) return unknown;
   const processes = await chain(pid, deps.run);
+  // netstat lists every user's sockets, where lsof saw only this user's. A
+  // client run by another user (the GitHub runner's) or one ps cannot place
+  // stays unknown, so the migration window never adopts it.
+  if (processes[0]?.uid !== process.getuid()) return unknown;
   const graceUntil = deps.graceUntil ?? GRACE_UNTIL;
   const found = match(processes, session.declarations(deps.dir ?? session.stateDir()), Date.now(), graceUntil);
   const client = `${processes[0]?.command ?? "unknown"} (pid ${pid})`;
@@ -541,7 +571,7 @@ function createGate({ chromePort = Number(process.env.AGENT_CHROME_GATE_CHROME_P
   server.on("upgrade", async (req, client, head) => {
     identifying += 1;
     try {
-      // The client may hang up while lsof and ps run; then nothing opens upstream.
+      // The client may hang up while netstat and ps run; then nothing opens upstream.
       // Reading it meanwhile is what surfaces the hang-up; the bytes are kept.
       let gone = false;
       const early = [];

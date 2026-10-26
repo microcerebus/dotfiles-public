@@ -105,9 +105,25 @@ test("a refused command is answered to the client and never reaches Chrome", () 
   assert.equal(gate.filterCommand('{"id":1,"method":"Page.navigate"}', null, declaration, () => {}, () => {}), null);
 });
 
-test("the client is found by its port, and matched through its ancestors' pid or environment", async () => {
-  const lsof = `p${process.pid}\nf10\nn127.0.0.1:9333->127.0.0.1:50000\np4242\nf20\nn127.0.0.1:50000->127.0.0.1:9333\n`;
-  const table = "    1     0 /sbin/launchd\n 4100     1 /usr/bin/login\n 4200  4100 /bin/zsh\n 4242  4200 /usr/local/bin/node\n 9999  4242 /bin/sleep\n";
+// netstat -anvW -f inet -p tcp as macOS 26 prints it. Process names can
+// contain spaces, and a name is cut at 16 characters.
+const NETSTAT_HEADER = "Proto Recv-Q Send-Q  Local Address          Foreign Address        (state)          rxbytes      txbytes  rhiwat  shiwat          process:pid    state  options           gencnt    flags   flags1 usecnt rtncnt fltrs";
+const netstatRow = (local, foreign, state, owner) =>
+  `tcp4       0      0  ${local.padEnd(22)} ${foreign.padEnd(22)} ${state.padEnd(11)}        576            0  408064  146988 ${owner.padStart(20)}   00102 00000104 000000000105b8b1 00000081 01000800      2      0 000000`;
+const netstatFor = (rows) => `Active Internet connections (including servers)\n${NETSTAT_HEADER}\n${rows.join("\n")}\n`;
+
+test("the client is found by both ends of its connection in the TCP table, and matched through its ancestors' pid or environment", async () => {
+  const netstat = netstatFor([
+    netstatRow("127.0.0.1.9333", "*.*", "LISTEN", `node:${process.pid}`),
+    netstatRow("127.0.0.1.9333", "127.0.0.1.50000", "ESTABLISHED", `node:${process.pid}`),
+    // The same client port, to another server, and a closed earlier connection.
+    netstatRow("127.0.0.1.50000", "127.0.0.1.9444", "ESTABLISHED", "curl:7777"),
+    netstatRow("127.0.0.1.50000", "127.0.0.1.9333", "TIME_WAIT", "node:6666"),
+    netstatRow("127.0.0.1.50000", "127.0.0.1.9333", "ESTABLISHED", "Code Helper (Pl:4242"),
+    "tcp6       0      0  ::1.50000              ::1.9333               ESTABLISHED        0     0  408064  146988          node:5555   00102 00000104 000000000105b8b1 00000081 01000800      2      0 000000",
+  ]);
+  const me = process.getuid();
+  const table = `    1     0     0 /sbin/launchd\n 4100     1     0 /usr/bin/login\n 4200  4100 ${me} /bin/zsh\n 4242  4200 ${me} /usr/local/bin/node\n 4243     1   499 /usr/local/bin/node\n 9999  4242 ${me} /bin/sleep\n`;
   const environments = {
     4242: "/usr/local/bin/node /tmp/pw-pr84.mjs TERM=xterm NODE_OPTIONS=--import=/x/axi-entry.mjs",
     4200: "/bin/zsh -c node pw-pr84.mjs AGENT_CHROME_SESSION=abc-123 HOME=/x",
@@ -116,19 +132,47 @@ test("the client is found by its port, and matched through its ancestors' pid or
   const calls = [];
   const run = async (file, args, options) => {
     calls.push([file, args, options]);
-    if (file === "/usr/sbin/lsof") return { stdout: lsof };
+    if (file === "/usr/sbin/netstat") return { stdout: netstat };
     if (args[0] === "-A") return { stdout: table };
     if (args[0] === "-E") return { stdout: args.at(-1).split(",").map((pid) => `${pid} ${environments[pid]}`).join("\n") };
     return { stdout: "/usr/local/bin/node /tmp/pw-pr84.mjs\n" };
   };
-  assert.equal(await gate.clientPid(50000, run), 4242);
-  assert.equal(await gate.clientPid(50001, async () => { throw Object.assign(new Error("exit 1"), { stdout: "" }); }), null);
+  const dir = fs.mkdtempSync(join(tmpdir(), "agent-chrome-gate-"));
+  const socket = { remotePort: 50000, localPort: 9333 };
+  assert.deepEqual(await gate.identify(socket, { run, dir }), { client: "node (pid 4242)", pid: 4242, name: "node pw-pr84.mjs" });
+  // netstat names every user's clients; another user's, such as the GitHub runner's, stays unknown.
+  const runner = async (file, args, options) => (file === "/usr/sbin/netstat"
+    ? { stdout: netstat.replace("Code Helper (Pl:4242", "node:4243") } : run(file, args, options));
+  assert.deepEqual(await gate.identify(socket, { run: runner, dir }), { client: "an unknown process (not this user's, gone, or the lookup failed)" });
+  // So does a client ps cannot place, since then nobody knows whose it is.
+  const noTable = async (file, args, options) => (args[0] === "-A" ? Promise.reject(new Error("timed out")) : run(file, args, options));
+  assert.deepEqual(await gate.identify(socket, { run: noTable, dir }), { client: "an unknown process (not this user's, gone, or the lookup failed)" });
+  calls.length = 0;
+  assert.deepEqual(await gate.identify(socket, { run, dir }), { client: "node (pid 4242)", pid: 4242, name: "node pw-pr84.mjs" });
+  // One netstat and three ps calls whatever the depth, each with a timeout.
+  // Never lsof: it takes an iocount on every fd of every process, which can
+  // drain a socketpair another process is handing to its child.
+  assert.deepEqual(calls.map(([file]) => file), ["/usr/sbin/netstat", "/bin/ps", "/bin/ps", "/bin/ps"]);
+  assert.deepEqual(calls[0][1], ["-anvW", "-f", "inet", "-p", "tcp"]);
+  assert.ok(calls.every(([, , options]) => options?.timeout > 0));
+  // No pid unless the client's end is in the table, established, under a header that places its owner.
+  const only = (rows) => async () => ({ stdout: netstatFor(rows) });
+  const gone = [netstatRow("127.0.0.1.9333", "127.0.0.1.50000", "ESTABLISHED", `node:${process.pid}`)];
+  assert.equal(await gate.clientPid(socket, only(gone)), null);
+  assert.equal(await gate.clientPid(socket, only([netstatRow("127.0.0.1.50000", "127.0.0.1.9333", "FIN_WAIT_2", "node:4242")])), null);
+  assert.equal(await gate.clientPid(socket, async () => ({ stdout: netstat.replace("process:pid", "process") })), null);
+  // A header with the address columns elsewhere places no owner, even when the rows would still match.
+  const moved = netstat.replace("Local Address          Foreign Address", "Address Local          Address Foreign");
+  assert.equal(await gate.clientPid(socket, async () => ({ stdout: moved })), null);
+  assert.equal(await gate.clientPid(socket, async () => ({ stdout: "" })), null);
+  // A netstat that fails or times out names nobody, even with the client's row already printed.
+  const timedOut = async () => { throw Object.assign(new Error("timed out"), { killed: true, signal: "SIGTERM", stdout: netstat }); };
+  assert.equal(await gate.clientPid(socket, timedOut), null);
+  assert.deepEqual(await gate.identify(socket, { run: timedOut, dir }), { client: "an unknown process (not this user's, gone, or the lookup failed)" });
+  fs.rmSync(dir, { recursive: true });
   const chain = await gate.chain(4242, run);
   assert.deepEqual(chain.map(({ pid, tokens, command, script }) => [pid, tokens, command, script]),
     [[4242, [], "node", "pw-pr84.mjs"], [4200, ["abc-123"], "zsh", undefined], [4100, [], "login", undefined]]);
-  // One lsof and three ps calls whatever the depth, each with a timeout.
-  assert.equal(calls.length, 4);
-  assert.ok(calls.every(([, , options]) => options?.timeout > 0));
   assert.deepEqual(await gate.chain(4242, async () => { throw new Error("timed out"); }), []);
   const live = { id: "abc-123", what: "x", minutes: 1, started: 0, until: Date.now() + 60000 };
   assert.equal(gate.match(chain, [{ file: "f", declaration: live }]).declaration, live);
@@ -141,6 +185,20 @@ test("the client is found by its port, and matched through its ancestors' pid or
   const adopted = { id: `adopted-${process.pid}`, what: "node", pid: process.pid, adopted: true, started: 0 };
   assert.equal(gate.match([{ pid: process.pid, tokens: [] }], [{ file: "f", declaration: adopted }], 10, 20).declaration, adopted);
   assert.equal(gate.match([{ pid: process.pid, tokens: [] }], [{ file: "f", declaration: adopted }], 20, 20), null);
+});
+
+test("a lookup that ignores SIGTERM is still cut off at its timeout, and names nobody", { timeout: 60000 }, async () => {
+  // A netstat or ps that ignores SIGTERM and would otherwise run for 20 s,
+  // started by the real execFile with the options the gate passes it.
+  const stubborn = "process.on('SIGTERM', () => {}); setTimeout(() => {}, 20000);";
+  const execute = require("node:util").promisify(require("node:child_process").execFile);
+  const run = (file, args, options) => execute(process.execPath, ["-e", stubborn], options);
+  const started = Date.now();
+  const [pid, processes] = await Promise.all([gate.clientPid({ remotePort: 50000, localPort: 9333 }, run), gate.chain(4242, run)]);
+  const elapsed = Date.now() - started;
+  assert.equal(pid, null);
+  assert.deepEqual(processes, []);
+  assert.ok(elapsed < 10000, `the lookup held the client for ${elapsed} ms`);
 });
 
 test("a connection's declaration is live while its file is, and an adopted one only inside the window", () => {
@@ -331,13 +389,15 @@ test("a foreground session may open a visible tab but still may not open a new c
 test("identify reads the real client process: an undeclared one is refused, the helper's child is let through", async (t) => {
   const home = fs.mkdtempSync(join(tmpdir(), "agent-chrome-gate-"));
   const dir = session.stateDir(home);
+  // Async, because a synchronous spawn would block the server it probes.
+  const run = require("node:util").promisify(require("node:child_process").execFile);
+  const commands = new Set();
+  const recorded = (file, ...rest) => { commands.add(file); return run(file, ...rest); };
   const server = http.createServer((req, res) => {
-    gate.identify(req.socket, { dir }).then((found) => res.end(JSON.stringify({ client: found.client, declared: Boolean(found.declaration) })));
+    gate.identify(req.socket, { dir, run: recorded }).then((found) => res.end(JSON.stringify({ client: found.client, declared: Boolean(found.declaration) })));
   });
   const port = await listen(server);
   t.after(() => server.close());
-  // Async, because a synchronous spawn would block the server it probes.
-  const run = require("node:util").promisify(require("node:child_process").execFile);
   const probe = `fetch("http://127.0.0.1:${port}/").then((r) => r.text()).then((t) => process.stdout.write(t))`;
   const plain = await run(process.execPath, ["-e", probe], { env: { ...process.env, [session.ENV]: "" } });
   const undeclared = JSON.parse(plain.stdout);
@@ -347,6 +407,37 @@ test("identify reads the real client process: an undeclared one is refused, the 
     process.execPath, "-e", probe], { env: { ...process.env, [session.ENV]: "", AGENT_CHROME_STATE_HOME: home, AGENT_CHROME_SESSION_TEST_NOTIFY_LOG: join(home, "notices") } });
   assert.equal(JSON.parse(wrapped.stdout).declared, true);
   assert.equal(fs.readFileSync(join(home, "notices"), "utf8").trim().split("\n").length, 2);
+  // The real lookup reads the TCP table and the process table, never another process's fds.
+  assert.deepEqual([...commands].sort(), ["/bin/ps", "/usr/sbin/netstat"]);
+});
+
+test("a client the TCP table does not name is refused in the migration window, and never adopted", async (t) => {
+  const chrome = stubChrome();
+  const chromePort = await listen(chrome.server);
+  const dir = fs.mkdtempSync(join(tmpdir(), "agent-chrome-gate-"));
+  const adopted = [];
+  const adopt = async (client) => { adopted.push(client); return { file: join(dir, "a.json"), declaration: { id: "a", what: "x", adopted: true } }; };
+  // netstat times out after printing the client's own row, then fails outright.
+  let failure = "timeout";
+  const identify = (socket, options) => gate.identify(socket, { ...options, dir, run: async (file) => {
+    if (file !== "/usr/sbin/netstat") return { stdout: `  4242     1 ${process.getuid()} /usr/local/bin/node\n` };
+    const stdout = netstatFor([netstatRow(`127.0.0.1.${socket.remotePort}`, `127.0.0.1.${socket.localPort}`, "ESTABLISHED", "node:4242")]);
+    throw Object.assign(new Error(failure), failure === "timeout" ? { killed: true, signal: "SIGTERM", stdout } : { code: 1, stdout: "" });
+  } });
+  const logs = [];
+  const server = gate.createGate({ chromePort, identify, adopt, graceUntil: Date.now() + 60000, log: (line) => logs.push(line) });
+  const port = await listen(server);
+  t.after(() => { chrome.destroy(); server.close(); chrome.server.close(); server.closeAllConnections(); chrome.server.closeAllConnections(); fs.rmSync(dir, { recursive: true, force: true }); });
+  for (const kind of ["timeout", "exit 1"]) {
+    failure = kind;
+    const refused = await get(port, "/json/list");
+    assert.equal(refused.status, 403, kind);
+    assert.match(refused.body, /Client: an unknown process \(not this user's, gone, or the lookup failed\)/);
+    assert.equal((await upgrade(port)).status, 403, kind);
+  }
+  assert.deepEqual(adopted, []);
+  assert.deepEqual(chrome.paths, []);
+  assert.ok(!logs.some((line) => /without a declaration/.test(line)));
 });
 
 // A gate that connects anyway never goes idle; the test then times out.
@@ -453,7 +544,7 @@ test("idle waits for HTTP adoption in flight, including when it is refused", asy
 test("a large ancestor environment still supplies its session token", async () => {
   const environment = `4242 node ${"X".repeat(2 << 20)} ${session.ENV}=large-chain\n`;
   const processes = await gate.chain(4242, async (file, args, options) => {
-    if (args[0] === "-A") return { stdout: "4242 1 /usr/local/bin/node\n" };
+    if (args[0] === "-A") return { stdout: `4242 1 ${process.getuid()} /usr/local/bin/node\n` };
     if (args[0] === "-E") {
       if (Buffer.byteLength(environment) > (options.maxBuffer ?? (1 << 20))) throw new Error("stdout maxBuffer length exceeded");
       return { stdout: environment };

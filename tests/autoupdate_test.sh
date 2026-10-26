@@ -6,6 +6,9 @@
 # Never touches the real system and writes only to a temp dir and the Nix
 # store. The network is used only by Nix, to fetch what that build needs.
 # Run: bash tests/autoupdate_test.sh
+# In the foreground or in the background: started with & from a script it
+# inherits SIGINT ignored, and the Ctrl-C cases restore it for the runs
+# they signal, so a rollback or sync that ignores Ctrl-C fails either way.
 set -euo pipefail
 # Confine the suite under scripts/test-sandbox (see tests/lib/confine.sh).
 # shellcheck source=tests/lib/confine.sh
@@ -346,6 +349,11 @@ as() {
   env -i ${sandbox_env[@]+"${sandbox_env[@]}"} HOME="$h" TZ="$TZ" PATH="$as_path" FAKE_NOW="$FAKE_NOW" \
     SYSTEMS="$SYSTEMS" HM_GCROOT="$HM_GCROOT" "${vars[@]}" "$@"
 }
+# A terminal gives its foreground job the default SIGINT. A suite started
+# with & from a non-interactive shell inherits SIGINT ignored, and its
+# children with it, so a run that a test sends Ctrl-C (cases 21 and 34)
+# starts under `$coreutils/bin/env --default-signal=INT`, as in a terminal.
+coreutils=$(nix eval --raw "$repo#darwinConfigurations.myhost.pkgs.coreutils.outPath")
 
 # ── Adapter: how this suite drives the updater and reads what it reports ──
 # tick: one hourly launchd tick of every updater job, at the fake time.
@@ -737,10 +745,7 @@ expect_eq "a terminal run copies its steps to the sync log" \
   "$(sed -n 's/^.*[0-9]\{4\}-[0-9-]\{5\} [0-9:]\{8\} [-=]\{3\} //p' "$home/Library/Logs/dotfiles-sync.log")" "$steps"
 
 # 21. Ctrl-C in a terminal run stops it after the step it interrupts, even a
-# step that handles the signal itself, and the status says so. A shell gives
-# its foreground job the default SIGINT; a background one, such as a test
-# runner started with &, would pass on an ignored one, so reset it.
-coreutils=$(nix eval --raw "$repo#darwinConfigurations.myhost.pkgs.coreutils.outPath")
+# step that handles the signal itself, and the status says so.
 fresh
 export STUB_TTY=1 STUB_PNPM_CTRL_C=1
 at "2026-10-12 05:00"
@@ -1056,10 +1061,12 @@ unset STUB_SWITCH_HOLD AUTOUPDATE_REBUILD_WAIT
 # rollback never overlaps the daemon's switch or is replaced by a decision
 # made before it.
 # rollback_bg <out> [generation]: the owner's `rollback`, in the background, in
-# the alias's environment: sudo sets SUDO_USER, and nothing sets AUTOUPDATE_USER.
+# the alias's environment: sudo sets SUDO_USER, nothing sets AUTOUPDATE_USER,
+# and SIGINT is at its default, as in a terminal.
 rollback_bg() {
   local out=$1; shift
-  as "$root_home" env -u AUTOUPDATE_USER SUDO_USER=testuser bash "$script" rollback "$@" </dev/null >"$out" 2>&1 &
+  as "$root_home" "$coreutils/bin/env" --default-signal=INT -u AUTOUPDATE_USER SUDO_USER=testuser \
+    bash "$script" rollback "$@" </dev/null >"$out" 2>&1 &
   rollback_pid=$!
 }
 # expect_clean <name>: the last rollback left no scratch file in the daemon
@@ -1320,17 +1327,7 @@ mkdir -p "$s/hold"; export STUB_SWITCH_HOLD="$s/hold" AUTOUPDATE_REBUILD_WAIT=60
 # shellcheck disable=SC2016 # $1 expands in the holder's shell
 lockf -k "$AUTOUPDATE_DAEMON_DIR/switch.lock" sh -c 'touch "$1"; exec /bin/sleep 60' sh "$s/held" & held=$!
 wait_for 5 test -e "$s/held" || bad "the lock holder starts" "no lock taken"
-# A suite started with `&` from a non-interactive shell starts with INT
-# ignored, and no child can catch it again, so the INT run cannot pass.
-# shellcheck disable=SC2016 # $$ expands in the probe's shell
-set -m; bash -c 'kill -INT $$; echo ignored' >"$s/int-probe" 2>/dev/null & set +m
-wait "$!" 2>/dev/null || true
 for sig in INT TERM HUP; do
-  if [ "$sig" = INT ] && [ -s "$s/int-probe" ]; then
-    bad "a INT while rollback waits for the lock stops it, switches nothing and holds nothing" \
-      "this suite started with SIGINT ignored (run with & from a non-interactive shell?), so INT cannot reach rollback; run it in the foreground"
-    continue
-  fi
   set -m; rollback_bg "$s/rollback.out"; set +m
   wait_for 15 grep -q "waiting up to 1 min" "$s/rollback.out" \
     || bad "rollback waits for the lock before the $sig" "$(cat "$s/rollback.out")"

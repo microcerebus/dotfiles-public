@@ -3,7 +3,7 @@
 
 Node's "pipe" is a socketpair, and libuv closes the session's copy of the
 child's end right after the spawn. If something holds an iocount on that fd at
-that moment (lsof, which the gate runs for every connection), XNU's
+that moment (lsof does, and any agent may run it), XNU's
 fileproc_drain marks the socket SS_DRAINING for good, and every read on it that
 would block fails with EBADF, in every process.
 
