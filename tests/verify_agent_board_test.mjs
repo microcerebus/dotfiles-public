@@ -12,6 +12,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -419,6 +420,33 @@ test('the written flows use the playwright-core version the daily sync pins', ()
   for (const flow of fs.readdirSync(path.join(REPO, SKILL, 'flows'))) {
     const check = spawnSync(process.execPath, ['--check', path.join(REPO, SKILL, 'flows', flow)], { encoding: 'utf8' });
     assert.equal(check.status, 0, check.stderr);
+  }
+});
+
+test('--t3-db runs the board on a copy of the T3 database, and refuses a missing file or a fixture run', () => {
+  const home = path.join(tmp, 'home-t3copy');
+  fs.mkdirSync(home);
+  const copy = path.join(tmp, 't3-copy.sqlite');
+  const db = new DatabaseSync(copy);
+  db.exec(`CREATE TABLE orchestration_v2_projection_threads (thread_id TEXT, title TEXT, updated_at TEXT, payload_json TEXT,
+    archived_at TEXT, deleted_at TEXT)`);
+  db.close();
+  const before = fs.existsSync(STATE) ? runs().length : 0;
+  const missing = boardWithEnv({ HOME: home }, A, 'launch', '--t3-db', path.join(tmp, 'nope.sqlite'), '--ttl', '5');
+  assert.equal(missing.code, 1, missing.out);
+  assert.match(missing.out, /--t3-db: .*nope\.sqlite is not a file/);
+  const both = boardWithEnv({ HOME: home }, A, 'launch', '--fixture', '--t3-db', copy, '--ttl', '5');
+  assert.equal(both.code, 1, both.out);
+  assert.match(both.out, /--fixture already seeds its own T3 database; pick one/);
+  assert.equal(fs.existsSync(STATE) ? runs().length : 0, before, 'a run was recorded');
+
+  const launched = boardWithEnv({ HOME: home }, A, 'launch', '--t3-db', copy, '--ttl', '5');
+  try {
+    assert.equal(launched.code, 0, launched.out);
+    assert.match(launched.out, /T3 database read from the copy .*t3-copy\.sqlite/);
+    assert.equal(latest().env.AGENT_BOARD_T3_DB, copy);
+  } finally {
+    board(A, 'stop');
   }
 });
 

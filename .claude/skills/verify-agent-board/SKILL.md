@@ -39,9 +39,10 @@ Commands below are relative to the skill directory; from the checkout root, pref
 | fixture | `scripts/board.mjs launch --fixture` | Seeded T3 database, Claude logs, four lanes with a git checkout, a stub `gh` answering from editable JSON, and updater state with one alarm, all in the run's scratch dir. Every journey in the feature map starts here. |
 | live | `scripts/board.mjs launch` | The real T3 database, Claude logs, `~/orchestrator/lanes` and updater state, read-only. Use it to check a change against T3's real schema and today's lanes. |
 | lanes copy | `scripts/board.mjs launch --lanes-copy` | Live T3 data, with `~/orchestrator/lanes` copied into the scratch dir so you can edit a row without touching the real file; symlinked lane files are copied as real files. |
+| T3 copy | `scripts/board.mjs launch --t3-db <copy>` | Live data, with T3's database read from a copy, such as one made with `sqlite3 "file:$HOME/.t3/userdata/statev2.sqlite?mode=ro" "VACUUM INTO '<scratch>/statev2.sqlite'"`. Use it to check a T3 query change against T3's real schema; `.backup` of the live database restarts on every T3 write and may never finish. Combines with `--lanes-copy`. |
 
 - Ready means launch printed `launched <run-id>` with the URLs and exited 0.
-  It has already waited for the board's `listening on 127.0.0.1:<port>` line and for both pages to render (not the T3 error page), and in fixture mode for the seeded data to show.
+  It has already waited for the board's `listening on 127.0.0.1:<port>` line and for both pages to render (not the board error page), and in fixture mode for the seeded data to show.
   Otherwise it exits 1 with the end of `board.log`, and stops what it started.
 - Launch prints the local URL, the phone URL, the evidence directory, and the seeded files you may edit.
   A run listens on 127.0.0.1 only, like the live board.
@@ -151,7 +152,7 @@ Finish with PASS or FAIL and one line per step saying what you saw."
 ## Helpers
 
 - `scripts/board.mjs`: Node 22, no packages.
-  `launch [--fixture | --lanes-copy] [--publish] [--ttl <minutes>]`, `doctor [<run-id> | --port <n>]`, `env [<run-id>]`, `stop [<run-id>]`, `runs`.
+  `launch [--fixture | --lanes-copy] [--t3-db <copy>] [--publish] [--ttl <minutes>]`, `doctor [<run-id> | --port <n>]`, `env [<run-id>]`, `stop [<run-id>]`, `runs`.
   `VERIFY_AGENT_BOARD_STATE` moves the state directory (the tests use it).
 - `scripts/flows/`: the Playwright written flows (see Drive) and `playwright.mjs`, which finds the pinned `playwright-core` and launches headless Google Chrome.
 - `scripts/fixture.mjs`: the seeded data.

@@ -1,0 +1,539 @@
+#!/usr/bin/env -S python3 -I
+"""check-flake-pr - check a flake-update PR before it merges.
+
+The 02:00 cloud routine opens its flake.lock update as a PR from
+bot/flake-update. This passes only a plain input bump:
+  - the diff touches flake.lock and nothing else, and flake.lock stays a
+    regular file with the same mode;
+  - the inputs are the same: no node added or removed, root and every
+    node's inputs wiring unchanged;
+  - per node, `locked` changes only rev, narHash, lastModified and revCount;
+    owner, repo, url, type, ref, host, dir, `original` and every other key
+    stay identical;
+  - no lastModified or revCount goes back.
+With a PR number it also checks, through gh, that the PR is open, comes
+from bot/flake-update in the same repo and is up to date with main's
+current head, and diffs main's head against the PR head. For each moved
+input it asks gh that the new rev is on the input's upstream branch or tag
+(GitHub serves a fork's commits through the parent repo, so a rev alone
+proves nothing) and that the old rev is a strict ancestor of it (no
+rollbacks). Then it fetches that exact rev with `nix flake prefetch`, in a
+fresh cache dir, and requires the lock's narHash and lastModified to equal
+the fetched source's: Nix reuses a store path that matches narHash without
+checking rev, so a stale narHash would build old code under a new rev.
+Only the moved inputs are checked upstream. A lock that moves a parent but
+keeps a child the parent's new flake.nix re-points passes; Nix then builds
+the parent against the old pinned child, so nothing unpinned is built.
+
+Usage:
+  check-flake-pr [-R owner/repo] <pr-number>   (reads the PR through gh)
+  check-flake-pr [-R owner/repo] --verify-merged <pr-number> <head> <main>
+  check-flake-pr --refs <old-ref> <new-ref>    (git trees in the current repo)
+  check-flake-pr --files <old.lock> <new.lock> (lock rules only)
+
+The orchestrator's steps for a bot PR:
+  1. check-flake-pr <n>; on exit 0 it prints the head and main it checked.
+  2. Re-run it right before merging, then merge with
+     gh pr merge <n> --squash --match-head-commit <head>
+       --subject "chore(flake): update inputs" --body ""
+     Squash so only the checked net diff lands, pin the head so a later
+     push is not merged, and set the message so no PR text reaches main.
+  3. check-flake-pr --verify-merged <n> <head> <main>: the merge commit
+     must have exactly <main> as its parent and <head>'s tree as its tree.
+     gh cannot pin the base, so if main moved after step 2's check,
+     GitHub squashes onto the new main with a text merge nobody checked.
+     On exit 1, revert the merge commit on main before the next sync.
+Decide on the exit code, not on the text.
+
+Exit 0 (PR mode): ok to merge; (--verify-merged): main holds the checked
+tree. --refs and --files are offline and skip every gh and nix check: their
+exit 0 means only that the lock rules hold, never that a PR may merge.
+Exit 1: one line per problem on stdout, naming the node and field.
+Exit 2: usage, git, gh or nix errors, or input too malformed to read
+(stderr).
+PR mode talks to GitHub through gh and through nix's fetch of each moved
+input.
+Stdlib only.
+Tests: tests/check_flake_pr_test.sh
+"""
+import base64
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+from urllib.parse import quote
+
+LOCK = "flake.lock"
+BASE_BRANCH = "main"
+HEAD_BRANCH = "bot/flake-update"
+# The only `locked` fields an input bump may change.
+MOVING = ("lastModified", "narHash", "rev", "revCount")
+# Fields that may change but never go back. In PR mode the ancestry check
+# and the fetched lastModified already bind these to the rev; the rule stays
+# because it is the only ordering check offline, and it fails closed.
+FORWARD = ("lastModified", "revCount")
+REGULAR = ("100644", "100755")
+PRINTABLE = re.compile(r"[\w.+@/~:-]+", re.ASCII)
+# GitHub owner and repo names, which go into API paths.
+GITHUB_NAME = re.compile(r"[A-Za-z0-9._-]+")
+NAME_CAP = 100
+
+
+class Usage(Exception):
+    pass
+
+
+def die(msg):
+    print(f"check-flake-pr: {msg}", file=sys.stderr)
+    sys.exit(2)
+
+
+def q(name):
+    """A name from the lock or the repo, quoted unless plainly printable."""
+    if len(name) > NAME_CAP:
+        return json.dumps(name[:NAME_CAP]) + f" (cut from {len(name)} characters)"
+    return name if PRINTABLE.fullmatch(name) else json.dumps(name)
+
+
+def no_duplicates(pairs):
+    seen = {}
+    for key, value in pairs:
+        if key in seen:
+            raise ValueError(f"duplicate key {q(key)}")
+        seen[key] = value
+    return seen
+
+
+def no_constants(name):
+    raise ValueError(f"{name} is not JSON")
+
+
+def parse_lock(data, side):
+    """Return (lock, problems) for the bytes of one flake.lock."""
+    # Nix reads flake.lock as UTF-8 only; json.loads would also take UTF-16
+    # and UTF-32 (whose ASCII text is NUL-padded, and valid UTF-8 otherwise).
+    try:
+        if b"\0" in data:
+            raise UnicodeDecodeError("utf-8", data, 0, 1, "NUL byte")
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        return None, [f"{side} {LOCK}: not UTF-8"]
+    try:
+        lock = json.loads(text, object_pairs_hook=no_duplicates, parse_constant=no_constants)
+    except RecursionError:
+        return None, [f"{side} {LOCK}: not valid JSON (nested too deep)"]
+    except ValueError as e:
+        return None, [f"{side} {LOCK}: not valid JSON ({e})"]
+    if not isinstance(lock, dict):
+        return None, [f"{side} {LOCK}: not an object"]
+    if not isinstance(lock.get("nodes"), dict):
+        return None, [f"{side} {LOCK}: nodes is not an object"]
+    bad = [name for name, node in lock["nodes"].items() if not isinstance(node, dict)]
+    if bad:
+        return None, [f"{side} {LOCK}: node {q(name)} is not an object" for name in sorted(bad)]
+    return lock, []
+
+
+def same(a, b):
+    """Equal in JSON terms: unlike ==, false is not 0 and 1.0 is not 1."""
+    return json.dumps(a, sort_keys=True) == json.dumps(b, sort_keys=True)
+
+
+def diff_keys(old, new, label):
+    """Problems for each key of two dicts that is added, removed or changed."""
+    out = []
+    for key in sorted(old.keys() | new.keys()):
+        if key not in new:
+            out.append(f"{label}{q(key)} removed")
+        elif key not in old:
+            out.append(f"{label}{q(key)} added")
+        elif not same(old[key], new[key]):
+            out.append(f"{label}{q(key)} changed")
+    return out
+
+
+def is_int(value):
+    return isinstance(value, int) and not isinstance(value, bool) and 0 <= value < 2**63
+
+
+def well_formed(key, value):
+    if key in FORWARD:
+        return is_int(value)
+    if key == "rev":
+        return isinstance(value, str) and re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", value)
+    return isinstance(value, str) and re.fullmatch(r"sha256-[A-Za-z0-9+/]{43}=", value)
+
+
+def compare_locked(old, new):
+    """Problems in one node's `locked`, and whether a moving field changed."""
+    out, moved = [], False
+    for key in sorted(old.keys() | new.keys()):
+        if key not in MOVING or key not in old or key not in new:
+            out += diff_keys({key: old[key]} if key in old else {},
+                             {key: new[key]} if key in new else {}, "locked.")
+            continue
+        if same(old[key], new[key]):
+            continue
+        moved = True
+        if not (well_formed(key, old[key]) and well_formed(key, new[key])):
+            out.append(f"locked.{key} is not well formed")
+        elif key in FORWARD and new[key] < old[key]:
+            out.append(f"locked.{key} went back ({old[key]} -> {new[key]})")
+    return out, moved
+
+
+def compare_locks(old, new):
+    """Return (problems, moved node names) for two parsed locks."""
+    problems, moved = [], []
+    rest_old = {k: v for k, v in old.items() if k != "nodes"}
+    rest_new = {k: v for k, v in new.items() if k != "nodes"}
+    problems += [f"{LOCK}: {p}" for p in diff_keys(rest_old, rest_new, "")]
+    nodes_old, nodes_new = old["nodes"], new["nodes"]
+    for name in sorted(nodes_old.keys() | nodes_new.keys()):
+        if name not in nodes_new:
+            problems.append(f"node {q(name)}: removed")
+            continue
+        if name not in nodes_old:
+            problems.append(f"node {q(name)}: added")
+            continue
+        a, b = nodes_old[name], nodes_new[name]
+        found = []
+        for key in sorted(a.keys() | b.keys()):
+            both = key in a and key in b
+            if key == "locked" and both and isinstance(a[key], dict) and isinstance(b[key], dict):
+                out, did_move = compare_locked(a[key], b[key])
+                found += out
+                if did_move:
+                    moved.append(name)
+            elif key == "original" and both and isinstance(a[key], dict) and isinstance(b[key], dict):
+                found += diff_keys(a[key], b[key], "original.")
+            else:
+                found += diff_keys({key: a[key]} if key in a else {},
+                                   {key: b[key]} if key in b else {}, "")
+        problems += [f"node {q(name)}: {p}" for p in found]
+    if not problems and not moved:
+        problems.append(f"{LOCK}: no input changed")
+    return problems, moved
+
+
+def check_contents(old_data, new_data):
+    """Return (problems, moved, new lock) for the bytes of two locks."""
+    old, problems = parse_lock(old_data, "old")
+    new, more = parse_lock(new_data, "new")
+    problems += more
+    if old is None or new is None:
+        return problems, [], None
+    problems, moved = compare_locks(old, new)
+    return problems, moved, new
+
+
+def lock_status(old, new):
+    """What happened to flake.lock, given its (mode, sha) on each side or None."""
+    if old is None and new is None:
+        return "not changed"
+    if new is None:
+        return "deleted"
+    if old is None:
+        return "added"
+    if new[0] not in REGULAR:
+        return f"not a regular file (mode {new[0]})"
+    if old[0] not in REGULAR:
+        return f"was not a regular file (mode {old[0]})"
+    if old[0] != new[0]:
+        return f"mode changed ({old[0]} -> {new[0]})"
+    if old[1] == new[1]:
+        return "not changed"
+    return None
+
+
+def scope_problems(changed, status):
+    """Problems for files other than flake.lock, then for flake.lock itself."""
+    out = [f"file {q(path)}: changed outside {LOCK}" for path in sorted(changed - {LOCK})]
+    if status:
+        out.append(f"{LOCK}: {status}")
+    return out
+
+
+def run(cmd, what, fail=None, env=None):
+    try:
+        proc = subprocess.run(cmd, capture_output=True, env=env)
+    except OSError as e:
+        die(f"{what}: {e}")
+    if proc.returncode != 0:
+        err = proc.stderr.decode(errors="replace").strip().splitlines()
+        die(fail or f"{what} failed: {err[-1] if err else f'exit {proc.returncode}'}")
+    return proc.stdout
+
+
+def gh_json(args, what):
+    out = run(["gh", *args], what)
+    try:
+        return json.loads(out)
+    except ValueError as e:
+        die(f"{what}: gh returned bad JSON ({e})")
+
+
+def from_files(old_path, new_path):
+    data = []
+    for path in (old_path, new_path):
+        try:
+            with open(path, "rb") as f:
+                data.append(f.read())
+        except OSError as e:
+            die(f"cannot read {path}: {e.strerror}")
+    problems, moved, _ = check_contents(*data)
+    return problems, moved
+
+
+def from_refs(old_ref, new_ref):
+    commits = []
+    for ref in (old_ref, new_ref):
+        out = run(["git", "rev-parse", "--verify", "--quiet", "--end-of-options", f"{ref}^{{commit}}"],
+                  "git rev-parse", fail=f"git: no commit named {ref}")
+        commits.append(out.decode().strip())
+    raw = run(["git", "diff", "--raw", "-z", "--no-renames", "--no-relative", "--no-abbrev",
+               "--no-ext-diff", "--no-textconv", *commits], "git diff").decode("utf-8", "surrogateescape")
+    fields = raw.split("\0")
+    changed, old, new = set(), None, None
+    for meta, path in zip(fields[0::2], fields[1::2]):
+        changed.add(path)
+        if path == LOCK:
+            old_mode, new_mode, old_sha, new_sha, _ = meta.lstrip(":").split()
+            old = None if old_mode == "000000" else (old_mode, old_sha)
+            new = None if new_mode == "000000" else (new_mode, new_sha)
+            if old is None and new is None:
+                die(f"git diff: cannot read the {LOCK} entry")
+    status = lock_status(old, new) if changed & {LOCK} else "not changed"
+    problems = scope_problems(changed, status)
+    if status:
+        return problems, []
+    more, moved, _ = check_contents(run(["git", "cat-file", "blob", old[1]], "git cat-file"),
+                                    run(["git", "cat-file", "blob", new[1]], "git cat-file"))
+    return problems + more, moved
+
+
+def gh_tree(repo, sha):
+    """Every non-directory entry of commit sha, as {path: (mode, sha)}."""
+    tree = gh_json(["api", f"repos/{repo}/git/trees/{sha}?recursive=1"], f"gh: tree of {sha}")
+    if tree.get("truncated"):
+        die(f"gh: the tree of {sha} is truncated")
+    return {e["path"]: (e["mode"], e["sha"]) for e in tree["tree"] if e["type"] != "tree"}
+
+
+def gh_blob(repo, sha):
+    blob = gh_json(["api", f"repos/{repo}/git/blobs/{sha}"], f"gh: blob {sha}")
+    if blob.get("encoding") != "base64":
+        die(f"gh: blob {sha} is not base64")
+    return base64.b64decode(blob["content"], validate=False)
+
+
+def gh_status(owner, repo, base, head):
+    """gh's compare status of base...head in owner/repo."""
+    path = f"repos/{owner}/{repo}/compare/{quote(base, safe='')}...{quote(head, safe='')}?per_page=1"
+    return run(["gh", "api", path, "--jq", ".status"],
+               f"gh: compare {owner}/{repo} {base}...{head}").decode().strip()
+
+
+def prefetch(owner, repo, rev):
+    """nix flake prefetch of exactly github:owner/repo/rev, in a fresh cache dir."""
+    cache = tempfile.mkdtemp(prefix="check-flake-pr.")
+    # Nix reads NIX_CACHE_HOME before XDG_CACHE_HOME, so both point at the
+    # fresh dir: an inherited cache would answer for a rev it already holds.
+    # A `dir` input would need ?dir=; none exists, and a mismatch fails closed.
+    env = {**os.environ, "NIX_CACHE_HOME": cache, "XDG_CACHE_HOME": cache}
+    try:
+        out = run(["nix", "flake", "prefetch", "--json", f"github:{owner}/{repo}/{rev}"],
+                  f"nix flake prefetch {owner}/{repo}/{rev}", env=env)
+    finally:
+        shutil.rmtree(cache, ignore_errors=True)
+    try:
+        return json.loads(out)["locked"]
+    except (ValueError, KeyError, TypeError) as e:
+        die(f"nix flake prefetch {owner}/{repo}/{rev}: bad output ({e})")
+
+
+def node_upstream(old_locked, locked, ref):
+    """Problems for one moved github node, checked against GitHub and nix."""
+    owner, repo, rev, old_rev = locked["owner"], locked["repo"], locked["rev"], old_locked["rev"]
+    out = []
+    status = gh_status(owner, repo, rev, ref)
+    if status not in ("ahead", "identical"):
+        out.append(f"locked.rev is not on {owner}/{repo} {q(ref)} ({q(status)})")
+    status = gh_status(owner, repo, old_rev, rev)
+    if status != "ahead":
+        out.append(f"locked.rev is not a descendant of {old_rev} ({q(status)})")
+    if out:
+        return out
+    fetched = prefetch(owner, repo, rev)
+    if not same(fetched.get("narHash"), locked["narHash"]):
+        out.append("locked.narHash does not match the fetched source")
+    if not same(fetched.get("lastModified"), locked["lastModified"]):
+        out.append(f"locked.lastModified does not match the fetched source ({q(str(fetched.get('lastModified')))})")
+    return out
+
+
+def upstream_problems(old_lock, lock, moved):
+    """For each moved node: on its upstream ref, a descendant of the old rev,
+    and narHash and lastModified equal to its fetched source."""
+    out, branches = [], {}
+    for name in moved:
+        node, old_locked = lock["nodes"][name], old_lock["nodes"][name]["locked"]
+        locked, original = node["locked"], node.get("original", {})
+        owner, repo, rev = locked.get("owner"), locked.get("repo"), locked.get("rev")
+        if locked.get("type") != "github" or "host" in locked or not (
+                all(isinstance(v, str) and GITHUB_NAME.fullmatch(v) for v in (owner, repo))
+                and well_formed("rev", rev) and well_formed("rev", old_locked.get("rev"))
+                and well_formed("narHash", locked.get("narHash")) and is_int(locked.get("lastModified"))):
+            out.append(f"node {q(name)}: cannot check its new rev upstream (type {q(str(locked.get('type')))})")
+            continue
+        ref = original.get("ref") if isinstance(original, dict) else None
+        if ref is None:
+            key = f"{owner}/{repo}"
+            if key not in branches:
+                branches[key] = run(["gh", "api", f"repos/{key}", "--jq", ".default_branch"],
+                                    f"gh: default branch of {key}").decode().strip()
+            ref = branches[key]
+        if not isinstance(ref, str):
+            out.append(f"node {q(name)}: original.ref is not a string")
+            continue
+        out += [f"node {q(name)}: {p}" for p in node_upstream(old_locked, locked, ref)]
+    return out
+
+
+def from_pr(number, repo_flag):
+    """Return (problems, moved, head, main's head) for a PR."""
+    fields = "state,url,baseRefName,baseRefOid,headRefName,headRefOid,isCrossRepository"
+    view = ["pr", "view", number, "--json", fields]
+    pr = gh_json(view + (["-R", repo_flag] if repo_flag else []), f"gh pr view {number}")
+    m = re.fullmatch(r"https://[^/]+/([\w.-]+/[\w.-]+)/pull/\d+", str(pr.get("url")), re.ASCII)
+    if not m:
+        die(f"gh: cannot read the repo from {pr.get('url')!r}")
+    repo, head = m.group(1), pr["headRefOid"]
+    if not re.fullmatch(r"[0-9a-f]{40}", str(head)):
+        die("gh: the PR's head is not a commit sha")
+    problems = []
+    if pr.get("state") != "OPEN":
+        problems.append(f"pull request: {q(str(pr.get('state')))}, not open")
+    if pr.get("baseRefName") != BASE_BRANCH:
+        problems.append(f"pull request: targets {q(str(pr.get('baseRefName')))}, not {BASE_BRANCH}")
+    if pr.get("headRefName") != HEAD_BRANCH:
+        problems.append(f"pull request: comes from {q(str(pr.get('headRefName')))}, not {HEAD_BRANCH}")
+    if pr.get("isCrossRepository") is not False:
+        problems.append("pull request: comes from a fork")
+    if problems:
+        return problems, [], head, None
+    # The PR must contain main's current head, so the squash merge lands
+    # exactly the head tree checked here. A PR that is behind gets updated
+    # and checked again rather than merged by a text merge nobody checked.
+    tip = run(["gh", "api", f"repos/{repo}/git/ref/heads/{BASE_BRANCH}", "--jq", ".object.sha"],
+              f"gh: head of {BASE_BRANCH}").decode().strip()
+    merge_base = run(["gh", "api", f"repos/{repo}/compare/{tip}...{head}?per_page=1",
+                      "--jq", ".merge_base_commit.sha"], "gh: merge base").decode().strip()
+    if not all(re.fullmatch(r"[0-9a-f]{40}", s) for s in (tip, merge_base)):
+        die(f"gh: no merge base for the PR and {BASE_BRANCH}")
+    if merge_base != tip:
+        return [f"pull request: not up to date with {BASE_BRANCH} {tip}; "
+                f"run gh pr update-branch {number}, then check again"], [], head, tip
+    old_tree, new_tree = gh_tree(repo, tip), gh_tree(repo, head)
+    changed = {p for p in old_tree.keys() | new_tree.keys() if old_tree.get(p) != new_tree.get(p)}
+    old, new = old_tree.get(LOCK), new_tree.get(LOCK)
+    status = lock_status(old, new)
+    problems = scope_problems(changed, status)
+    if status:
+        return problems, [], head, tip
+    old_data, new_data = gh_blob(repo, old[1]), gh_blob(repo, new[1])
+    more, moved, lock = check_contents(old_data, new_data)
+    problems += more
+    if not problems:
+        old_lock, _ = parse_lock(old_data, "old")
+        problems = upstream_problems(old_lock, lock, moved)
+    return problems, moved, head, tip
+
+
+def verify_merged(number, repo_flag, head, tip):
+    """Problems if the PR's merge commit is not tip plus head's tree."""
+    view = ["pr", "view", number, "--json", "state,url,baseRefName,headRefOid,mergeCommit"]
+    pr = gh_json(view + (["-R", repo_flag] if repo_flag else []), f"gh pr view {number}")
+    m = re.fullmatch(r"https://[^/]+/([\w.-]+/[\w.-]+)/pull/\d+", str(pr.get("url")), re.ASCII)
+    if not m:
+        die(f"gh: cannot read the repo from {pr.get('url')!r}")
+    repo, problems = m.group(1), []
+    if pr.get("state") != "MERGED":
+        problems.append(f"pull request: {q(str(pr.get('state')))}, not merged")
+    if pr.get("baseRefName") != BASE_BRANCH:
+        problems.append(f"pull request: targets {q(str(pr.get('baseRefName')))}, not {BASE_BRANCH}")
+    if pr.get("headRefOid") != head:
+        problems.append(f"pull request: merged head {q(str(pr.get('headRefOid')))} is not the checked head {head}")
+    if problems:
+        return problems, None
+    merged = (pr.get("mergeCommit") or {}).get("oid")
+    if not re.fullmatch(r"[0-9a-f]{40}", str(merged)):
+        die("gh: the PR's merge commit is not a commit sha")
+    commit = gh_json(["api", f"repos/{repo}/git/commits/{merged}"], f"gh: commit {merged}")
+    checked = gh_json(["api", f"repos/{repo}/git/commits/{head}"], f"gh: commit {head}")
+    parents = [p["sha"] for p in commit["parents"]]
+    if parents != [tip]:
+        problems.append(f"merge commit {merged}: parents {' '.join(parents) or 'none'}, "
+                        f"not only the checked {BASE_BRANCH} {tip}")
+    if commit["tree"]["sha"] != checked["tree"]["sha"]:
+        problems.append(f"merge commit {merged}: tree is not the checked head's tree")
+    if problems:
+        problems.append(f"merge commit {merged}: revert it on {BASE_BRANCH} before the next sync")
+    return problems, merged
+
+
+def main(argv):
+    if argv[:1] in (["-h"], ["--help"]):
+        print(__doc__.strip())
+        return 0
+    if argv[:1] == ["--files"] and len(argv) == 3:
+        problems, moved = from_files(argv[1], argv[2])
+        offline = True
+    elif argv[:1] == ["--refs"] and len(argv) == 3:
+        problems, moved = from_refs(argv[1], argv[2])
+        offline = True
+    else:
+        repo, offline = None, False
+        if argv[:1] in (["-R"], ["--repo"]) and len(argv) >= 3:
+            repo, argv = argv[1], argv[2:]
+        if argv[:1] == ["--verify-merged"]:
+            if len(argv) != 4 or not re.fullmatch(r"[1-9][0-9]*", argv[1]) or not all(
+                    re.fullmatch(r"[0-9a-f]{40}", s) for s in argv[2:]):
+                raise Usage()
+            number, head, tip = argv[1:]
+            problems, merged = verify_merged(number, repo, head, tip)
+            if problems:
+                print("\n".join(problems))
+                return 1
+            print(f"ok: PR {number} landed on {BASE_BRANCH} as {merged}, parent {tip}, tree of {head}")
+            return 0
+        if len(argv) != 1 or not re.fullmatch(r"[1-9][0-9]*", argv[0]):
+            raise Usage()
+        number = argv[0]
+        problems, moved, head, tip = from_pr(number, repo)
+    if problems:
+        print("\n".join(problems))
+        return 1
+    names = ", ".join(q(n) for n in moved)
+    if offline:
+        print(f"lock rules ok for {names} (offline: nothing checked upstream, not a merge decision)")
+        return 0
+    print(f"ok: {names} moved forward")
+    print(f"checked head {head} on {BASE_BRANCH} {tip}; re-run this check right before merging, then:\n"
+          f"  gh pr merge {number} --squash --match-head-commit {head} "
+          f"--subject \"chore(flake): update inputs\" --body \"\"\n"
+          f"  check-flake-pr --verify-merged {number} {head} {tip}")
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main(sys.argv[1:]))
+    except Usage:
+        die("usage: check-flake-pr [-R owner/repo] <pr-number> | [-R owner/repo] --verify-merged <pr-number> "
+            "<head> <main> | --refs <old> <new> | --files <old.lock> <new.lock>")
+    except (KeyError, TypeError, AttributeError, IndexError, ValueError, RecursionError) as e:
+        die(f"input too malformed to check ({type(e).__name__}: {e})")

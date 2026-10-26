@@ -43,38 +43,100 @@ const TAIL_BYTES = 512 * 1024;
 const IDLE_SHOWN = 12;
 const ACTIVE_RUNS = ['running', 'starting', 'preparing', 'queued'];
 
-// One row per open thread. The run subquery ranks an active run above later cancelled or queued entries, as
-// ~/orchestrator/status.mjs does. Context comes from the thread's active provider thread, which T3 updates per turn.
-const THREADS_SQL = `
-  SELECT t.thread_id AS id, t.title, t.updated_at AS updatedAt, p.title AS project,
-    json_extract(t.payload_json, '$.branch') AS branch,
-    json_extract(t.payload_json, '$.modelSelection.model') AS model,
-    json_extract(t.payload_json, '$.lineage.parentThreadId') AS parentId,
-    (SELECT r.status FROM orchestration_v2_projection_runs r WHERE r.thread_id = t.thread_id
+// One row per open thread, built from parts. T3 changes its schema without notice: its migration 063 dropped
+// projection_pending_approvals (applied here 19 Oct 2026) and every board page became a 500. So each part names the
+// columns it reads, a part whose table or column is gone is left out and named on the page as unavailable, and the rest
+// still render. Without the thread table itself there is no thread list.
+const THREADS = { orchestration_v2_projection_threads: ['thread_id', 'title', 'updated_at', 'payload_json', 'archived_at', 'deleted_at'] };
+const PARTS = [
+  // An active run ranks above later cancelled or queued entries, as ~/orchestrator/status.mjs does.
+  {
+    what: 'run states',
+    reads: { orchestration_v2_projection_runs: ['thread_id', 'status', 'ordinal'] },
+    select: `(SELECT r.status FROM orchestration_v2_projection_runs r WHERE r.thread_id = t.thread_id
       ORDER BY r.status IN ('running', 'waiting', 'starting', 'preparing', 'queued') DESC, r.ordinal DESC
-      LIMIT 1) AS run,
-    (SELECT count(*) FROM projection_pending_approvals a
-      WHERE a.thread_id = t.thread_id AND a.status = 'pending') AS approvals,
+      LIMIT 1) AS run`,
+    fields: ['run'],
+  },
+  // Approvals and input cards are both runtime requests. T3's sidebar says "Pending Approval" for a pending request of
+  // any kind but user_input and auth_refresh (command, file-read, file-change, mcp-elicitation, permission), and
+  // "Awaiting Input" for a pending user_input. An auth_refresh is T3's own and asks nothing of the owner.
+  {
+    what: 'approvals and input cards',
+    reads: { orchestration_v2_projection_runtime_requests: ['thread_id', 'kind', 'status', 'created_at'] },
+    select: `(SELECT count(*) FROM orchestration_v2_projection_runtime_requests q
+      WHERE q.thread_id = t.thread_id AND q.status = 'pending' AND q.kind NOT IN ('user_input', 'auth_refresh')) AS approvals,
     (SELECT count(*) FROM orchestration_v2_projection_runtime_requests q
-      WHERE q.thread_id = t.thread_id AND q.resolved_at IS NULL AND q.status NOT IN ('resolved', 'cancelled')) AS inputs,
+      WHERE q.thread_id = t.thread_id AND q.status = 'pending' AND q.kind = 'user_input') AS inputs,
     (SELECT min(q.created_at) FROM orchestration_v2_projection_runtime_requests q
-      WHERE q.thread_id = t.thread_id AND q.resolved_at IS NULL AND q.status NOT IN ('resolved', 'cancelled')) AS askedAt,
-    pt.provider AS provider,
-    json_extract(pt.payload_json, '$.nativeThreadRef.nativeId') AS sessionId,
+      WHERE q.thread_id = t.thread_id AND q.status = 'pending' AND q.kind != 'auth_refresh') AS askedAt`,
+    fields: ['approvals', 'inputs', 'askedAt'],
+  },
+  {
+    what: 'project names',
+    reads: { orchestration_v2_projection_threads: ['project_id'], projection_projects: ['project_id', 'title'] },
+    select: 'p.title AS project',
+    join: 'LEFT JOIN projection_projects p ON p.project_id = t.project_id',
+    fields: ['project'],
+  },
+  // Context comes from the thread's active provider thread, which T3 updates per turn.
+  {
+    what: 'context and session ids',
+    reads: {
+      orchestration_v2_projection_threads: ['active_provider_thread_id'],
+      orchestration_v2_projection_provider_threads: ['provider_thread_id', 'payload_json'],
+    },
+    select: `json_extract(pt.payload_json, '$.nativeThreadRef.nativeId') AS sessionId,
     json_extract(pt.payload_json, '$.contextUsage.usedTokens') AS contextUsed,
-    json_extract(pt.payload_json, '$.contextUsage.maxTokens') AS contextMax
-  FROM orchestration_v2_projection_threads t
-  LEFT JOIN projection_projects p ON p.project_id = t.project_id
-  LEFT JOIN orchestration_v2_projection_provider_threads pt ON pt.provider_thread_id = t.active_provider_thread_id
-  WHERE t.deleted_at IS NULL AND t.archived_at IS NULL AND json_extract(t.payload_json, '$.settledAt') IS NULL
-  ORDER BY t.updated_at DESC`;
+    json_extract(pt.payload_json, '$.contextUsage.maxTokens') AS contextMax`,
+    join: 'LEFT JOIN orchestration_v2_projection_provider_threads pt ON pt.provider_thread_id = t.active_provider_thread_id',
+    fields: ['sessionId', 'contextUsed', 'contextMax'],
+  },
+];
 
+// What `reads` needs that the database lacks, as "no table x" or "no column x.y, x.z"; null when all of it is there.
+function lacking(db, reads) {
+  const gone = [];
+  for (const [table, columns] of Object.entries(reads)) {
+    const have = new Set(db.prepare('SELECT name FROM pragma_table_info(?)').all(table).map((c) => c.name));
+    if (!have.size) gone.push(`no table ${table}`);
+    else {
+      const missing = columns.filter((c) => !have.has(c));
+      if (missing.length) gone.push(`no column ${missing.map((c) => `${table}.${c}`).join(', ')}`);
+    }
+  }
+  return gone.length ? gone.join('; ') : null;
+}
+
+// rows: the open threads, or null when there is no thread list. unavailable: one line per part of the page T3 no longer
+// gives the board, with why.
 export function readThreads(dbPath) {
-  const db = new DatabaseSync(dbPath, { readOnly: true });
+  let db;
   try {
-    return db.prepare(THREADS_SQL).all();
+    db = new DatabaseSync(dbPath, { readOnly: true });
+    const missing = lacking(db, THREADS);
+    if (missing) return { rows: null, unavailable: [`T3 threads unavailable: ${missing}`] };
+    const unavailable = [];
+    const parts = PARTS.map((part) => {
+      const why = lacking(db, part.reads);
+      if (why) unavailable.push(`${part.what} unavailable: ${why}`);
+      return why ? { select: part.fields.map((f) => `NULL AS ${f}`).join(', '), join: '' } : part;
+    });
+    const rows = db.prepare(`
+      SELECT t.thread_id AS id, t.title, t.updated_at AS updatedAt,
+        json_extract(t.payload_json, '$.branch') AS branch,
+        json_extract(t.payload_json, '$.modelSelection.model') AS model,
+        json_extract(t.payload_json, '$.lineage.parentThreadId') AS parentId,
+        ${parts.map((p) => p.select).join(',\n    ')}
+      FROM orchestration_v2_projection_threads t
+      ${parts.map((p) => p.join ?? '').join('\n  ')}
+      WHERE t.deleted_at IS NULL AND t.archived_at IS NULL AND json_extract(t.payload_json, '$.settledAt') IS NULL
+      ORDER BY t.updated_at DESC`).all();
+    return { rows, unavailable };
+  } catch (error) {
+    return { rows: null, unavailable: [`T3 threads unavailable: ${error.message}`] };
   } finally {
-    db.close();
+    db?.close();
   }
 }
 
@@ -142,7 +204,8 @@ export function readUpdates(script = AUTOUPDATE) {
 
 // autoupdate: null skips the updater, which only the thread page shows. prs: where PR state comes from (the gh cache).
 export function snapshot({ dbPath = T3_DB, logsDir = CLAUDE_PROJECTS, lanesDir = LANES, now = Date.now(), autoupdate = AUTOUPDATE, prs = cachedPrs } = {}) {
-  const rows = readThreads(dbPath);
+  const { rows: read, unavailable } = readThreads(dbPath);
+  const rows = read ?? [];
   const logs = indexLogs(logsDir);
   const titles = new Map(rows.map((r) => [r.id, r.title]));
   const threads = rows.map((r) => {
@@ -161,6 +224,8 @@ export function snapshot({ dbPath = T3_DB, logsDir = CLAUDE_PROJECTS, lanesDir =
       parentTitle: r.parentId ? titles.get(r.parentId) ?? 'closed thread' : null,
       run: r.run,
       state,
+      approvals: r.approvals,
+      inputs: r.inputs,
       ask: r.inputs > 0 ? 'input card' : r.approvals > 0 ? 'approval' : r.run === 'waiting' ? 'waiting' : null,
       askedAt: r.askedAt ? Date.parse(r.askedAt) : null,
       tool: state === 'running' ? log?.tool ?? null : null,
@@ -174,6 +239,8 @@ export function snapshot({ dbPath = T3_DB, logsDir = CLAUDE_PROJECTS, lanesDir =
   const shown = threads.filter((t) => !t.parentTitle || t.state !== 'idle');
   return {
     now,
+    // threads: false when there is no thread list, so a page never reads "no threads" or "no owner thread" into it.
+    t3: { threads: read !== null, unavailable },
     updates: autoupdate === null ? null : readUpdates(autoupdate),
     needs: shown.filter((t) => t.state === 'needs'),
     running: shown.filter((t) => t.state === 'running'),
@@ -755,6 +822,16 @@ function card(t, now) {
     + `<div class="sub"><span class="state ${tone}">${escape(label)}</span>${meta ? ` · ${meta}` : ''}</div>${bar}</div>`;
 }
 
+// What T3 no longer gives the board, above everything it does: Needs you may be short while approvals are unavailable,
+// so a gap counts as one item for the owner, as an updater alarm does.
+const t3Gaps = (snap) => (snap.t3.unavailable.length ? 1 : 0);
+function t3Section(snap) {
+  if (!t3Gaps(snap)) return '';
+  return '<h2 class="attn">T3 state</h2><div class="t needs"><div class="name">Part of T3 state is unavailable</div>'
+    + snap.t3.unavailable.map((line) => `<div class="line red">${escape(line)}</div>`).join('')
+    + '<div class="line">If T3 just updated, its database schema may have changed; update files/bin/agent-board.mjs.</div></div>';
+}
+
 // Alarms go above the threads with the needs-you colours; a healthy updater is one quiet card below them.
 function updatesSection(u) {
   const lines = [...u.alarms.map((t) => ['red', t]), ...u.infos.map((t) => ['', t]), ...u.oks.map((t) => ['muted', t])];
@@ -871,8 +948,9 @@ export function render(snap) {
     + section('Running', snap.running) + section('Idle', snap.idle, '', IDLE_SHOWN);
   const alarmed = snap.updates.alarms.length > 0;
   const updates = updatesSection(snap.updates);
-  return page('agent board', needs.length + (alarmed ? 1 : 0), `${pageHeader('threads', snap.now)}
-${alarmed ? updates : ''}${threads || '<p class="more">No open T3 threads.</p>'}${alarmed ? '' : updates}
+  const none = snap.t3.threads ? '<p class="more">No open T3 threads.</p>' : '';
+  return page('agent board', needs.length + (alarmed ? 1 : 0) + t3Gaps(snap), `${pageHeader('threads', snap.now)}
+${alarmed ? updates : ''}${t3Section(snap)}${threads || none}${alarmed ? '' : updates}
 <footer>Read-only view of T3 state. Nothing here can change an agent.</footer>`);
 }
 
@@ -902,6 +980,7 @@ function ownerLine(u, snap) {
   if (!u.owner) return u.state === 'needs-myuser' ? [] : ['unassigned'];
   const t = snap.threads.get(u.owner);
   if (t) return [escape(t.title), live(t, snap.now)];
+  if (!snap.t3.threads && THREAD_ID.test(u.owner)) return [tone('yellow', 'owner state unavailable')];
   // A settled, archived or deleted owner reads the same as a wrong id: nobody holds the unit.
   return THREAD_ID.test(u.owner) ? [tone('peach', 'no owner thread')] : [escape(u.owner)];
 }
@@ -1045,7 +1124,7 @@ function laneSection(lane, snap) {
   if (Number.isFinite(lane.priority)) head.push(`priority ${lane.priority}`);
   const t = lane.head ? snap.threads.get(lane.head) : null;
   if (!lane.head) head.push('no coordinator');
-  else if (!t) head.push(tone('peach', `no ${lane.headRole} thread`));
+  else if (!t) head.push(snap.t3.threads ? tone('peach', `no ${lane.headRole} thread`) : tone('yellow', `${lane.headRole} state unavailable`));
   else head.push(`${escape(t.title)} <span class="kept">${live(t, snap.now, true)}</span>`);
   // Short time phrases are kept on one line, so "ago" never wraps alone.
   if (lane.updatedAt) {
@@ -1116,17 +1195,27 @@ export function renderMap(snap) {
   else if (!lanes.length) body = `<p class="more">No lanes in ${escape(tilde(dir))}</p>`;
   else body = columns(lanes.map((lane) => laneSection(lane, snap)), lanes);
   const issues = (lanes ?? []).map(laneIssues).join('');
-  return page('project map', needs.length, `${pageHeader('map', snap.now)}
-${needs.length ? `<h2 class="attn">Needs you · ${needs.length}</h2>${needs.map((item) => needsRow(item, snap)).join('')}` : ''}
+  return page('project map', needs.length + t3Gaps(snap), `${pageHeader('map', snap.now)}
+${t3Section(snap)}${needs.length ? `<h2 class="attn">Needs you · ${needs.length}</h2>${needs.map((item) => needsRow(item, snap)).join('')}` : ''}
 ${body}
 <footer>Read-only view of ${escape(tilde(path.dirname(dir)))} lanes and T3 state.${issues}</footer>`, true);
 }
 
+// The board refreshes every few seconds on every open phone, so a problem is logged when it starts or changes, and once
+// when it clears, never per request.
+const logged = new Map();
+function logChange(what, problem, cleared) {
+  if (problem === (logged.get(what) ?? '')) return;
+  console.error(`agent-board: ${problem || cleared}`);
+  logged.set(what, problem);
+}
+
+// Only a bug in the board itself gets here; a T3 schema change shows on the page instead (readThreads).
 function errorPage(message) {
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <meta http-equiv="refresh" content="${REFRESH_S}"><title>agent board error</title><style>${STYLE}</style></head><body><main>
-<header><h1>agent board</h1></header><div class="t needs"><div class="name">Could not read T3 state</div>
-<div class="sub">${escape(message)}</div><div class="sub">If T3 just updated, its database schema may have changed; update files/bin/agent-board.mjs.</div></div>
+<header><h1>agent board</h1></header><div class="t needs"><div class="name">Could not render the board</div>
+<div class="sub">${escape(message)}</div><div class="sub">See ~/Library/Logs/agent-board.log and fix files/bin/agent-board.mjs.</div></div>
 </main></body></html>`;
 }
 
@@ -1223,11 +1312,14 @@ function handle(req, res) {
     let status = 200;
     let html;
     try {
-      html = route === 'map' ? renderMap(snapshot({ autoupdate: null })) : render(snapshot());
+      const snap = route === 'map' ? snapshot({ autoupdate: null }) : snapshot();
+      logChange('t3', snap.t3.unavailable.join('; '), 'T3 state readable again');
+      html = route === 'map' ? renderMap(snap) : render(snap);
+      logChange('page', '', 'pages render again');
     } catch (error) {
       status = 500;
       html = errorPage(error.message);
-      console.error(`agent-board: ${error.message}`);
+      logChange('page', error.message);
     }
     res.writeHead(status, { ...HEADERS, 'content-type': 'text/html; charset=utf-8' }).end(req.method === 'HEAD' ? undefined : html);
   }

@@ -28,7 +28,6 @@ export function seed(dir, now = Date.now()) {
       active_provider_thread_id TEXT, updated_at TEXT, archived_at TEXT, deleted_at TEXT, payload_json TEXT);
     CREATE TABLE projection_projects (project_id TEXT, title TEXT);
     CREATE TABLE orchestration_v2_projection_runs (thread_id TEXT, ordinal INTEGER, status TEXT);
-    CREATE TABLE projection_pending_approvals (thread_id TEXT, status TEXT);
     CREATE TABLE orchestration_v2_projection_runtime_requests (thread_id TEXT, kind TEXT, status TEXT,
       created_at TEXT, resolved_at TEXT);
     CREATE TABLE orchestration_v2_projection_provider_threads (provider_thread_id TEXT, provider TEXT, payload_json TEXT);
@@ -57,7 +56,7 @@ export function seed(dir, now = Date.now()) {
     payload: { branch: 'feat/lane-wait', modelSelection: { model: 'claude-fable-5-1' } } });
   db.prepare("INSERT INTO orchestration_v2_projection_runtime_requests VALUES ('mcp:fx-design', 'user_input', 'pending', ?, NULL)").run(iso(12));
   thread('mcp:fx-release', { title: 'Release check (fixture)', project: 'jt', minutes: 4, run: 'running', context: ctx(64_000), payload: opus });
-  db.prepare("INSERT INTO projection_pending_approvals VALUES ('mcp:fx-release', 'pending')").run();
+  db.prepare("INSERT INTO orchestration_v2_projection_runtime_requests VALUES ('mcp:fx-release', 'command', 'pending', ?, NULL)").run(iso(4));
   // Running: busy, near the pause line, past it, quiet for 14 minutes, and a delegated child.
   thread('mcp:fx-coord', { title: MARKERS.thread, minutes: 1, run: 'running', context: ctx(96_000),
     payload: { branch: 'chore/pstack', ...opus }, log: { tool: 'Bash', minutes: 0.3 } });

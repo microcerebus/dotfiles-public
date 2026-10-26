@@ -3,7 +3,8 @@
 // run's and healthy, and stop it, keeping the evidence. It never touches the live board (launchd com.myuser.agent-board
 // on port 4790, shared by every agent and the owner): it refuses that port, and it signals only processes it started.
 //
-//   board.mjs launch [--fixture | --lanes-copy] [--publish] [--ttl <min>]   start a run (live data read-only by default)
+//   board.mjs launch [--fixture | --lanes-copy] [--t3-db <copy>] [--publish] [--ttl <min>]
+//                                                                   start a run (live data read-only by default)
 //   board.mjs doctor [<run-id> | --port <n>]                        is this instance ours and worth driving?
 //   board.mjs env [<run-id>]                                        shell exports: eval "$(board.mjs env)"
 //   board.mjs stop [<run-id>]                                       stop this checkout's runs; evidence stays
@@ -107,7 +108,7 @@ async function pagesReady(run) {
   const map = await get(`${base}/map`);
   const problems = [];
   if (threads.status !== 200 || !/<title>(\(\d+\) )?agent board<\/title>/.test(threads.text)) {
-    problems.push(`/ answered ${threads.status || threads.text}${/Could not read T3 state/.test(threads.text) ? ' (the T3 error page)' : ''}`);
+    problems.push(`/ answered ${threads.status || threads.text}${/Could not render the board/.test(threads.text) ? ' (the board error page)' : ''}`);
   }
   if (map.status !== 200 || !/<title>(\(\d+\) )?project map<\/title>/.test(map.text)) problems.push(`/map answered ${map.status || map.text}`);
   if (run.mode === 'fixture' && !problems.length) {
@@ -204,9 +205,14 @@ async function launch(args) {
   const fixture = args.includes('--fixture');
   const lanesCopy = args.includes('--lanes-copy');
   const publish = args.includes('--publish');
+  const dbAt = args.indexOf('--t3-db');
+  const t3Db = dbAt >= 0 ? path.resolve(args[dbAt + 1] ?? '') : null;
   const ttlAt = args.indexOf('--ttl');
   const ttl = ttlAt >= 0 ? Number(args[ttlAt + 1]) : 60;
   if (fixture && lanesCopy) die('--fixture already seeds its own lanes; pick one');
+  if (fixture && t3Db) die('--fixture already seeds its own T3 database; pick one');
+  // A copy of the T3 database, so a check against T3's real schema can run while T3 writes the live one.
+  if (t3Db && !fs.statSync(t3Db, { throwIfNoEntry: false })?.isFile()) die(`--t3-db: ${t3Db} is not a file`);
   if (lanesCopy && !fs.statSync(LIVE_DATA.AGENT_BOARD_LANES, { throwIfNoEntry: false })?.isDirectory()) {
     die(`--lanes-copy: ${LIVE_DATA.AGENT_BOARD_LANES} is missing or not a directory; nothing to copy`);
   }
@@ -234,6 +240,7 @@ async function launch(args) {
     lanesLeft = copyResolved(LIVE_DATA.AGENT_BOARD_LANES, env.AGENT_BOARD_LANES);
     files = { lanes: env.AGENT_BOARD_LANES };
   }
+  if (t3Db) env.AGENT_BOARD_T3_DB = t3Db;
   env.AGENT_BOARD_PORT = String(port);
   if (publish) Object.assign(env, { AGENT_BOARD_PUBLISH: '1', AGENT_BOARD_TAILSCALE: TAILSCALE });
   const head = git(CHECKOUT, 'rev-parse', '--short', 'HEAD').stdout?.trim() || null;
@@ -277,6 +284,7 @@ async function launch(args) {
   }
   const done = readRun(dir);
   console.log(`launched ${runId} (${done.mode} data${done.mode === 'live' ? ', read-only' : ''}), stops itself at ${new Date(done.expiresAt).toLocaleTimeString('en-GB', { timeZone: 'Asia/Singapore' })} SGT`);
+  if (t3Db) console.log(`T3 database read from the copy ${t3Db}`);
   if (lanesLeft.length) console.log(`left out of the lanes copy: ${lanesLeft.map(([p, why]) => `${p} (${why})`).join(', ')}`);
   console.log(`  board     ${done.urls.local}/  and  ${done.urls.local}/map`);
   if (done.urls.phone) console.log(`  phone     ${done.urls.phone}/map`);

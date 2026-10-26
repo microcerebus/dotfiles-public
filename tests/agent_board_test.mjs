@@ -1,5 +1,6 @@
 // Run: node --test tests/agent_board_test.mjs
 // Builds a fixture copy of the T3 tables the board reads, plus Claude logs, and checks what the board shows.
+// The tables follow T3's current schema, so a fixture with no projection_pending_approvals is the normal case.
 import { execFileSync, spawn } from 'node:child_process';
 import { once } from 'node:events';
 import net from 'node:net';
@@ -32,7 +33,6 @@ function fixture() {
       active_provider_thread_id TEXT, updated_at TEXT, archived_at TEXT, deleted_at TEXT, payload_json TEXT);
     CREATE TABLE projection_projects (project_id TEXT, title TEXT);
     CREATE TABLE orchestration_v2_projection_runs (thread_id TEXT, ordinal INTEGER, status TEXT);
-    CREATE TABLE projection_pending_approvals (thread_id TEXT, status TEXT);
     CREATE TABLE orchestration_v2_projection_runtime_requests (thread_id TEXT, kind TEXT, status TEXT,
       created_at TEXT, resolved_at TEXT);
     CREATE TABLE orchestration_v2_projection_provider_threads (provider_thread_id TEXT, provider TEXT, payload_json TEXT);
@@ -500,29 +500,115 @@ test('since reads HH:MM as today in SGT, or yesterday when that is still ahead',
   assert.equal(parseSince('', NOW), null);
 });
 
-test('serves /map, and both pages show the T3 error page when its database is unreadable', async () => {
-  const probe = net.createServer().listen(0, '127.0.0.1');
-  await once(probe, 'listening');
-  const port = probe.address().port;
-  probe.close();
+test('serves /map, and both pages still render, with T3 threads unavailable, when its database is unreadable', async () => {
   const { lanesDir } = lanesFixture();
-  const serve = (db) => spawn(process.execPath, ['--no-warnings', fileURLToPath(BOARD)], {
-    env: { ...process.env, AGENT_BOARD_PORT: String(port), AGENT_BOARD_PUBLISH: '0', AGENT_BOARD_T3_DB: db, AGENT_BOARD_LANES: lanesDir }, stdio: ['ignore', 'pipe', 'ignore'],
-  });
-  const board = serve(path.join(lanesDir, 'missing.sqlite'));
+  const run = await startBoard({ env: { AGENT_BOARD_T3_DB: path.join(lanesDir, 'missing.sqlite'), AGENT_BOARD_LANES: lanesDir } });
   try {
-    let out = '';
-    board.stdout.on('data', (chunk) => { out += chunk; });
-    while (!out.includes(`listening on 127.0.0.1:${port}`)) await new Promise((resolve) => setTimeout(resolve, 50));
     for (const route of ['/', '/map', '/map?x=1']) {
-      const res = await fetch(`http://127.0.0.1:${port}${route}`);
-      assert.equal(res.status, 500, route);
-      assert.match(await res.text(), /Could not read T3 state/);
+      const res = await fetch(`http://127.0.0.1:${run.port}${route}`);
+      assert.equal(res.status, 200, route);
+      const html = await res.text();
+      assert.match(html, /T3 threads unavailable: unable to open database file/, route);
+      assert.doesNotMatch(html, /No open T3 threads/, route); // there may be some; the board cannot tell
     }
-    assert.equal((await fetch(`http://127.0.0.1:${port}/mapx`)).status, 404);
+    assert.match(await (await fetch(`http://127.0.0.1:${run.port}/map`)).text(), /<b>alpha<\/b>/); // the lanes still render
+    assert.equal((await fetch(`http://127.0.0.1:${run.port}/mapx`)).status, 404);
+    assert.equal(lines(run.log(), /T3 threads unavailable/), 1); // logged once, not on every request
   } finally {
-    board.kill();
+    run.stop();
   }
+});
+
+// ---- T3 schema changes: what T3 Code dropped or renamed must not take the page down ----
+
+// Runs SQL against a fixture database, as a T3 migration would.
+const alter = (f, sql) => {
+  const db = new DatabaseSync(f.dbPath);
+  db.exec(sql);
+  db.close();
+  return f;
+};
+
+// T3 Code's migration 063 (DropUnusedV1Projections) dropped projection_pending_approvals. Approvals now live with input
+// cards in orchestration_v2_projection_runtime_requests: T3's sidebar shows "Pending Approval" for a pending request of
+// any kind but user_input and auth_refresh, and "Awaiting Input" for a pending user_input.
+test('serves both pages when T3 no longer has projection_pending_approvals', async () => {
+  const run = await startBoard();
+  try {
+    for (const route of ['/', '/map']) {
+      const res = await fetch(`http://127.0.0.1:${run.port}${route}`);
+      assert.equal(res.status, 200, route);
+      assert.match(await res.text(), /input card/, route);
+    }
+    assert.doesNotMatch(run.log(), /no such table/);
+  } finally {
+    run.stop();
+  }
+});
+
+test('counts approvals and input cards from T3 runtime requests, each pending request once', () => {
+  const f = alter(fixture(), `INSERT INTO orchestration_v2_projection_runtime_requests VALUES
+      ('B', 'command', 'pending', '${iso(5)}', NULL),
+      ('C', 'command', 'pending', '${iso(4)}', NULL),
+      ('C', 'file-change', 'pending', '${iso(3)}', NULL),
+      ('C', 'command', 'resolved', '${iso(9)}', '${iso(8)}'),
+      ('D', 'command', 'expired', '${iso(20)}', '${iso(10)}'),
+      ('D', 'user_input', 'cancelled', '${iso(20)}', '${iso(10)}'),
+      ('D', 'auth_refresh', 'pending', '${iso(2)}', NULL);`);
+  const s = snapshot({ ...f, now: NOW });
+  const counts = (t) => [t.id, t.ask, t.approvals, t.inputs, t.askedAt];
+  assert.deepEqual(s.needs.map(counts), [
+    ['B', 'input card', 1, 1, NOW - 6 * 60_000], // an input card and an approval: the card is the ask, nothing doubles
+    ['C', 'approval', 2, 0, NOW - 4 * 60_000],
+  ]);
+  assert.deepEqual(s.running.map((t) => t.id), ['A', 'E', 'D']); // expired, cancelled and auth_refresh ask nothing of the owner
+  assert.deepEqual(s.t3.unavailable, []);
+  assert.match(render(s), /<title>\(2\) agent board<\/title>/);
+  assert.match(render(s), /approval 4 min/);
+});
+
+test('a T3 table or column the board reads that is gone leaves only that part unavailable', () => {
+  const page = (sql) => {
+    const s = snapshot({ ...alter(fixture(), sql), now: NOW });
+    return { s, html: render(s) };
+  };
+
+  // No runtime requests: nobody shows as waiting on an input card, and the page says why Needs you may be short.
+  let { s, html } = page('DROP TABLE orchestration_v2_projection_runtime_requests');
+  assert.deepEqual(s.t3.unavailable, ['approvals and input cards unavailable: no table orchestration_v2_projection_runtime_requests']);
+  assert.deepEqual(s.needs.map((t) => t.id), []);
+  assert.deepEqual(s.running.map((t) => t.id), ['A', 'E', 'B', 'D']);
+  assert.match(html, /approvals and input cards unavailable: no table orchestration_v2_projection_runtime_requests/);
+  assert.match(html, /<title>\(1\) agent board<\/title>/); // the gap itself is the owner's to know about
+  assert.match(html, /Bash 30s<\/span> · 210k \/ 1M · Opus 5\.5 · job-tracker · ui-polish/);
+
+  // A missing column is reported with its table, and the other parts still read.
+  ({ s, html } = page('ALTER TABLE orchestration_v2_projection_provider_threads DROP COLUMN payload_json'));
+  assert.deepEqual(s.t3.unavailable, ['context and session ids unavailable: no column orchestration_v2_projection_provider_threads.payload_json']);
+  assert.equal(s.running[0].contextUsed, null); // A's context came from T3, and its log is not found without the session id
+  assert.equal(s.needs[0].ask, 'input card');
+  assert.match(html, /job-tracker · ui-polish/);
+
+  ({ s, html } = page('DROP TABLE projection_projects'));
+  assert.deepEqual(s.t3.unavailable, ['project names unavailable: no table projection_projects']);
+  assert.equal(s.running[0].project, null);
+  assert.match(html, /Bash 30s<\/span> · 210k \/ 1M · Opus 5\.5 · ui-polish/);
+
+  // Without the thread table there is no thread list, but the updater and the map still render.
+  ({ s, html } = page('DROP TABLE orchestration_v2_projection_threads'));
+  assert.deepEqual(s.t3.unavailable, ['T3 threads unavailable: no table orchestration_v2_projection_threads']);
+  assert.match(html, /T3 threads unavailable/);
+  assert.match(html, /dotfiles auto-update/);
+  assert.doesNotMatch(html, /No open T3 threads/);
+});
+
+test('map: with T3 threads unavailable, owners and coordinators say so rather than "no owner thread"', () => {
+  const f = alter(lanesFixture(), 'DROP TABLE orchestration_v2_projection_threads');
+  const html = renderMap(snapshot({ ...f, now: NOW }));
+  assert.match(html, /T3 threads unavailable: no table orchestration_v2_projection_threads/);
+  assert.match(unitRowOf(html, 'ui'), /owner state unavailable/);
+  assert.doesNotMatch(html, /no (?:owner|coordinator|orchestrator) thread/);
+  assert.match(html, /<b>alpha<\/b>/);
 });
 
 test('map: an owner given as a bare uuid resolves to its thread; an unknown one has no owner thread', () => {
