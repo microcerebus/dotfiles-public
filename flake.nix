@@ -54,11 +54,13 @@
       # ─────────────────────────────────────────────────────────────────────
     in
     {
+      # Convenience: `nix build .#darwinConfigurations.<hostname>.system --dry-run`
       darwinConfigurations.${hostname} = nix-darwin.lib.darwinSystem {
         inherit system;
         specialArgs = { inherit inputs username hostname; };
         modules = [
           ./nix/host.nix
+          ./nix/activation-sudo.nix
           ./nix/github-runner.nix
           ./nix/wake-schedule.nix
           # The commit each generation was built from ("<sha>-dirty" with
@@ -78,6 +80,15 @@
         ];
       };
 
-      # Convenience: `nix build .#darwinConfigurations.<hostname>.system --dry-run`
+      # Pure-eval table test for the activation sudo guard; it builds one
+      # empty file, so it adds nothing to the system build.
+      checks.${system}.activation-sudo-lint =
+        let
+          failures = import ./tests/activation_sudo_lint_test.nix { inherit (nixpkgs) lib; };
+          pkgs = self.darwinConfigurations.${hostname}.pkgs;
+        in
+        if failures == [ ] then pkgs.runCommandLocal "activation-sudo-lint" { } "touch $out"
+        else throw ("tests/activation_sudo_lint_test.nix failed:\n"
+          + nixpkgs.lib.concatMapStrings (f: "  - ${f}\n") failures);
     };
 }
