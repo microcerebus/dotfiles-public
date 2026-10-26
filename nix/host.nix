@@ -212,6 +212,25 @@
     };
   };
 
+  # ── Application firewall ─────────────────────────────────────────────────
+  # Stealth mode stops answers to ping and to closed ports. Signed software
+  # keeps inbound: Apple's (sshd for Termius, rapportd, AirPlay) and
+  # Developer ID apps (Tailscale's serve listener, Sill). blockAllIncoming
+  # would cut sshd and tailscale serve. Nothing ad-hoc signed may need
+  # inbound: the agent board and packs listen on loopback and are published
+  # by `tailscale serve`, because a firewall rule for a nix-store node would
+  # break on every nodejs bump. The firewall does not limit sshd, AirPlay
+  # or rapportd to the tailnet; that needs a pf anchor (security audit M1).
+  # Check after a switch: /usr/libexec/ApplicationFirewall/socketfilterfw
+  # --getglobalstate --getstealthmode (2026-10-26).
+  networking.applicationFirewall = {
+    enable = true;
+    enableStealthMode = true;
+    allowSigned = true;
+    allowSignedApp = true;
+    blockAllIncoming = false;
+  };
+
   # Zap guard: dropping a cask lets cleanup=zap run its zap stanza. Two
   # dropped casks would destroy live data: claude-code's zap trashes
   # ~/.claude.json* and the native ~/.local/{bin,share}/claude install;

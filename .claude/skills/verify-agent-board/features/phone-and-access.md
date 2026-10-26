@@ -8,8 +8,12 @@ On a narrow screen the clock hides, long titles stop at two lines, and the map i
 - `phone-threads` fits `/` in 390 pixels: no horizontal scroll, the header clock hidden, long titles clamped to two lines and long branch names cut with an ellipsis.
 - `phone-map` makes `/map` one column under 900 pixels, with unit details wrapping to at most two lines.
 - `desktop-map` puts `/map` in two columns at 900 pixels and wider.
-- `phone-tailnet` serves the same pages at this Mac's MagicDNS name on the run's port, from any device on the tailnet.
-- `access-host` answers `403 Host not allowed.` to any Host other than loopback, the tailnet address or this Mac's MagicDNS names on the run's port.
+- `phone-tailnet` serves the same pages at this Mac's MagicDNS name on the run's port, from any device on the tailnet, through `tailscale serve`.
+  It is plain http on purpose (orchestrator 61, 26 Oct): WireGuard already encrypts tailnet traffic, and keeping the owner's `http://<mac>.<tailnet>.ts.net:4790` bookmark working matters more than https.
+  The board checks its handler every 60 s and sets it again if it is gone.
+- `bind-loopback` listens on 127.0.0.1 only: `board.mjs doctor` prints `ok   bind: ... loopback only`, and its `magicdns host` line shows a request with the MagicDNS Host and port answered 200.
+- `access-host` answers `403 Host not allowed.` to any Host other than loopback or this Mac's MagicDNS names on the run's port.
+  A tailnet-IP URL gets a 404 from tailscale serve itself, before the board sees it.
 - `access-read-only` answers `405 Read-only.` to anything but GET and HEAD, and `404 Not found.` to any other path.
 
 ## How to get to it (user POV)
@@ -24,7 +28,7 @@ Use a written Playwright flow first; otherwise Codex follows the actions and exp
 
 Preconditions:
 
-- A fixture run, and Tailscale up for the tailnet steps: `$BOARD_PHONE_URL` is not empty.
+- A fixture run launched with `--publish`, and Tailscale up for the tailnet steps: `$BOARD_PHONE_URL` is not empty.
 - The fixture's long-titled idle thread starts `A deliberately long fixture thread title`.
 
 - **Phone threads.** Open the phone URL in a phone-sized tab. Run `chrome-devtools-axi open "$BOARD_PHONE_URL/"` and `chrome-devtools-axi emulate --viewport "390x844x3,mobile,touch"`. The page loads under the MagicDNS name, not 127.0.0.1.
@@ -39,6 +43,7 @@ Preconditions:
 
 - `emulate --viewport` sets the size for one tab only; never `resize`, which reshapes the one Chrome window every agent shares and is floored at 500 pixels by macOS.
 - An emulated phone in desktop Chrome is close to the owner's phone, not the same: fonts fall back when JetBrains Mono is not installed on the device, and Safari's line clamping can differ. When a layout fix depends on the real phone, ask the owner to open `$BOARD_PHONE_URL/map` and say so in the report.
-- The run binds the tailnet address on its spare port, the same exposure as the live board on 4790; stopping the run closes it.
-- Without Tailscale, launch prints no phone URL; check the layout on `$BOARD_URL` and report `phone-tailnet` as not verified.
+- The run listens on loopback only; with `--publish`, tailscale serve carries its spare port to the tailnet, the same exposure as the live board on 4790, and stopping the run removes that handler.
+  Check `tailscale serve status` after the run stops: a handler left on the run's port (a keeper killed with SIGKILL) goes with `tailscale serve --http=<port> off`, never touching 443 or 4790.
+- Without `--publish` or without Tailscale, launch prints no phone URL; check the layout on `$BOARD_URL` and report `phone-tailnet` as not verified.
 - The Host check compares the port too, so a request to the right name on the wrong port is refused; that is expected, not a bug.

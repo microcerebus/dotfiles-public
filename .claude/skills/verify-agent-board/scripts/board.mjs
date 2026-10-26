@@ -3,7 +3,7 @@
 // run's and healthy, and stop it, keeping the evidence. It never touches the live board (launchd com.myuser.agent-board
 // on port 4790, shared by every agent and the owner): it refuses that port, and it signals only processes it started.
 //
-//   board.mjs launch [--fixture | --lanes-copy] [--ttl <minutes>]   start a run (live data read-only by default)
+//   board.mjs launch [--fixture | --lanes-copy] [--publish] [--ttl <min>]   start a run (live data read-only by default)
 //   board.mjs doctor [<run-id> | --port <n>]                        is this instance ours and worth driving?
 //   board.mjs env [<run-id>]                                        shell exports: eval "$(board.mjs env)"
 //   board.mjs stop [<run-id>]                                       stop this checkout's runs; evidence stays
@@ -12,9 +12,12 @@
 // Each run lives in $VERIFY_AGENT_BOARD_STATE/<run-id>/ (default ~/.local/state/verify-agent-board): run.json,
 // board.log, evidence/ (kept) and scratch/ (fixture data or the lanes copy, removed when the run stops). A detached
 // keeper process owns the board: it restarts it when the board exits 0 after a source change, as launchd does for the
-// live board, and stops it when the TTL runs out or `stop` signals it.
+// live board, and stops it when the TTL runs out or `stop` signals it. A run is on loopback only, like the live board;
+// --publish has the board publish itself with `tailscale serve --http=<port>`, as the live board does on 4790, so a
+// phone reaches it by MagicDNS name, and the run removes that handler when it stops.
 import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
+import http from 'node:http';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
@@ -27,6 +30,8 @@ const SELF = fileURLToPath(import.meta.url);
 const CHECKOUT = path.resolve(path.dirname(SELF), '../../../..');
 const BOARD = path.join(CHECKOUT, 'files/bin/agent-board.mjs');
 const STATE = process.env.VERIFY_AGENT_BOARD_STATE ?? path.join(os.homedir(), '.local/state/verify-agent-board');
+// Tests point this at a stub, so they never change the tailnet's serve config.
+const TAILSCALE = process.env.VERIFY_AGENT_BOARD_TAILSCALE ?? '/usr/local/bin/tailscale';
 // The agent Chrome gate; tests point it at a dead port with scripts/agent-chrome-session's test variable.
 const AGENT_CHROME_GATE = process.env.AGENT_CHROME_SESSION_TEST_GATE_URL || 'http://127.0.0.1:9333';
 const LIVE_DATA = {
@@ -113,8 +118,34 @@ async function pagesReady(run) {
 }
 
 function magicDns() {
-  const run = spawnSync('tailscale', ['status', '--json', '--peers=false'], { encoding: 'utf8', timeout: 3000 });
-  try { return JSON.parse(run.stdout).Self.DNSName.replace(/\.$/, '') || null; } catch { return null; }
+  const run = spawnSync(TAILSCALE, ['status', '--json', '--peers=false'], { encoding: 'utf8', timeout: 3000 });
+  try { return JSON.parse(run.stdout).Self.DNSName.replace(/\.$/, '').toLowerCase() || null; } catch { return null; }
+}
+
+// The board's own listening addresses, from its pid: only ever 127.0.0.1:<port>.
+function boundAddresses(pid) {
+  const run = spawnSync('/usr/sbin/lsof', ['-nP', '-a', '-p', String(pid), '-iTCP', '-sTCP:LISTEN', '-Fn'], { encoding: 'utf8' });
+  return (run.stdout ?? '').split('\n').filter((l) => l.startsWith('n')).map((l) => l.slice(1));
+}
+
+// A GET with the Host a browser sends through tailscale serve; fetch cannot set Host.
+function getWithHost(port, host, timeoutMs = 8000) {
+  return new Promise((resolve) => {
+    const req = http.get({ host: '127.0.0.1', port, path: '/', headers: { host }, timeout: timeoutMs }, (res) => {
+      res.resume();
+      resolve(res.statusCode);
+    });
+    req.on('timeout', () => req.destroy(new Error('timed out')));
+    req.on('error', () => resolve(0));
+  });
+}
+
+// Removes a published run's tailscale serve handler, and only that run's. Never the live board's port.
+function unpublish(run) {
+  if (!run.published || run.port === LIVE_PORT) return null;
+  const off = spawnSync(TAILSCALE, ['serve', `--http=${run.port}`, 'off'], { encoding: 'utf8', timeout: 30_000 });
+  return off.status === 0 ? `removed the tailscale serve handler on port ${run.port}`
+    : `could not remove the tailscale serve handler on port ${run.port}: ${(off.stderr || off.error?.message || '').trim()}`;
 }
 
 function sparePort() {
@@ -172,6 +203,7 @@ function copyResolved(src, dest, ancestors = new Set(), left = [], top = src) {
 async function launch(args) {
   const fixture = args.includes('--fixture');
   const lanesCopy = args.includes('--lanes-copy');
+  const publish = args.includes('--publish');
   const ttlAt = args.indexOf('--ttl');
   const ttl = ttlAt >= 0 ? Number(args[ttlAt + 1]) : 60;
   if (fixture && lanesCopy) die('--fixture already seeds its own lanes; pick one');
@@ -203,10 +235,11 @@ async function launch(args) {
     files = { lanes: env.AGENT_BOARD_LANES };
   }
   env.AGENT_BOARD_PORT = String(port);
+  if (publish) Object.assign(env, { AGENT_BOARD_PUBLISH: '1', AGENT_BOARD_TAILSCALE: TAILSCALE });
   const head = git(CHECKOUT, 'rev-parse', '--short', 'HEAD').stdout?.trim() || null;
   const run = {
     runId, checkout: CHECKOUT, board: BOARD, head, mode: fixture ? 'fixture' : lanesCopy ? 'lanes-copy' : 'live',
-    port, keeperPid: null, boardPid: null, startedAt: new Date().toISOString(),
+    port, published: publish, keeperPid: null, boardPid: null, startedAt: new Date().toISOString(),
     expiresAt: new Date(Date.now() + ttl * 60_000).toISOString(), stoppedAt: null, stopReason: null,
     dir, evidence, scratch, log: path.join(dir, 'board.log'), env, files,
     urls: { local: `http://127.0.0.1:${port}`, phone: null },
@@ -230,10 +263,18 @@ async function launch(args) {
     process.kill(keeper.pid, 'SIGTERM');
     die(`the board started but is not usable, so the run was stopped: ${problems.join('; ')}\n${tail(run.log)}`);
   }
-  // The board binds the tailnet address a moment after loopback; a phone can reach it there by MagicDNS name.
-  const tailnet = /listening on (100\.[\d.]+):/.exec(tail(run.log, 50));
-  const name = tailnet && magicDns();
-  if (name) updateRun(dir, { urls: { ...run.urls, phone: `http://${name}:${port}` } });
+  // A published board says so once tailscale serve took the handler; a phone reaches it there by MagicDNS name.
+  if (publish) {
+    while (!tail(run.log, 50).includes('published on the tailnet')) {
+      if (readRun(dir).stoppedAt || Date.now() > deadline + 30_000) {
+        if (!readRun(dir).stoppedAt) process.kill(keeper.pid, 'SIGTERM');
+        die(`the board did not publish itself with tailscale serve, so the run was stopped; ${run.log} ends:\n${tail(run.log)}`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    const name = magicDns();
+    if (name) updateRun(dir, { urls: { ...run.urls, phone: `http://${name}:${port}` } });
+  }
   const done = readRun(dir);
   console.log(`launched ${runId} (${done.mode} data${done.mode === 'live' ? ', read-only' : ''}), stops itself at ${new Date(done.expiresAt).toLocaleTimeString('en-GB', { timeZone: 'Asia/Singapore' })} SGT`);
   if (lanesLeft.length) console.log(`left out of the lanes copy: ${lanesLeft.map(([p, why]) => `${p} (${why})`).join(', ')}`);
@@ -262,6 +303,8 @@ function keep(dir) {
         return;
       }
       const why = stopping ?? `board exited ${signal ?? code}`;
+      const unpublished = unpublish(run);
+      if (unpublished) note(unpublished);
       note(`stopped: ${why}`);
       fs.rmSync(run.scratch, { recursive: true, force: true });
       updateRun(dir, { stoppedAt: new Date().toISOString(), stopReason: why, boardPid: null });
@@ -322,6 +365,20 @@ async function doctor(args) {
     refuse(`port ${run.port} is held by pid ${pids.join(', ')} (${command(pids[0])}), which this run did not start`);
   }
   check(pids.includes(run.boardPid), 'listener', `127.0.0.1:${run.port} ${pids.length ? 'is held by the board' : 'has no listener'}`);
+  const bound = boundAddresses(run.boardPid);
+  check(bound.length > 0 && bound.every((a) => a === `127.0.0.1:${run.port}`), 'bind',
+    `the board listens on ${bound.join(', ') || 'nothing'}${bound.every((a) => a.startsWith('127.0.0.1:')) ? ', loopback only' : '; it must be loopback only'}`);
+  const name = magicDns();
+  if (name) {
+    const status = await getWithHost(run.port, `${name}:${run.port}`);
+    check(status === 200, 'magicdns host', `/ with Host ${name}:${run.port}, as tailscale serve forwards it, answered ${status || 'nothing'}`);
+  } else {
+    check('warn', 'magicdns host', 'tailscale gave no MagicDNS name; the Host check for the phone path is not verified');
+  }
+  if (run.published) {
+    const phone = run.urls.phone ? await get(`${run.urls.phone}/`) : { status: 0, text: 'no phone URL' };
+    check(phone.status === 200, 'tailnet', `${run.urls.phone ?? 'the phone URL'}/ through tailscale serve answered ${phone.status || phone.text}`);
+  }
   const problems = await pagesReady(run);
   check(!problems.length, 'pages', problems.length ? problems.join('; ') : `/ and /map render${run.mode === 'fixture' ? ' the fixture data' : ''}`);
   const dirty = git(run.checkout, 'status', '--porcelain', '--', run.board).stdout?.trim();
@@ -372,6 +429,8 @@ async function stop(args) {
           if (!await waitForExit(run.boardPid, 2000)) die(`board for ${run.runId} did not exit; PID and scratch retained`);
         }
       }
+      const unpublished = unpublish(run);
+      if (unpublished) console.log(unpublished);
       fs.rmSync(run.scratch, { recursive: true, force: true });
       updateRun(run.dir, { stoppedAt: new Date().toISOString(), stopReason: 'stopped by board.mjs stop after its keeper died', boardPid: null });
     }

@@ -43,7 +43,10 @@ Commands below are relative to the skill directory; from the checkout root, pref
 - Ready means launch printed `launched <run-id>` with the URLs and exited 0.
   It has already waited for the board's `listening on 127.0.0.1:<port>` line and for both pages to render (not the T3 error page), and in fixture mode for the seeded data to show.
   Otherwise it exits 1 with the end of `board.log`, and stops what it started.
-- Launch prints the local URL, the phone URL (this Mac's MagicDNS name on the same port, when Tailscale is up), the evidence directory, and the seeded files you may edit.
+- Launch prints the local URL, the phone URL, the evidence directory, and the seeded files you may edit.
+  A run listens on 127.0.0.1 only, like the live board.
+  The phone URL (this Mac's MagicDNS name on the same port) exists only with `--publish`, which has the board publish itself with `tailscale serve --http=<port>`, as the live board does on 4790.
+  `tailscale serve` config is shared by the whole Mac: the run removes its handler when it stops, and `--publish` is for the phone checks only.
 - One run per checkout: launch refuses while this checkout has a run up.
 - A run stops itself after `--ttl <minutes>` (default 60).
 - Editing `files/bin/agent-board.mjs` during a run is fine: the board exits on the change and the run's keeper restarts it on the new code within about two seconds, on the same port and data, as launchd does for the live board.
@@ -148,7 +151,7 @@ Finish with PASS or FAIL and one line per step saying what you saw."
 ## Helpers
 
 - `scripts/board.mjs`: Node 22, no packages.
-  `launch [--fixture | --lanes-copy] [--ttl <minutes>]`, `doctor [<run-id> | --port <n>]`, `env [<run-id>]`, `stop [<run-id>]`, `runs`.
+  `launch [--fixture | --lanes-copy] [--publish] [--ttl <minutes>]`, `doctor [<run-id> | --port <n>]`, `env [<run-id>]`, `stop [<run-id>]`, `runs`.
   `VERIFY_AGENT_BOARD_STATE` moves the state directory (the tests use it).
 - `scripts/flows/`: the Playwright written flows (see Drive) and `playwright.mjs`, which finds the pinned `playwright-core` and launches headless Google Chrome.
 - `scripts/fixture.mjs`: the seeded data.

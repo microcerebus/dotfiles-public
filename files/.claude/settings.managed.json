@@ -3,6 +3,7 @@
   "bashOutputMaxChars": 15000,
   "autoCompactEnabled": true,
   "autoCompactWindow": 300000,
+  "remoteControlAtStartup": false,
   "claudeMdExcludes": ["/Users/*/AGENTS.md"],
   "deniedMcpServers": [{ "serverName": "claude.ai Claude Docs" }, { "serverName": "claude.ai Telegram" }],
   "skillOverrides": {

@@ -30,10 +30,17 @@ function checkout(name) {
 }
 const A = checkout('a');
 const B = checkout('b');
+// A stub tailscale, so no test reads or changes the tailnet's serve config. Its MagicDNS name is localhost, which the
+// board allows, so the phone URL of a published run answers on loopback, standing in for tailscale's proxy.
+const CALLS = path.join(tmp, 'tailscale-calls');
+const TAILSCALE = path.join(tmp, 'tailscale');
+fs.writeFileSync(TAILSCALE, `#!/bin/sh\necho "$*" >> '${CALLS}'\n[ "$1" = status ] && echo '{"Self":{"DNSName":"localhost."}}'\nexit 0\n`);
+fs.chmodSync(TAILSCALE, 0o755);
+const tailscaleCalls = () => { try { return fs.readFileSync(CALLS, 'utf8').trimEnd().split('\n'); } catch { return []; } };
 
 const boardWithEnv = (extraEnv, root, ...args) => {
   const run = spawnSync(process.execPath, ['--no-warnings', path.join(root, SKILL, 'board.mjs'), ...args], {
-    env: { ...process.env, ...extraEnv, VERIFY_AGENT_BOARD_STATE: STATE }, encoding: 'utf8', timeout: 60_000,
+    env: { ...process.env, VERIFY_AGENT_BOARD_TAILSCALE: TAILSCALE, ...extraEnv, VERIFY_AGENT_BOARD_STATE: STATE }, encoding: 'utf8', timeout: 60_000,
   });
   return { code: run.status, out: run.stdout + run.stderr };
 };
@@ -183,6 +190,10 @@ test('a fixture run launches, passes doctor, survives a board edit, and stops ke
   const doctor = board(A, 'doctor');
   assert.equal(doctor.code, 0, doctor.out);
   assert.match(doctor.out, /ok {3}pages: \/ and \/map render the fixture data/);
+  assert.match(doctor.out, new RegExp(`ok {3}bind: the board listens on 127\\.0\\.0\\.1:${run.port}, loopback only`));
+  assert.match(doctor.out, new RegExp(`ok {3}magicdns host: / with Host localhost:${run.port}, as tailscale serve forwards it, answered 200`));
+  assert.equal(run.urls.phone, null, 'a run that was not published has no phone URL');
+  assert.ok(tailscaleCalls().every((c) => !c.startsWith('serve')), 'an unpublished run never calls tailscale serve');
   const map = await (await fetch(`${run.urls.local}/map`)).text();
   assert.equal(map.match(/class="stale"/g).length, 2, "the two stale rows, in their lane only");
 
@@ -219,6 +230,26 @@ test('a fixture run launches, passes doctor, survives a board edit, and stops ke
   const afterStop = board(A, 'doctor');
   assert.equal(afterStop.code, 1);
   assert.match(afterStop.out, /the run stopped .*: stopped by board\.mjs stop/);
+});
+
+test('a published run has the board publish itself with tailscale serve, and stopping it removes that handler', async () => {
+  const C = checkout('c');
+  const launched = board(C, 'launch', '--fixture', '--publish', '--ttl', '5');
+  assert.equal(launched.code, 0, launched.out);
+  const run = latest();
+  assert.equal(run.published, true);
+  assert.equal(run.urls.phone, `http://localhost:${run.port}`);
+  assert.match(launched.out, new RegExp(`phone {5}http://localhost:${run.port}/map`));
+  assert.ok(tailscaleCalls().includes(`serve --bg --http=${run.port} http://127.0.0.1:${run.port}`), tailscaleCalls().join('\n'));
+  const doctor = board(C, 'doctor');
+  assert.equal(doctor.code, 0, doctor.out);
+  assert.match(doctor.out, new RegExp(`ok {3}bind: the board listens on 127\\.0\\.0\\.1:${run.port}, loopback only`));
+  assert.match(doctor.out, new RegExp(`ok {3}tailnet: http://localhost:${run.port}/ through tailscale serve answered 200`));
+  const stopped = board(C, 'stop');
+  assert.equal(stopped.code, 0, stopped.out);
+  assert.ok(tailscaleCalls().includes(`serve --http=${run.port} off`), tailscaleCalls().join('\n'));
+  assert.match(fs.readFileSync(run.log, 'utf8'), new RegExp(`removed the tailscale serve handler on port ${run.port}`));
+  assert.ok(tailscaleCalls().every((c) => !c.includes('4790')), 'never the live board\'s port');
 });
 
 test('doctor refuses the live board, a port this checkout did not launch, and another checkout\'s run', async () => {

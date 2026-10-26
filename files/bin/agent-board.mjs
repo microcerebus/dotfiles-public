@@ -1,14 +1,16 @@
 #!/usr/bin/env node
 // Agent board: a read-only phone view of every open T3 thread - who is waiting on the owner, what is running, how full each
 // context is, and which runs have gone quiet. It reads T3's statev2.sqlite (read-only, explicit columns only; never the
-// scheduled_tasks webhook token or secret) and tails Claude Code logs for last activity, and writes nothing anywhere.
+// scheduled_tasks webhook token or secret) and tails Claude Code logs for last activity. It writes nothing but its own
+// `tailscale serve` handler.
 // It also shows the dotfiles auto-updater's alarms, from that updater's own reader (scripts/dotfiles-autoupdate status).
 // A second page, /map, shows each orchestrator lane's milestones, units, owners and what waits on the owner, read from the
 // lane files under ~/orchestrator/lanes (design: docs/agent-observability/project-map.html), plus read-only local git
 // to flag a row waiting on the owner whose branch already landed.
-// Listens on 127.0.0.1 and this Mac's Tailscale address only, never all interfaces, and answers GET for allowlisted
-// Host names only. Run by a Home Manager launchd agent (see nix/user.nix); logs go to ~/Library/Logs.
-import { spawn, spawnSync } from 'node:child_process';
+// Listens on 127.0.0.1 only and answers GET for allowlisted Host names only. Tailnet devices reach it through
+// `tailscale serve`, which the board sets up for itself. Run by a Home Manager launchd agent (see nix/user.nix); logs go
+// to ~/Library/Logs.
+import { execFile, spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
@@ -17,6 +19,12 @@ import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
 
 const PORT = Number(process.env.AGENT_BOARD_PORT ?? 4790);
+// The live board publishes itself on the tailnet; a board on a port of its own (tests, verify-agent-board) only when
+// asked, because tailscaled keeps every handler it is given.
+const PUBLISH = (process.env.AGENT_BOARD_PUBLISH ?? (process.env.AGENT_BOARD_PORT ? '0' : '1')) === '1';
+// How often the board checks that its tailscale serve handler is still there, and puts it back if not.
+const PUBLISH_CHECK_MS = Number(process.env.AGENT_BOARD_PUBLISH_CHECK_MS ?? 60_000);
+const TAILSCALE = process.env.AGENT_BOARD_TAILSCALE ?? '/usr/local/bin/tailscale';
 const T3_DB = process.env.AGENT_BOARD_T3_DB ?? path.join(os.homedir(), '.t3/userdata/statev2.sqlite');
 const CLAUDE_PROJECTS = process.env.AGENT_BOARD_CLAUDE_PROJECTS ?? path.join(os.homedir(), '.claude/projects');
 const LANES = process.env.AGENT_BOARD_LANES ?? path.join(os.homedir(), 'orchestrator/lanes');
@@ -1184,25 +1192,13 @@ h2.attn{color:var(--peach)}
 @media (min-width:900px){.cols{display:grid;grid-template-columns:minmax(0,3fr) minmax(0,2fr);gap:0 22px;align-items:start}}
 footer{color:var(--overlay1);font-size:11px;margin:20px 4px 0}footer b{font-weight:500;color:var(--yellow)}`;
 
-// The tailnet address is the CGNAT range Tailscale assigns (100.64.0.0/10).
-export function tailnetAddress(interfaces = os.networkInterfaces()) {
-  for (const list of Object.values(interfaces)) {
-    for (const a of list ?? []) {
-      if (a.family !== 'IPv4' || a.internal) continue;
-      const [first, second] = a.address.split('.').map(Number);
-      if (first === 100 && second >= 64 && second <= 127) return a.address;
-    }
-  }
-  return null;
-}
-
-// Allow loopback, the tailnet IP and this Mac's MagicDNS names, on our port only. Anything else is a DNS rebinding
-// attempt or a misrouted request.
-export function hostAllowed(hostHeader, { port = PORT, short = os.hostname().split('.')[0].toLowerCase(), tailnetIp = null } = {}) {
+// Allow loopback and this Mac's MagicDNS names, on our port only. Anything else is a DNS rebinding attempt or a
+// misrouted request. No tailnet-IP Host: tailscale serve answers 404 for one before the board sees it.
+export function hostAllowed(hostHeader, { port = PORT, short = os.hostname().split('.')[0].toLowerCase() } = {}) {
   const match = /^([a-z0-9.-]+):(\d+)$/i.exec(hostHeader ?? '');
   if (!match || Number(match[2]) !== port) return false;
   const host = match[1].toLowerCase();
-  if (host === '127.0.0.1' || host === 'localhost' || host === short || (tailnetIp && host === tailnetIp)) return true;
+  if (host === '127.0.0.1' || host === 'localhost' || host === short) return true;
   return host.startsWith(`${short}.`) && host.endsWith('.ts.net') && /^[a-z0-9-]+\.[a-z0-9-]+\.ts\.net$/.test(host);
 }
 
@@ -1215,9 +1211,9 @@ const HEADERS = {
 
 const ROUTES = new Map([['/', 'threads'], ['/map', 'map']]);
 
-function handle(req, res, tailnetIp) {
+function handle(req, res) {
   const route = ROUTES.get(req.url.split('?')[0]);
-  if (!hostAllowed(req.headers.host, { tailnetIp })) {
+  if (!hostAllowed(req.headers.host)) {
     res.writeHead(403, { ...HEADERS, 'content-type': 'text/plain' }).end('Host not allowed.\n');
   } else if (req.method !== 'GET' && req.method !== 'HEAD') {
     res.writeHead(405, { ...HEADERS, allow: 'GET, HEAD', 'content-type': 'text/plain' }).end('Read-only.\n');
@@ -1237,34 +1233,74 @@ function handle(req, res, tailnetIp) {
   }
 }
 
-function serve() {
-  const listeners = new Map(); // host -> server
-  const listen = (host) => {
-    const server = http.createServer((req, res) => handle(req, res, tailnetAddress()));
-    server.on('error', (error) => {
-      console.error(`agent-board: cannot listen on ${host}:${PORT}: ${error.message}`);
-      listeners.delete(host);
-      // Without loopback the process is useless; exit so launchd's KeepAlive retries. The tailnet bind retries itself.
-      if (host === '127.0.0.1') process.exit(1);
-    });
-    server.listen(PORT, host, () => console.log(`agent-board: listening on ${host}:${PORT}`));
-    listeners.set(host, server);
-  };
-  listen('127.0.0.1');
-  // Tailscale may come up after login, and its address can change; follow it without ever binding 0.0.0.0.
-  const syncTailnet = () => {
-    const ip = tailnetAddress();
-    for (const [host, server] of listeners) {
-      if (host !== '127.0.0.1' && host !== ip) {
-        server.close();
-        listeners.delete(host);
-        console.log(`agent-board: stopped listening on ${host}:${PORT}`);
-      }
+// Tailnet devices reach the board through `tailscale serve`, which proxies plain HTTP on the same port of this Mac's
+// tailnet address to loopback, as packs-server.py does for /packs, so the phone's URL stays http://<MagicDNS>:4790.
+// Tailscale is Developer ID signed and the application firewall lets its listener in, while the board's ad-hoc signed
+// nix-store node never needs an inbound rule (nix/host.nix).
+// The same port works only from 1024 up: below that, Tailscale's sandboxed macOS app binds the serve port on every
+// address as root, and macOS then refuses the board's 127.0.0.1 bind with EADDRINUSE. A serve port under 1024 needs
+// a different loopback port.
+// Every PUBLISH_CHECK_MS the board reads `tailscale serve status` and sets the handler again if it is gone (`tailscale
+// serve reset`, a Tailscale log-out); setting it is idempotent. One check at a time, and a line only when the state
+// changes, so a weekend with Tailscale logged out is two lines, not one per check.
+const TARGET = `http://127.0.0.1:${PORT}`;
+const PUBLISHED = `published on the tailnet with tailscale serve on port ${PORT}`;
+const served = (status) => {
+  try {
+    return Object.entries(JSON.parse(status || '{}').Web ?? {})
+      .some(([site, config]) => site.endsWith(`:${PORT}`) && config?.Handlers?.['/']?.Proxy === TARGET);
+  } catch {
+    return false;
+  }
+};
+const publishing = { state: null, justSet: false, busy: false }; // state: the last one logged
+function report(state, line) {
+  if (state === publishing.state) return;
+  publishing.state = state;
+  (state === 'published' ? console.log : console.error)(`agent-board: ${line}`);
+}
+function publish() {
+  if (publishing.busy) return;
+  publishing.busy = true;
+  execFile(TAILSCALE, ['serve', 'status', '--json'], { timeout: 30_000 }, (statusError, status) => {
+    if (!statusError && served(status)) {
+      publishing.busy = publishing.justSet = false;
+      return report('published', PUBLISHED);
     }
-    if (ip && !listeners.has(ip)) listen(ip);
-  };
-  syncTailnet();
-  setInterval(syncTailnet, 15_000);
+    if (!statusError && publishing.justSet) {
+      // Set without error but not listed: setting it on every check is harmless, logging it every time is not.
+      report('unlisted', `tailscale serve status does not list the handler on port ${PORT} that was just set; setting it on every check`);
+    } else if (!statusError && publishing.state === 'published') {
+      console.log(`agent-board: the tailscale serve handler on port ${PORT} was gone; setting it again`);
+      publishing.state = null;
+    }
+    const args = ['serve', '--bg', `--http=${PORT}`, TARGET];
+    execFile(TAILSCALE, args, { timeout: 30_000 }, (error, _stdout, stderr) => {
+      publishing.busy = false;
+      publishing.justSet = !error;
+      if (!error) {
+        if (publishing.state !== 'unlisted') report('published', PUBLISHED);
+        return;
+      }
+      const why = String(stderr).trim() || error.message;
+      report(why, `tailscale ${args.join(' ')} failed: ${why}; checking again every ${PUBLISH_CHECK_MS / 1000} s`);
+    });
+  });
+}
+
+function serve() {
+  const server = http.createServer(handle);
+  server.on('error', (error) => {
+    // Without its listener the process is useless; exit so launchd's KeepAlive retries.
+    console.error(`agent-board: cannot listen on 127.0.0.1:${PORT}: ${error.message}`);
+    process.exit(1);
+  });
+  server.listen(PORT, '127.0.0.1', () => {
+    console.log(`agent-board: listening on 127.0.0.1:${PORT}`);
+    if (!PUBLISH) return;
+    publish();
+    setInterval(publish, PUBLISH_CHECK_MS);
+  });
   // launchd runs this file from the live checkout, which merges and the daily sync change under it while the plist
   // stays the same. Exit on a change so KeepAlive restarts the board on the new code.
   fs.watchFile(SELF, { interval: 2_000 }, (current, previous) => {

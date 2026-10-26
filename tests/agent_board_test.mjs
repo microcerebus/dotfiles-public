@@ -6,11 +6,12 @@ import net from 'node:net';
 import { mock, test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
-import { UNIT_STATES, cachedPrs, fetchPrs, hostAllowed, parsePrs, parseReviewScope, parseSince, parseUnits, prQuery, prView, readUpdates, refreshPrs, render, renderMap, snapshot, summaryOf, tailnetAddress } from '../files/bin/agent-board.mjs';
+import { UNIT_STATES, cachedPrs, fetchPrs, hostAllowed, parsePrs, parseReviewScope, parseSince, parseUnits, prQuery, prView, readUpdates, refreshPrs, render, renderMap, snapshot, summaryOf } from '../files/bin/agent-board.mjs';
 
 const BOARD = new URL('../files/bin/agent-board.mjs', import.meta.url);
 process.env.AGENT_BOARD_OWNER = 'the owner'; // the blockers below name the owner by given name, whatever this machine's username is
@@ -160,21 +161,16 @@ test('an auto-update status that cannot be read is an alarm', () => {
   assert.match(readUpdates('/nonexistent/status').alarms[0], /^could not read the auto-update status: .*No such file/);
 });
 
-test('accepts only loopback, the tailnet IP and this Mac\'s MagicDNS names on its port', () => {
-  const opts = { port: 4790, short: 'myhost', tailnetIp: '100.99.1.2' };
-  for (const host of ['127.0.0.1:4790', 'localhost:4790', '100.99.1.2:4790', 'myhost:4790', 'myhost.tail0000.ts.net:4790']) {
+// tailscale serve answers 404 for a tailnet-IP Host before the board sees it, so only a local process could send one.
+test('accepts only loopback and this Mac\'s MagicDNS names on its port', () => {
+  const opts = { port: 4790, short: 'myhost' };
+  for (const host of ['127.0.0.1:4790', 'localhost:4790', 'myhost:4790', 'myhost.tail0000.ts.net:4790']) {
     assert.equal(hostAllowed(host, opts), true, host);
   }
   for (const host of ['evil.example:4790', 'myhost.tail0000.ts.net:4387', 'other.tail0000.ts.net:4790',
-    'myhost.evil.example.ts.net:4790', 'myhost.ts.net.evil.example:4790', '100.99.1.3:4790', undefined, '']) {
+    'myhost.evil.example.ts.net:4790', 'myhost.ts.net.evil.example:4790', '100.99.1.2:4790', undefined, '']) {
     assert.equal(hostAllowed(host, opts), false, String(host));
   }
-});
-
-test('finds the Tailscale address and never a LAN or loopback one', () => {
-  const iface = (address, internal = false) => ({ family: 'IPv4', address, internal });
-  assert.equal(tailnetAddress({ lo0: [iface('127.0.0.1', true)], en0: [iface('192.168.1.5')], utun4: [iface('100.99.1.2')] }), '100.99.1.2');
-  assert.equal(tailnetAddress({ en0: [iface('100.20.1.1')], lo0: [iface('127.0.0.1', true)] }), null);
 });
 
 // launchd starts the board once, from the live checkout. A merge or the daily sync's fast-forward changes the file
@@ -188,7 +184,7 @@ test('exits when its own source changes, so launchd restarts it on the new code'
   const port = probe.address().port;
   probe.close();
   const board = spawn(process.execPath, ['--no-warnings', copy], {
-    env: { ...process.env, AGENT_BOARD_PORT: String(port) }, stdio: ['ignore', 'pipe', 'inherit'],
+    env: { ...process.env, AGENT_BOARD_PORT: String(port), AGENT_BOARD_PUBLISH: '0' }, stdio: ['ignore', 'pipe', 'inherit'],
   });
   try {
     let out = '';
@@ -202,6 +198,122 @@ test('exits when its own source changes, so launchd restarts it on the new code'
   } finally {
     board.kill();
     fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// A board on a spare port with a stub tailscale. The stub records its arguments, fails its first `failFirst` calls, and
+// keeps one serve config in a file: `serve --bg --http=<port> <target>` writes it, `serve status --json` prints it.
+async function startBoard({ failFirst = 0, env = {} } = {}) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-board-serve-'));
+  const calls = path.join(dir, 'calls');
+  const config = path.join(dir, 'serve.json');
+  const stub = path.join(dir, 'tailscale');
+  fs.writeFileSync(stub, `#!/bin/sh
+echo "$*" >> '${calls}'
+[ "$(wc -l < '${calls}')" -gt ${failFirst} ] || { echo 'tailscaled is not running' >&2; exit 1; }
+case "$1 $2" in
+  'serve status') cat '${config}' 2>/dev/null || echo '{}' ;;
+  'serve --bg') printf '{"TCP":{"%s":{"HTTP":true}},"Web":{"myhost.tail0000.ts.net:%s":{"Handlers":{"/":{"Proxy":"%s"}}}}}' "\${3#--http=}" "\${3#--http=}" "$4" > '${config}' ;;
+esac
+`);
+  fs.chmodSync(stub, 0o755);
+  const probe = net.createServer().listen(0, '127.0.0.1');
+  await once(probe, 'listening');
+  const port = probe.address().port;
+  probe.close();
+  const f = fixture();
+  const data = { AGENT_BOARD_T3_DB: f.dbPath, AGENT_BOARD_CLAUDE_PROJECTS: f.logsDir, AGENT_BOARD_LANES: f.lanesDir };
+  const board = spawn(process.execPath, ['--no-warnings', fileURLToPath(BOARD)], {
+    env: { ...process.env, AGENT_BOARD_PORT: String(port), AGENT_BOARD_TAILSCALE: stub, ...data, ...env }, stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let out = '';
+  board.stdout.on('data', (chunk) => { out += chunk; });
+  board.stderr.on('data', (chunk) => { out += chunk; });
+  const until = async (ok, ms = 10_000) => {
+    const deadline = Date.now() + ms;
+    while (!ok()) {
+      if (Date.now() > deadline) throw new Error(`timed out; the board logged:\n${out}`);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+  };
+  await until(() => out.includes(`listening on 127.0.0.1:${port}`));
+  const read = () => { try { return fs.readFileSync(calls, 'utf8').trimEnd().split('\n'); } catch { return []; } };
+  const stop = () => { board.kill(); fs.rmSync(dir, { recursive: true, force: true }); };
+  return { board, port, calls: read, log: () => out, until, stop, config };
+}
+
+// With the application firewall on, a listener on the tailnet address would need an inbound rule for the ad-hoc
+// signed nix-store node, which every nodejs bump invalidates. Tailscale's own listener carries the tailnet traffic.
+test('listens on loopback only, never on the tailnet or any other address', async () => {
+  const run = await startBoard();
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    const lsof = execFileSync('/usr/sbin/lsof', ['-nP', '-a', '-p', String(run.board.pid), '-iTCP', '-sTCP:LISTEN', '-Fn'], { encoding: 'utf8' });
+    assert.deepEqual(lsof.split('\n').filter((l) => l.startsWith('n')), [`n127.0.0.1:${run.port}`]);
+    assert.doesNotMatch(run.log(), /listening on (?!127\.0\.0\.1:)/);
+  } finally {
+    run.stop();
+  }
+});
+
+test('a request that tailscale serve forwards, with the MagicDNS Host and the port, is served', async () => {
+  const run = await startBoard();
+  const short = os.hostname().split('.')[0].toLowerCase();
+  const status = (host) => new Promise((resolve, reject) => {
+    http.get({ host: '127.0.0.1', port: run.port, path: '/', headers: { host } }, (res) => { res.resume(); resolve(res.statusCode); }).on('error', reject);
+  });
+  try {
+    assert.equal(await status(`${short}.tail0000.ts.net:${run.port}`), 200);
+    assert.equal(await status(`${short}.tail0000.ts.net`), 403); // the port is part of the check
+    assert.equal(await status(`board.example.com:${run.port}`), 403);
+  } finally {
+    run.stop();
+  }
+});
+
+const PUBLISHING = { AGENT_BOARD_PUBLISH: '1', AGENT_BOARD_PUBLISH_CHECK_MS: '150' };
+const lines = (text, pattern) => text.split('\n').filter((l) => pattern.test(l)).length;
+
+test('the live board publishes itself with tailscale serve on its own port, and logs a failure once while it retries', async () => {
+  const run = await startBoard({ failFirst: 5, env: PUBLISHING });
+  try {
+    await run.until(() => /published/.test(run.log()));
+    const set = `serve --bg --http=${run.port} http://127.0.0.1:${run.port}`;
+    assert.ok(run.calls().filter((c) => c === set).length >= 2, run.calls().join('\n'));
+    assert.equal(lines(run.log(), /tailscale serve .* failed: tailscaled is not running/), 1, run.log());
+    const settled = run.calls().length;
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    assert.ok(run.calls().slice(settled).every((c) => c === 'serve status --json'), 'once published, it only checks');
+    assert.equal(lines(run.log(), /published/), 1, run.log());
+  } finally {
+    run.stop();
+  }
+});
+
+// `tailscale serve reset`, or a Tailscale log-out and back in, drops the handler while the board runs.
+test('the live board puts its tailscale serve handler back when it is gone, and says so once', async () => {
+  const run = await startBoard({ env: PUBLISHING });
+  try {
+    // Two checks after the set have read the handler back, so the board knows it is there before it goes.
+    await run.until(() => run.calls().slice(run.calls().findIndex((c) => c.startsWith('serve --bg')) + 1).length >= 2);
+    fs.rmSync(run.config);
+    await run.until(() => fs.existsSync(run.config));
+    assert.match(fs.readFileSync(run.config, 'utf8'), new RegExp(`"Proxy":"http://127\\.0\\.0\\.1:${run.port}"`));
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    assert.equal(lines(run.log(), /handler .* was gone/), 1, run.log());
+    assert.equal(run.calls().filter((c) => c.startsWith('serve --bg')).length, 2, run.calls().join('\n'));
+  } finally {
+    run.stop();
+  }
+});
+
+test('a board on a port of its own does not publish unless asked', async () => {
+  const run = await startBoard();
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    assert.deepEqual(run.calls(), []);
+  } finally {
+    run.stop();
   }
 });
 
@@ -395,7 +507,7 @@ test('serves /map, and both pages show the T3 error page when its database is un
   probe.close();
   const { lanesDir } = lanesFixture();
   const serve = (db) => spawn(process.execPath, ['--no-warnings', fileURLToPath(BOARD)], {
-    env: { ...process.env, AGENT_BOARD_PORT: String(port), AGENT_BOARD_T3_DB: db, AGENT_BOARD_LANES: lanesDir }, stdio: ['ignore', 'pipe', 'ignore'],
+    env: { ...process.env, AGENT_BOARD_PORT: String(port), AGENT_BOARD_PUBLISH: '0', AGENT_BOARD_T3_DB: db, AGENT_BOARD_LANES: lanesDir }, stdio: ['ignore', 'pipe', 'ignore'],
   });
   const board = serve(path.join(lanesDir, 'missing.sqlite'));
   try {

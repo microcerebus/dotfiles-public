@@ -529,18 +529,19 @@ grep -q 'pause-safely' "$tmp/out" || { echo "FAIL pre-compact text: $(cat "$tmp/
 
 # Managed settings merge: adds owned keys, keeps everything else, idempotent.
 cat >"$tmp/settings.json" <<'JSON'
-{"theme":"dark","autoCompactEnabled":false,"hooks":{"SessionStart":[{"matcher":"","hooks":[{"type":"command","command":"gh-axi"}]},{"matcher":"*","hooks":[{"type":"command","command":"bash herdr-agent-state.sh session"}]},{"hooks":[{"type":"command","command":"tasks-axi"},{"type":"command","command":"echo gh-axi >> audit.log"}]},{"matcher":"","hooks":[{"type":"command","command":"node /p/pnpm/global/v11/ed72/node_modules/tasks-axi/dist/bin/tasks-axi.js"}]},{"matcher":"","hooks":[{"type":"command","command":"node /p/pnpm/global/v11/31a7/node_modules/lavish-axi/dist/cli.mjs"}]},{"hooks":[{"type":"command","command":"lavish-axi"}]},{"hooks":[{"type":"command","command":"~/dotfiles/scripts/retired-script"}]}],"UserPromptSubmit":[{"hooks":[{"type":"command","command":"other-tool"}]}],"PostToolUse":[{"hooks":[{"type":"command","command":"python3 -I ~/.claude/hooks/retired.py"}]}]}}
+{"theme":"dark","autoCompactEnabled":false,"remoteControlAtStartup":true,"hooks":{"SessionStart":[{"matcher":"","hooks":[{"type":"command","command":"gh-axi"}]},{"matcher":"*","hooks":[{"type":"command","command":"bash herdr-agent-state.sh session"}]},{"hooks":[{"type":"command","command":"tasks-axi"},{"type":"command","command":"echo gh-axi >> audit.log"}]},{"matcher":"","hooks":[{"type":"command","command":"node /p/pnpm/global/v11/ed72/node_modules/tasks-axi/dist/bin/tasks-axi.js"}]},{"matcher":"","hooks":[{"type":"command","command":"node /p/pnpm/global/v11/31a7/node_modules/lavish-axi/dist/cli.mjs"}]},{"hooks":[{"type":"command","command":"lavish-axi"}]},{"hooks":[{"type":"command","command":"~/dotfiles/scripts/retired-script"}]}],"UserPromptSubmit":[{"hooks":[{"type":"command","command":"other-tool"}]}],"PostToolUse":[{"hooks":[{"type":"command","command":"python3 -I ~/.claude/hooks/retired.py"}]}]}}
 JSON
 bash "$repo/files/.claude/merge-settings.sh" jq "$tmp/settings.json" "$repo/files/.claude/settings.managed.json"
 got="$(jq -c '[.theme, .autoCompactEnabled, .cleanupPeriodDays, [.hooks.SessionStart[].hooks[0].command], [.hooks.UserPromptSubmit[].hooks[0].command], (.hooks.PreToolUse[0].matcher), ([.hooks.PostToolUse[].hooks[0].command]|any(test("retired")))]' "$tmp/settings.json")"
 want='["dark",true,365,["bash herdr-agent-state.sh session","echo gh-axi >> audit.log","~/dotfiles/scripts/dotfiles-autoupdate status --alarms","~/dotfiles/scripts/axi-session-start"],["other-tool","python3 -I ~/.claude/hooks/turn_context.py"],"Bash",false]'
 if [ "$got" = "$want" ]; then echo "ok   merge keeps others' hooks, replaces ours and the axi tools' session hooks, drops retired ones"; else echo "FAIL merge: $got, want $want"; fail=1; fi
+if [ "$(jq .remoteControlAtStartup "$tmp/settings.json")" = false ]; then echo "ok   merge turns remote control at startup back off"; else echo "FAIL merge left remoteControlAtStartup $(jq .remoteControlAtStartup "$tmp/settings.json")"; fail=1; fi
 cp "$tmp/settings.json" "$tmp/once.json"; rm -f "$tmp/settings.json.before-merge"
 bash "$repo/files/.claude/merge-settings.sh" jq "$tmp/settings.json" "$repo/files/.claude/settings.managed.json"
 if cmp -s "$tmp/once.json" "$tmp/settings.json" && [ ! -e "$tmp/settings.json.before-merge" ]; then echo "ok   merge is idempotent"; else echo "FAIL merge not idempotent"; fail=1; fi
 
 bash "$repo/files/.claude/merge-settings.sh" jq "$tmp/fresh/.claude/settings.json" "$repo/files/.claude/settings.managed.json"
-if [ "$(jq .cleanupPeriodDays "$tmp/fresh/.claude/settings.json")" = 365 ]; then echo "ok   merge creates settings on a fresh machine"; else echo "FAIL merge on a fresh machine"; fail=1; fi
+if [ "$(jq -c '[.cleanupPeriodDays, .remoteControlAtStartup]' "$tmp/fresh/.claude/settings.json")" = '[365,false]' ]; then echo "ok   merge creates settings on a fresh machine"; else echo "FAIL merge on a fresh machine"; fail=1; fi
 printf '{not json' >"$tmp/bad.json"
 if bash "$repo/files/.claude/merge-settings.sh" jq "$tmp/bad.json" "$repo/files/.claude/settings.managed.json" 2>/dev/null \
   && [ "$(cat "$tmp/bad.json")" = '{not json' ]; then echo "ok   merge leaves invalid settings alone and exits 0"; else echo "FAIL merge on invalid settings"; fail=1; fi
