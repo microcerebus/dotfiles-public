@@ -13,7 +13,8 @@ repo="$(cd "$(dirname "$0")/.." && pwd)"
 script="$repo/scripts/github-runner"
 # Physical, so the chflags stub can match the directory -execdir runs it in.
 tmp="$(cd "$(mktemp -d)" && pwd -P)"
-server=
+server=''
+holder=''
 # scrub <dir>: lift every flag, ACL and closed mode the cases below set, top
 # down so find can enter each directory after opening it, then delete <dir>.
 scrub() {
@@ -22,7 +23,7 @@ scrub() {
     \( -type d ! -perm -0700 -execdir chmod u+rwx {} \; -o -true \) 2>/dev/null || true
   rm -rf "$1"
 }
-trap '[ -z "$server" ] || kill "$server" 2>/dev/null; scrub "$tmp"' EXIT
+trap '[ -z "$server" ] || kill "$server" 2>/dev/null; { [ -z "$holder" ] || kill "$holder" 2>/dev/null || true; }; scrub "$tmp"' EXIT
 fail=0
 token=test-registration-token
 
@@ -40,14 +41,24 @@ printf '%s\n' "${ACTIONS_RUNNER_INPUT_TOKEN:-}" >"$STUB_LOG/config.token"
 [ "${ACTIONS_RUNNER_INPUT_TOKEN:-}" = test-registration-token ] || exit 1
 echo new >"$RUNNER_ROOT/.runner"
 echo new >"$RUNNER_ROOT/.credentials"
+# As the real config.sh's env.sh writes them.
+echo "LANG=en_US.UTF-8" >>"$RUNNER_ROOT/.env"
+echo "$PATH" >"$RUNNER_ROOT/.path"
 EOF
+# The listener records which of the files it would load at its start exist.
 cat >"$stubs/Runner.Listener" <<'EOF'
 #!/usr/bin/env bash
+for f in .env .path; do
+  if [ -e "$RUNNER_ROOT/$f" ] || [ -L "$RUNNER_ROOT/$f" ]; then echo "$f"; fi
+done >"$STUB_LOG/listener.loads"
 printf 'args=%s\nHOME=%s\nTMPDIR=%s\nRUNNER_ROOT=%s\nTOKEN=%s\n' \
   "$*" "$HOME" "$TMPDIR" "$RUNNER_ROOT" "${ACTIONS_RUNNER_INPUT_TOKEN:-}" >"$STUB_LOG/listener"
 EOF
+# STUB_SUDO_OK=1 stands for a sudoers that lets the runner user in. Under the
+# seatbelt, as under the real one, sudo cannot even start.
 cat >"$stubs/sudo" <<'EOF'
 #!/usr/bin/env bash
+[ -z "${STUB_SEATBELTED:-}" ] || { echo "sudo: Operation not permitted" >&2; exit 126; }
 [ "${STUB_SUDO_OK:-0}" = 1 ]
 EOF
 cat >"$stubs/nix" <<'EOF'
@@ -93,11 +104,14 @@ EOF
 # installs a newer plist during the reload would. STUB_UNLOAD_KILL=before or
 # after kills the caller just before or just after the unload takes effect,
 # as a daemon killed in the middle of a reload would be.
+# print shows launchctl.print, if a case wrote one.
 cat >"$stubs/launchctl" <<'EOF'
 #!/usr/bin/env bash
 echo "$*" >>"$STUB_LOG/launchctl.calls"
 case "$1" in
-  print) [ -e "$STUB_LOG/launchctl.loaded" ] ;;
+  print)
+    [ -e "$STUB_LOG/launchctl.loaded" ] || exit 113
+    cat "$STUB_LOG/launchctl.print" 2>/dev/null || true ;;
   unload)
     # Like launchctl, a failed unload can still exit 0.
     [ "${STUB_UNLOAD_FAIL:-0}" = 1 ] && { echo "Unload failed: 5: Input/output error" >&2; exit 0; }
@@ -160,10 +174,52 @@ done
 if [ "${#pass[@]}" != 0 ]; then /usr/bin/chflags ${opts[@]+"${opts[@]}"} "$flags" "${pass[@]}" || exit 1; fi
 exit "$refused"
 EOF
-# python3 is the real one unless a case makes it fail.
+# sandbox-exec records the profile and the command, then runs the command
+# through seatbelted: sandboxes do not nest, and this suite runs in one.
+# STUB_SANDBOX_FAIL=<code>: it cannot apply the profile and exits so.
+cat >"$stubs/sandbox-exec" <<'EOF'
+#!/usr/bin/env bash
+[ "$1" = -p ] || exit 64
+printf '%s\n' "$2" >"$STUB_LOG/seatbelt.profile"
+profile="$2"
+shift 2
+printf '%s\n' "$*" >>"$STUB_LOG/seatbelt.calls"
+[ -z "${STUB_SANDBOX_FAIL:-}" ] || { echo "sandbox-exec: sandbox_apply: Operation not permitted" >&2; exit "$STUB_SANDBOX_FAIL"; }
+exec "${0%/*}/seatbelted" "$profile" "$@"
+EOF
+# seatbelted <profile> <command...>: run the command as far as the suite can
+# copy what the profile does: python's connects to the ports it denies fail
+# with EPERM (py/sitecustomize.py, through the python3 stub), and sudo
+# cannot start (the sudo stub).
+cat >"$stubs/seatbelted" <<'EOF'
+#!/usr/bin/env bash
+ports="$(grep -o '(remote tcp "\*:[0-9]*")' <<<"$1" | tr -dc '0-9\n' | paste -sd , -)"
+shift
+STUB_SEATBELTED=1 STUB_DENIED_PORTS="$ports" exec "$@"
+EOF
+mkdir -p "$stubs/py"
+cat >"$stubs/py/sitecustomize.py" <<'EOF'
+import errno, os, socket
+
+denied = {int(p) for p in os.environ.get("STUB_DENIED_PORTS", "").split(",") if p}
+connect = socket.socket.connect
+
+def seatbelted(self, address):
+    if address[1] in denied:
+        raise PermissionError(errno.EPERM, "Operation not permitted")
+    return connect(self, address)
+
+socket.socket.connect = seatbelted
+EOF
+# python3 is the real one unless a case makes it fail; under seatbelted it
+# loads py/sitecustomize.py.
 real_python3="$(command -v python3)"
-# shellcheck disable=SC2016 # the stub expands these, not this script
-printf '#!/usr/bin/env bash\n[ "${STUB_PYTHON_FAIL:-0}" = 1 ] && exit 1\nexec %q "$@"\n' "$real_python3" >"$stubs/python3"
+cat >"$stubs/python3" <<EOF
+#!/usr/bin/env bash
+[ "\${STUB_PYTHON_FAIL:-0}" = 1 ] && exit 1
+[ -z "\${STUB_DENIED_PORTS:-}" ] || export PYTHONPATH="$stubs/py"
+exec $(printf %q "$real_python3") "\$@"
+EOF
 chmod +x "$stubs"/*
 
 # A real listener on 127.0.0.1 stands in for one of the owner's services. Two
@@ -186,6 +242,14 @@ a = socket.socket(); a.bind(("127.0.0.1", 0))
 b = socket.socket(socket.AF_INET6); b.bind(("::1", 0))
 print(a.getsockname()[1], b.getsockname()[1])
 ')
+# The check's canary port: free on both loopback addresses.
+canary="$("$real_python3" -c '
+import socket
+a = socket.socket(); a.bind(("127.0.0.1", 0))
+port = a.getsockname()[1]
+socket.socket(socket.AF_INET6).bind(("::1", port))
+print(port)
+')"
 
 # The runner's launchd label, as activation and its plist name use it.
 label=$(nix eval --raw "$repo#darwinConfigurations.myhost.config.launchd.daemons.github-runner.serviceConfig.Label")
@@ -245,13 +309,27 @@ label=$label
 plist=$r/LaunchDaemons/$label.plist
 reload=$r/reload
 reload_status=$r/reload.status
+deny_ports=9222,9333,9334
+canary_port=$canary
+log=$r/runner.log
 EOF
 }
 
+# The script as the suite runs it: calling the sandbox-exec stub.
+script_seatbelted="$tmp/github-runner"
+sed "s|/usr/bin/sandbox-exec|$stubs/sandbox-exec|g" "$script" >"$script_seatbelted"
+if grep -q /usr/bin/sandbox-exec "$script_seatbelted"; then
+  echo "FAIL the suite's copy of the script still calls the real sandbox-exec"; exit 1
+fi
+script="$script_seatbelted"
+
 # run <command>: run the script with stubs first on PATH; sets out and code.
+# The hooks run inside the listener's seatbelt, so they run seatbelted.
 run() {
+  local belt=()
   code=0
-  out="$(PATH="$stubs:/usr/bin:/bin" STUB_LOG="$r/log" "$BASH" "$script" "$1" "$r/conf" 2>&1)" || code=$?
+  case "$1" in job-*) belt=("$stubs/seatbelted" "$("$BASH" "$script" seatbelt "$r/conf")") ;; esac
+  out="$(PATH="$stubs:/usr/bin:/bin" STUB_LOG="$r/log" ${belt[@]+"${belt[@]}"} "$BASH" "$script" "$1" "$r/conf" 2>&1)" || code=$?
 }
 
 # protect <path>...: stand in for what macOS's containermanagerd protects:
@@ -325,9 +403,10 @@ node_says() { "$r/work/_tool/node/22.23.2/arm64/bin/node" 2>/dev/null || true; }
 
 # ── check ──────────────────────────────────────────────────────────────────
 fresh; run check
-want="isolation ok: cannot list $r/protected
+want="isolation ok: cannot run sudo
+isolation ok: runs under its seatbelt, which refused a connection to its canary listener on 127.0.0.1:$canary and [::1]:$canary
+isolation ok: cannot list $r/protected
 isolation ok: cannot enter $r/protected
-isolation ok: cannot run sudo
 isolation ok: cannot act as a trusted Nix user
 isolation ok: cannot connect to listeners of other users on the tailnet: 100.99.1.2:$closed4 [fd7a:115c:a1e0::1]:$closed6
 isolation ok: can still reach its own servers on 127.0.0.1 and [::1]"
@@ -349,9 +428,16 @@ if [ "$code" != 0 ] && grep -q "isolation ok: cannot list $r/protected$" <<<"$ou
   ok "check fails when the owner's home can be entered without being listed"
 else bad "check fails when the owner's home can be entered without being listed" "exit $code" "$out"; fi
 
+# sudo runs before the seatbelt, which would refuse it whatever sudoers says.
 fresh; STUB_SUDO_OK=1 run check
-if [ "$code" != 0 ] && grep -q "can run sudo" <<<"$out"; then ok "check fails when sudo works"
-else bad "check fails when sudo works" "exit $code" "$out"; fi
+if [ "$code" != 0 ] && grep -q "can run sudo" <<<"$out" && [ ! -e "$r/log/seatbelt.calls" ]; then
+  ok "check fails when sudoers lets the runner user in, checked outside the seatbelt"
+else bad "check fails when sudoers lets the runner user in, checked outside the seatbelt" "exit $code" "$out"; fi
+fresh; STUB_SUDO_OK=1 run start
+if [ "$code" != 0 ] && grep -q "can run sudo" <<<"$out" && grep -q "refusing to run jobs" <<<"$out" \
+  && [ ! -e "$r/log/seatbelt.calls" ] && [ ! -e "$r/log/listener" ]; then
+  ok "start runs nothing when sudoers lets the runner user in"
+else bad "start runs nothing when sudoers lets the runner user in" "exit $code" "$out"; fi
 
 fresh; STUB_NIX_TRUSTED=1 run check
 if [ "$code" != 0 ] && grep -q "trusted Nix user" <<<"$out"; then ok "check fails for a trusted Nix user"
@@ -394,11 +480,123 @@ if [ "$code" != 0 ] && grep -q "^isolation FAILED: the runner user cannot reach 
   ok "check fails when the runner cannot reach its own servers"
 else bad "check fails when the runner cannot reach its own servers" "exit $code" "$out"; fi
 
+# ── seatbelt ───────────────────────────────────────────────────────────────
+# A listener on a port the seatbelt denies that still answers means the
+# runner runs outside the seatbelt: a failure, not a warning.
+fresh; echo "deny_ports=9222,$open,9334" >>"$r/conf"
+netstat_rows tcp4 "127.0.0.1.$open" LISTEN tcp4 "127.0.0.1.$closed4" LISTEN >"$r/log/netstat.txt"
+run check
+if [ "$code" != 0 ] && grep -q "refusing to run jobs" <<<"$out" \
+  && grep -qF "isolation FAILED: the runner user can connect to listeners its seatbelt denies (is it running outside it?): 127.0.0.1:$open" <<<"$out" \
+  && ! grep -q "warning" <<<"$out"; then
+  ok "check fails when a listener on a denied port answers"
+else bad "check fails when a listener on a denied port answers" "exit $code" "$out"; fi
+
+fresh; run check
+if [ "$(cat "$r/log/seatbelt.calls" 2>/dev/null)" = "$BASH $script check-in-seatbelt $r/conf" ]; then
+  ok "check runs under the seatbelt, as jobs do"
+else bad "check runs under the seatbelt, as jobs do" "$(cat "$r/log/seatbelt.calls" 2>/dev/null)" "$out"; fi
+
+# Outside the seatbelt, with no listener up on any denied port (fresh lists
+# none), the check still fails: its own canary answers.
+fresh; run check-in-seatbelt
+if [ "$code" != 0 ] && grep -qF "isolation FAILED: the runner user runs outside its seatbelt: its canary listener on port $canary answered or failed (127.0.0.1:$canary: connected)" <<<"$out" \
+  && grep -q "refusing to run jobs" <<<"$out"; then
+  ok "the check fails outside the seatbelt with no denied listener up"
+else bad "the check fails outside the seatbelt with no denied listener up" "exit $code" "$out"; fi
+fresh; run listen
+if [ "$code" != 0 ] && [ ! -e "$r/log/listener" ] && grep -q "runs outside its seatbelt" <<<"$out"; then
+  ok "a listener started outside the seatbelt runs no jobs"
+else bad "a listener started outside the seatbelt runs no jobs" "exit $code" "$out"; fi
+# Another process holds the canary port without listening, so the canary's
+# own listener cannot start, and a connection outside the seatbelt is not
+# denied but refused (the port is the local end of a connection) or never
+# answered (the port is only bound): only EPERM proves the seatbelt. The
+# holder closes with a reset, so no TIME_WAIT keeps the port from later cases.
+for held in "bound|timed out" "connected|Connection refused"; do
+  fresh; "$real_python3" -c '
+import socket, struct, sys, time
+port, shape = int(sys.argv[1]), sys.argv[2]
+keep = []
+for family, host in ((socket.AF_INET, "127.0.0.1"), (socket.AF_INET6, "::1")):
+    held = socket.socket(family)
+    held.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+    held.bind((host, port))
+    if shape == "connected":
+        server = socket.socket(family)
+        server.bind((host, 0))
+        server.listen()
+        held.connect(server.getsockname()[:2])
+        keep += [server, server.accept()[0]]
+    keep.append(held)
+open(sys.argv[3], "w").close()
+time.sleep(120)
+' "$canary" "${held%|*}" "$r/log/held" &
+  holder=$!
+  for _ in $(seq 50); do [ ! -e "$r/log/held" ] || break; /bin/sleep 0.1; done
+  run check-in-seatbelt
+  kill "$holder" 2>/dev/null || true; wait "$holder" 2>/dev/null || true; holder=
+  if [ -e "$r/log/held" ] && [ "$code" != 0 ] \
+    && grep -qF "its canary listener on port $canary answered or failed (127.0.0.1:$canary: ${held#*|})" <<<"$out"; then
+    ok "the check fails outside the seatbelt when another process holds its canary port ${held%|*}, not listening"
+  else bad "the check fails outside the seatbelt when another process holds its canary port ${held%|*}, not listening" "exit $code" "$out"; fi
+done
+# A seatbelt that leaves the canary port open fails it too.
+fresh; code=0; out="$(PATH="$stubs:/usr/bin:/bin" STUB_LOG="$r/log" "$stubs/seatbelted" '(deny network-outbound (remote tcp "*:9334"))' \
+  "$BASH" "$script" check-in-seatbelt "$r/conf" 2>&1)" || code=$?
+if [ "$code" != 0 ] && grep -q "runs outside its seatbelt" <<<"$out"; then
+  ok "the check fails under a seatbelt that does not deny its canary"
+else bad "the check fails under a seatbelt that does not deny its canary" "exit $code" "$out"; fi
+fresh; STUB_SANDBOX_FAIL=71 run start
+if [ "$code" = 71 ] && [ ! -e "$r/log/listener" ] && [ -e "$r/log/seatbelt.calls" ]; then
+  ok "start runs nothing when sandbox-exec cannot apply the seatbelt"
+else bad "start runs nothing when sandbox-exec cannot apply the seatbelt" "exit $code" "$out"; fi
+
+# seatbelt_profile <canary> <port>...: the profile that denies TCP to the
+# ports and the canary, and new launchd jobs.
+seatbelt_profile() {
+  local port rules='' canary_port="$1"
+  shift
+  for port in "$@" "$canary_port"; do rules+=" (remote tcp \"*:$port\")"; done
+  printf '%s\n' '(version 1)' '(allow default)' "(deny network-outbound$rules)" '(deny job-creation)' \
+    '(allow process-exec (literal "/bin/ps") (with no-sandbox))'
+}
+fresh; run seatbelt
+if [ "$code" = 0 ] && [ "$out" = "$(seatbelt_profile "$canary" 9222 9333 9334)" ]; then
+  ok "seatbelt prints a profile that denies TCP to deny_ports and the canary, and new launchd jobs"
+else bad "seatbelt prints a profile that denies TCP to deny_ports and the canary, and new launchd jobs" "exit $code" "$out"; fi
+
+# The runner's real list, as nix/github-runner.nix writes it into the config.
+real_ports="$(sed -n 's/^  denyPorts = \[ \(.*\) \];$/\1/p' "$repo/nix/github-runner.nix")"
+real_canary="$(sed -n 's/^  canaryPort = \([0-9]*\);$/\1/p' "$repo/nix/github-runner.nix")"
+fresh; printf 'deny_ports=%s\ncanary_port=%s\n' "${real_ports// /,}" "$real_canary" >>"$r/conf"; run seatbelt
+# shellcheck disable=SC2086 # one argument per port
+if [ "$real_ports" = "9222 9333 9334 3773 4391 4790 7265" ] && [ "$real_canary" = 9336 ] \
+  && [ "$out" = "$(seatbelt_profile "$real_canary" $real_ports)" ]; then
+  ok "the runner's seatbelt denies the agent Chrome (9333, 9334), the owner's Chrome (9222) and the owner's servers"
+else bad "the runner's seatbelt denies the agent Chrome (9333, 9334), the owner's Chrome (9222) and the owner's servers" \
+  "denyPorts: $real_ports, canaryPort: $real_canary" "$out"; fi
+
+for ports in '' '9334,9333x' '9334,,9333' '09334' '9334,65536'; do
+  fresh; echo "deny_ports=$ports" >>"$r/conf"; (umask 027; echo "$token" >"$r/inbox/token"); run start
+  if [ "$code" != 0 ] && [ ! -e "$r/log/seatbelt.calls" ] && [ ! -e "$r/log/listener" ] \
+    && [ -e "$r/inbox/token" ] && grep -q "deny_ports" <<<"$out"; then
+    ok "start runs nothing when deny_ports is '$ports'"
+  else bad "start runs nothing when deny_ports is '$ports'" "exit $code" "$out"; fi
+done
+for port in '' x 0; do
+  fresh; echo "canary_port=$port" >>"$r/conf"; run start
+  if [ "$code" != 0 ] && [ ! -e "$r/log/seatbelt.calls" ] && [ ! -e "$r/log/listener" ] && grep -q "canary_port" <<<"$out"; then
+    ok "start runs nothing when canary_port is '$port'"
+  else bad "start runs nothing when canary_port is '$port'" "exit $code" "$out"; fi
+done
+
 # ── start ──────────────────────────────────────────────────────────────────
 fresh; chmod 755 "$r/protected"; run start
-if [ "$code" != 0 ] && [ ! -e "$r/log/listener" ] && grep -q "refusing to run jobs" <<<"$out"; then
-  ok "start refuses to run jobs when not isolated"
-else bad "start refuses to run jobs when not isolated" "exit $code" "$out"; fi
+if [ "$code" != 0 ] && [ ! -e "$r/log/listener" ] && grep -q "refusing to run jobs" <<<"$out" \
+  && [ "$(cat "$r/log/seatbelt.calls" 2>/dev/null)" = "$BASH $script listen $r/conf" ]; then
+  ok "start refuses to run jobs when not isolated, checked under the seatbelt"
+else bad "start refuses to run jobs when not isolated, checked under the seatbelt" "exit $code" "$out"; fi
 
 fresh; seed "$r/home"; seed "$r/tmp"; seed "$r/work"; mkdir -p "$r/work/_temp" "$r/work/_actions"
 run start
@@ -422,8 +620,45 @@ RUNNER_ROOT=$r/state
 TOKEN=" ]; then
   ok "start runs the listener with the job home, temp and state, and no token"
 else bad "start runs the listener with the job home, temp and state, and no token" "$listener"; fi
+if [ "$(cat "$r/log/seatbelt.calls" 2>/dev/null)" = "$BASH $script listen $r/conf" ] \
+  && [ "$(cat "$r/log/seatbelt.profile")" = "$(seatbelt_profile "$canary" 9222 9333 9334)" ]; then
+  ok "start runs the check, the wipe and the listener, and so every job, under the seatbelt"
+else bad "start runs the check, the wipe and the listener, and so every job, under the seatbelt" \
+  "calls: $(cat "$r/log/seatbelt.calls" 2>/dev/null)" "profile: $(cat "$r/log/seatbelt.profile" 2>/dev/null)"; fi
 if ! grep -q "$token" <<<"$out"; then ok "start never prints the token"
 else bad "start never prints the token" "$out"; fi
+
+if [ -e "$r/log/listener.loads" ] && [ ! -s "$r/log/listener.loads" ]; then
+  ok "the listener starts with no .env or .path in its root, though registration writes them"
+else bad "the listener starts with no .env or .path in its root, though registration writes them" "$(cat "$r/log/listener.loads" 2>&1)"; fi
+# The runner user owns its root, so a job can write a .env there, which the
+# listener loads at its next start into every later job and hook: a
+# NODE_OPTIONS the hooks' Node loads before the wipe, or a BASH_ENV.
+# Each file alone, as a job would write it. A link, dangling or not, goes
+# too: the listener aborts on a dangling one at every start. The link itself
+# goes; what it points at, outside the root, stays as it was.
+for plant in .env .path dangling-.env dangling-.path outside-.env outside-.path; do
+  fresh; echo old >"$r/state/.runner"
+  f="${plant#*-}"
+  rm -rf "$tmp/outside-target"; mkdir "$tmp/outside-target"
+  echo kept >"$tmp/outside-target/file"; chmod 444 "$tmp/outside-target/file"
+  what="$f"
+  case "$plant" in
+    .env) printf 'BASH_ENV=%s\n' "$r/state/hostile" >"$r/state/.env" ;;
+    .path) echo "$r/state/hostile-bin" >"$r/state/.path" ;;
+    dangling-*) ln -s "$tmp/outside-target/missing" "$r/state/$f"; what="$f link to nothing" ;;
+    outside-*) ln -s "$tmp/outside-target/file" "$r/state/$f"; what="$f link out of the root" ;;
+  esac
+  run start
+  if [ "$code" = 0 ] && [ -e "$r/log/listener.loads" ] && [ ! -s "$r/log/listener.loads" ] \
+    && [ ! -e "$r/state/$f" ] && [ ! -L "$r/state/$f" ] && grep -q "removed .env and .path" <<<"$out" \
+    && [ "$(cat "$tmp/outside-target/file")" = kept ] && [ "$(stat -f %Lp "$tmp/outside-target/file")" = 444 ] \
+    && [ "$(find "$tmp/outside-target" -mindepth 1)" = "$tmp/outside-target/file" ]; then
+    ok "start removes a $what a job left in the runner's root before the listener loads it"
+  else bad "start removes a $what a job left in the runner's root before the listener loads it" "exit $code" "$out" \
+    "listener found: $(cat "$r/log/listener.loads" 2>&1)" "left: $(find "$r/state" "$tmp/outside-target" -mindepth 1 -ls 2>&1 | tr '\n' ' ')"; fi
+done
+rm -rf "$tmp/outside-target"
 
 fresh; echo old >"$r/state/.runner"; echo old >"$r/state/.credentials"
 echo expired-token >"$r/inbox/token"; run start
@@ -440,6 +675,9 @@ else bad "a rejected first token leaves the runner waiting" "exit $code" "$out";
 
 # ── job-started ────────────────────────────────────────────────────────────
 fresh; run job-started
+# The hook runs inside the listener's seatbelt; a second one would not nest.
+if [ "$code" = 0 ] && [ ! -e "$r/log/seatbelt.calls" ]; then ok "job-started does not enter a second seatbelt"
+else bad "job-started does not enter a second seatbelt" "exit $code" "$out"; fi
 if [ "$code" = 0 ] && [ "$(grep -c '^isolation ok' <<<"$out")" = 6 ]; then ok "job-started runs the isolation check"
 else bad "job-started runs the isolation check" "exit $code" "$out"; fi
 
@@ -729,6 +967,82 @@ if [ "$code" = 0 ] && empty_dir "$r/home" && empty_dir "$r/tmp" && empty_dir "$r
   ok "job-completed wipes what a job locked, made append-only or put under a deny ACL"
 else bad "job-completed wipes what a job locked, made append-only or put under a deny ACL" "exit $code" "$out" \
   "left: $(cd "$r" && find home tmp work -mindepth 1 2>&1 | head -20 | tr '\n' ' ')"; fi
+
+# ── job hooks under the runner's Node ──────────────────────────────────────
+# The runner runs a *.sh hook as `bash -e <file>` with the first bash on its
+# PATH, where a job's GITHUB_PATH entries come first, so the hooks are *.js
+# and run the script with only the environment nix/github-runner.nix gives
+# them. Hostile here: a bash first on PATH, BASH_ENV and ENV naming a file
+# that leaves a marker, xtrace through SHELLOPTS with a PS4 that leaves one
+# too. The stub is a bash script that dumps its arguments and environment.
+node_bin="$(command -v node || true)"
+hook_lib="$repo/scripts/github-runner-hook.js"
+evil="$tmp/evil"
+mkdir -p "$evil"
+printf '#!/bin/sh\necho bash-on-path >>"%s/marker"\nexit 0\n' "$evil" >"$evil/bash"
+# shellcheck disable=SC2016 # the sourced file expands $0, not this script
+printf 'echo "rc $0" >>"%s/marker"\n' "$evil" >"$evil/rc"
+chmod +x "$evil/bash"
+cat >"$tmp/hook-stub" <<EOF
+#!/bin/bash
+printf '%s\n' "\$@" >"$tmp/hook-stub.args"
+/usr/bin/env >"$tmp/hook-stub.env"
+echo "::warning::from the stub"
+exit 3
+EOF
+chmod +x "$tmp/hook-stub"
+# hook_js <file> <command> <script> <config> <env json>: a hook file the way
+# nix/github-runner.nix writes one.
+hook_js() {
+  printf 'require(%s)({"command":"%s","script":"%s","config":"%s","env":%s});\n' \
+    "$("$real_python3" -I -c 'import json, sys; print(json.dumps(sys.argv[1]))' "$hook_lib")" "$2" "$3" "$4" "$5" >"$1"
+}
+# run_hook <file>: run it the way the runner runs a *.js hook, from a job's
+# environment at its most hostile; sets out and code.
+run_hook() {
+  code=0
+  out="$(/usr/bin/env -i NODE_OPTIONS="${NODE_OPTIONS-}" PATH="$evil:$stubs:/usr/bin:/bin" \
+    BASH_ENV="$evil/rc" ENV="$evil/rc" SHELLOPTS=xtrace BASHOPTS=xpg_echo PS4="+\$(echo ps4 >>$evil/marker) " \
+    HOME="$tmp/job-home" TMPDIR="$tmp/job-tmp" "$node_bin" "$1" 2>&1)" || code=$?
+}
+hook_env='{"PATH":"/usr/bin:/bin","HOME":"/hook/home","TMPDIR":"/hook/tmp","LANG":"en_US.UTF-8"}'
+fresh; rm -f "$evil/marker" "$tmp/hook-stub.args" "$tmp/hook-stub.env"
+hook_js "$tmp/hook.js" job-completed "$tmp/hook-stub" "$r/conf" "$hook_env"
+if [ -n "$node_bin" ]; then run_hook "$tmp/hook.js"; else code=none out="no node on PATH"; fi
+env_left="$(grep -vE '^(PWD|SHLVL|_)=' "$tmp/hook-stub.env" 2>/dev/null | sort || true)"
+env_want="$(printf '%s\n' HOME=/hook/home LANG=en_US.UTF-8 PATH=/usr/bin:/bin TMPDIR=/hook/tmp)"
+if [ "$code" = 3 ] && [ "$(cat "$tmp/hook-stub.args" 2>/dev/null)" = "$(printf '%s\n' job-completed "$r/conf")" ] \
+  && [ "$env_left" = "$env_want" ] && [ ! -e "$evil/marker" ] && grep -qx '::warning::from the stub' <<<"$out" \
+  && ! grep -q '^+' <<<"$out"; then
+  ok "a hook runs the script by path with only its own environment, and exits with its status"
+else bad "a hook runs the script by path with only its own environment, and exits with its status" "exit $code" "$out" \
+  "args: $(tr '\n' ' ' <"$tmp/hook-stub.args" 2>&1)" "env: $(tr '\n' ' ' <<<"$env_left")" \
+  "marker: $(cat "$evil/marker" 2>&1)"; fi
+
+# The same, with the real job-completed: the hook must wipe what a job left.
+# The script runs by path, as the hook runs the store's, so it gets a shebang.
+hook_script="$tmp/github-runner-exec"
+{ echo "#!$BASH"; tail -n +2 "$script"; } >"$hook_script"
+chmod +x "$hook_script"
+fresh; leftovers; rm -f "$evil/marker"
+hook_js "$tmp/hook.js" job-completed "$hook_script" "$r/conf" \
+  "{\"PATH\":\"$stubs:/usr/bin:/bin\",\"STUB_LOG\":\"$r/log\",\"HOME\":\"$r/home\",\"TMPDIR\":\"$r/tmp\",\"LANG\":\"en_US.UTF-8\"}"
+if [ -n "$node_bin" ]; then run_hook "$tmp/hook.js"; else code=none out="no node on PATH"; fi
+if [ "$code" = 0 ] && empty_dir "$r/home" && empty_dir "$r/tmp" && empty_dir "$r/work" && outside_intact \
+  && grep -q "^wiped job state" <<<"$out" && [ ! -e "$evil/marker" ]; then
+  ok "the job-completed hook wipes what a job left, whatever the job's environment"
+else bad "the job-completed hook wipes what a job left, whatever the job's environment" "exit $code" "$out" \
+  "marker: $(cat "$evil/marker" 2>&1)" "left: $(cd "$r" && find home tmp work -mindepth 1 2>&1 | head -20 | tr '\n' ' ')"; fi
+
+printf '#!/bin/sh\nkill -9 $$\n' >"$tmp/hook-killed"; chmod +x "$tmp/hook-killed"
+for case in "$tmp/hook-killed|is killed by a signal|" "$tmp/no-such-script|cannot start|ENOENT"; do
+  hook_js "$tmp/hook.js" job-completed "${case%%|*}" "$r/conf" "$hook_env"
+  if [ -n "$node_bin" ]; then run_hook "$tmp/hook.js"; else code=none out="no node on PATH"; fi
+  why="${case#*|}"; msg="${why#*|}"; why="${why%|*}"
+  if [ "$code" = 1 ] && { [ -z "$msg" ] || grep -q "^github-runner job-completed: .*$msg" <<<"$out"; }; then
+    ok "a hook fails when its script $why"
+  else bad "a hook fails when its script $why" "exit $code" "$out"; fi
+done
 
 fresh; leftovers; run start
 if [ "$code" = 0 ] && grep -q "not registered" <<<"$out" && empty_dir "$r/home" && empty_dir "$r/tmp" \
@@ -1077,6 +1391,41 @@ else bad "activation creates the firewall daemon's log, root-owned and readable 
 cache=$(nix eval --raw "$repo#darwinConfigurations.myhost.config.launchd.daemons.github-runner.serviceConfig.EnvironmentVariables.RUNNER_TOOL_CACHE" 2>&1 | tail -n 1 || true)
 if [ "$cache" = /var/lib/github-runner/work/_tool ]; then ok "the runner's tool cache is inside its work dir, which every job wipes"
 else bad "the runner's tool cache is inside its work dir, which every job wipes" "RUNNER_TOOL_CACHE=$cache"; fi
+
+# The hooks are the *.js files the runner runs under its own Node, each
+# calling scripts/github-runner-hook.js with the daemon's script and config
+# and the plist's PATH, HOME and TMPDIR as the script's whole environment.
+hooks=$(nix eval --json "$repo#darwinConfigurations.myhost.config.launchd.daemons.github-runner" --apply 'd: {
+  inherit (d) command;
+  env = d.serviceConfig.EnvironmentVariables;
+  started = builtins.readFile d.serviceConfig.EnvironmentVariables.ACTIONS_RUNNER_HOOK_JOB_STARTED;
+  completed = builtins.readFile d.serviceConfig.EnvironmentVariables.ACTIONS_RUNNER_HOOK_JOB_COMPLETED;
+}' 2>&1 | tail -n 1 || true)
+hooks_wrong=$("$real_python3" -I - "$hooks" "$repo/scripts/github-runner-hook.js" <<'EOF' 2>&1 || true
+import json, re, sys
+d = json.loads(sys.argv[1])
+script, _, config = d["command"].split(" ")
+for name, key in (("job-started", "STARTED"), ("job-completed", "COMPLETED")):
+    path = d["env"]["ACTIONS_RUNNER_HOOK_JOB_" + key]
+    if not path.endswith(".js"):
+        print(f"{name}: {path} is not a .js hook")
+        continue
+    m = re.fullmatch(r'require\(("[^"]*")\)\((\{.*\})\);\n', d[name.split("-")[1]])
+    if not m:
+        print(f"{name}: {d[name.split('-')[1]]!r}")
+        continue
+    lib, args = json.loads(m.group(1)), json.loads(m.group(2))
+    want = {"command": name, "script": script, "config": config, "env": {
+        "PATH": d["env"]["PATH"], "HOME": "/var/lib/github-runner/home",
+        "TMPDIR": "/var/lib/github-runner/tmp", "LANG": "en_US.UTF-8"}}
+    if args != want:
+        print(f"{name}: {args} != {want}")
+    if open(lib).read() != open(sys.argv[2]).read():
+        print(f"{name}: {lib} is not scripts/github-runner-hook.js")
+EOF
+)
+if [ -z "$hooks_wrong" ]; then ok "the hooks are .js files that run the script with the plist's PATH and nothing else"
+else bad "the hooks are .js files that run the script with the plist's PATH and nothing else" "$hooks_wrong"; fi
 # A reboot starts the runner from the installed plist, so the deferred
 # reload's marker lives where a reboot clears it; its status must outlive one.
 # The config is the store file at the end of the firewall daemon's command.
@@ -1200,8 +1549,80 @@ if [ -n "$(field installed)" ] && [ "$(field ok)" = "$(field ran)" ] && [ ! -s "
   ok "after the reload the status is a good run with nothing pending"
 else bad "after the reload the status is a good run with nothing pending" "$(cat "$r/reload.status" 2>/dev/null)"; fi
 : >"$r/log/launchctl.calls"; run firewall
-if [ "$code" = 0 ] && [ -z "$(calls)" ] && [ -z "$out" ]; then ok "with nothing pending the firewall daemon leaves the runner alone"
-else bad "with nothing pending the firewall daemon leaves the runner alone" "exit $code" "$out" "$(calls)"; fi
+if [ "$code" = 0 ] && [ "$(calls)" = "print system/$label" ] && [ -z "$out" ]; then
+  ok "with nothing pending the firewall daemon only asks launchd how the runner is"
+else bad "with nothing pending the firewall daemon only asks launchd how the runner is" "exit $code" "$out" "$(calls)"; fi
+
+# A runner whose starts keep failing (its check, or its seatbelt) is a note
+# that dotfiles-autoupdate status turns into an alarm after 5 minutes. The
+# fixtures are launchctl print's layout: the job's fields one tab in.
+# launchd_says <state> <last exit code> [<runs>]: what launchctl print shows.
+# launchd_signal <state> <signal> [<runs>]: the same for a start a signal ended.
+launchd_says() {
+  printf 'system/%s = {\n\tactive count = 0\n\tstate = %s\n\n\tendpoints = {\n\t\tstate = active\n\t}\n\truns = %s\n\tlast exit code = %s\n}\n' \
+    "$label" "$1" "${3:-9}" "$2" >"$r/log/launchctl.print"
+}
+launchd_signal() {
+  printf 'system/%s = {\n\tactive count = 0\n\tstate = %s\n\n\truns = %s\n\tlast terminating signal = %s\n}\n' \
+    "$label" "$1" "${3:-9}" "$2" >"$r/log/launchctl.print"
+}
+note_start() { awk -F '\t' '$1 == "note" && $2 == "start"' "$r/reload.status" 2>/dev/null; }
+# A listener that fails a few seconds after each start: every poll lands
+# while a new run is up, so launchd says running, but runs grew each time.
+fresh; plists loaded; launchd_says running 0 9; run firewall
+loop_out=''
+for runs in 10 11 12 13 14 15; do
+  tick 60; launchd_says running 1 "$runs"; run firewall; loop_out="$loop_out$out"
+  [ "$runs" != 10 ] || since="$(now)"
+done
+if [ "$(note_start | cut -f 3)" = "$since" ] && [ $(($(now) - since)) = 300 ] && [ "$(note_start | cut -f 4)" = 300 ] \
+  && grep -q "(last exit 1)" <<<"$(note_start)" && [ "$(field runs)" = 15 ] \
+  && [ "$(grep -c "the runner's last start" <<<"$loop_out")" = 1 ]; then
+  ok "a runner that fails seconds after each start is noted from its first failed run, so it alarms at 5 minutes"
+else bad "a runner that fails seconds after each start is noted from its first failed run, so it alarms at 5 minutes" \
+  "since $since, now $(now)" "$loop_out" "$(cat "$r/reload.status")"; fi
+fresh; plists loaded; launchd_says running 0 9; run firewall
+tick 60; launchd_says running 1 10; run firewall; crashed="$(note_start)"
+tick 60; run firewall
+if [ -n "$crashed" ] && [ -z "$(note_start)" ] && [ "$(field runs)" = 10 ]; then
+  ok "one crash, then a run that stays up, clears the note at the next poll"
+else bad "one crash, then a run that stays up, clears the note at the next poll" "after the crash: $crashed" "$(cat "$r/reload.status")"; fi
+fresh; plists loaded; launchd_says running 1 9; run firewall
+if [ -z "$(note_start)" ] && [ "$(field runs)" = 9 ]; then
+  ok "a first poll that finds the runner running notes nothing, as it cannot tell a new run"
+else bad "a first poll that finds the runner running notes nothing, as it cannot tell a new run" "$(cat "$r/reload.status")"; fi
+fresh; plists loaded; launchd_signal "not running" "Segmentation fault: 11"; run firewall
+signalled="$(note_start)"
+tick 60; launchd_signal running "Abort trap: 6" 10; run firewall
+if grep -q "(last start killed by Segmentation fault: 11)" <<<"$signalled" \
+  && grep -q "(last start killed by Abort trap: 6)" <<<"$(note_start)" && [ "$(note_start | cut -f 3)" = "$(cut -f 3 <<<"$signalled")" ]; then
+  ok "a start that a signal ended is a failed start"
+else bad "a start that a signal ended is a failed start" "first: $signalled" "$(cat "$r/reload.status")"; fi
+fresh; plists loaded; launchd_says "not running" 1; run firewall
+first="$(note_start)"; since="$(cut -f 3 <<<"$first")"
+if [ "$code" = 0 ] && [ "$since" = "$(now)" ] && [ "$(cut -f 4 <<<"$first")" = 300 ] \
+  && [ "$(cut -f 5 <<<"$first")" = "the runner keeps failing to start (last exit 1), so it runs no jobs; see $r/runner.log" ] \
+  && grep -q "the runner's last start failed (last exit 1)" <<<"$out" && [ "$(field ok)" = "$(now)" ]; then
+  ok "a poll that finds the runner's last start failed notes it, with the runner's log"
+else bad "a poll that finds the runner's last start failed notes it, with the runner's log" "exit $code" "$out" "$(cat "$r/reload.status" 2>/dev/null)"; fi
+tick 60; launchd_says "spawn scheduled" "78: EX_CONFIG"; run firewall
+if [ "$(note_start | cut -f 3)" = "$since" ] && grep -q "(last exit 78)" <<<"$(note_start)" && [ -z "$out" ]; then
+  ok "while the starts go on failing the note keeps its first time, and the log says it once"
+else bad "while the starts go on failing the note keeps its first time, and the log says it once" "$out" "$(cat "$r/reload.status")"; fi
+tick 60; launchd_says running 1 10; run firewall; restarted="$(note_start)"
+tick 60; run firewall
+if [ "$(cut -f 3 <<<"$restarted")" = "$since" ] && [ -z "$(note_start)" ]; then
+  ok "a runner that starts again keeps the note until a poll finds the same run still up"
+else bad "a runner that starts again keeps the note until a poll finds the same run still up" "after the restart: $restarted" "$(cat "$r/reload.status")"; fi
+for says in "not running|0" "not running|(never exited)"; do
+  launchd_says "${says%|*}" "${says#*|}"; run firewall
+  if [ -z "$(note_start)" ]; then ok "no note when the runner's last start ended with '${says#*|}'"
+  else bad "no note when the runner's last start ended with '${says#*|}'" "$(cat "$r/reload.status")"; fi
+done
+rm -f "$r/log/launchctl.loaded"; launchd_says "not running" 1; run firewall
+if [ -z "$(note_start)" ]; then ok "no note for a runner launchd has not loaded"
+else bad "no note for a runner launchd has not loaded" "$(cat "$r/reload.status")"; fi
+# tests/autoupdate_test.sh has what status makes of the note.
 
 # The marker is the time of the switch, then the new plist, readable by the
 # owner: dotfiles-autoupdate status reads it and alarms after 2 hours.

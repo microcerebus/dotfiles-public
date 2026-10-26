@@ -39,14 +39,30 @@
 # gets a fresh copy: before copying, job-started lifts the same locks on the
 # tool cache, deletes the old copy and any link on the way to it, and
 # refuses the job if it cannot.
-# Not covered: other users' listeners on this Mac's loopback and LAN
-# addresses (the agent Chrome's DevTools, T3 Code, the packs server). macOS delivers
-# that traffic without pf ever seeing it, so the runner can connect to them,
-# and its check only warns. The owner accepted this on 2026-10-11: job-tracker
-# is private, and the dependencies and PR code its jobs run already run as the
-# owner in agent worktrees. Closing it would take a VM. Unix sockets and
-# world-readable files outside the owner's home keep their own modes (a few
-# sockets in /tmp are world-writable).
+# Seatbelt: the runner and every job run under sandbox-exec with a profile
+# that allows everything but TCP connections to the ports in denyPorts below,
+# the owner's listeners on this Mac's loopback and LAN addresses, which macOS
+# delivers without pf ever seeing them. It also denies canaryPort, where the
+# check starts a listener of its own and then must fail to connect, so a
+# runner outside the seatbelt runs no jobs whether or not any denied listener
+# is up. sudo is checked before the seatbelt, which would refuse it whatever
+# sudoers says. The profile also denies new launchd jobs, which launchd would
+# start outside the seatbelt. A runner whose starts keep failing (a broken
+# check or seatbelt, or a listener that exits non-zero or is killed by a
+# signal) is an alarm in `dotfiles-autoupdate status` after 5 minutes,
+# through reload.status (see Switches). A run that fails seconds after it
+# starts counts too, as each poll compares launchd's count of runs with the
+# last poll's. A listener that stays up for more than a poll before each
+# crash clears the note in between, so it may never alarm.
+# The profile and its limits:
+# `seatbelt` in scripts/github-runner.
+# Not covered: other users' listeners on those addresses on any other port.
+# The runner can connect to them, and its check only warns. The owner
+# accepted this on 2026-10-11: job-tracker is private, and the dependencies
+# and PR code its jobs run already run as the owner in agent worktrees.
+# Closing it would take a VM. Unix sockets and world-readable files outside
+# the owner's home keep their own modes (a few sockets in /tmp are
+# world-writable).
 # Switches: a switch that changes the runner's plist does not reload a
 # running runner, which would kill its job. Activation installs the plist and
 # leaves the reload pending (/var/run/github-runner-reload.pending, which a
@@ -80,11 +96,26 @@ let
   inbox = "${root}/inbox";
   evidence = "${root}/evidence";
   logDir = "/var/log/github-runner";
+  runnerLog = "${logDir}/github-runner.log";
   firewallLog = "/var/log/github-runner-firewall.log";
   label = "com.${username}.github-runner";
   # The runner's default (work/_tool), set explicitly so the hook and the
   # runner agree. Inside work, so every job's wipe clears it.
   toolCache = "${root}/work/_tool";
+  # The runner's PATH: what job-tracker's Verify jobs call besides Node and
+  # pnpm, which the repo pins itself: git for checkout, python3, unzip, ffmpeg
+  # and ffprobe for the recording checks, and Determinate's nix for the
+  # toolchain job. Google Chrome is the system app from the google-chrome cask
+  # (nix/host.nix). Joined the way nix-darwin joins a daemon's `path`, so the
+  # hooks run the script with the same PATH as the plist.
+  runnerPath = lib.concatMapStringsSep ":" (p: if lib.isDerivation p then "${p}/bin" else p)
+    ((with pkgs; [ bash coreutils git gnutar gzip unzip python3 ffmpeg-headless ]) ++ [
+      "/nix/var/nix/profiles/default/bin"
+      "/usr/bin"
+      "/bin"
+      "/usr/sbin"
+      "/sbin"
+    ]);
 
   # The Node that job-tracker's .node-version names. Bump both together: set
   # version, then hash to `nix hash convert --hash-algo sha256 <hex>` of the
@@ -109,6 +140,13 @@ let
     mv $out/node/${node.version}/node-v${node.version}-darwin-arm64 $out/node/${node.version}/arm64
     touch $out/node/${node.version}/arm64.complete
   '';
+  # What the seatbelt denies jobs: the agent Chrome's gate (9333) and its raw
+  # DevTools port (9334), the owner's own Chrome (9222), T3 Code (3773), the
+  # packs server (4391), the agent board (4790) and Raycast's backend (7265).
+  # job-tracker's CI uses none of them.
+  denyPorts = [ 9222 9333 9334 3773 4391 4790 7265 ];
+  # Denied too, and used by nothing else: the isolation check's own canary.
+  canaryPort = 9336;
   pfRules = pkgs.writeText "github-runner.pf"
     (builtins.replaceStrings [ "@uid@" ] [ (toString id) ] (builtins.readFile ./github-runner.pf));
 
@@ -133,15 +171,36 @@ let
     plist=/Library/LaunchDaemons/${label}.plist
     reload=/var/run/github-runner-reload
     reload_status=${root}/reload.status
+    deny_ports=${lib.concatMapStringsSep "," toString denyPorts}
+    canary_port=${toString canaryPort}
+    log=${runnerLog}
   '';
   script = pkgs.writeShellScript "github-runner" (builtins.readFile ../scripts/github-runner);
-  # The runner runs hooks as `bash -e <file>`, and only files named *.sh.
-  jobStarted = pkgs.writeScript "github-runner-job-started.sh" ''
-    exec ${script} job-started ${conf}
+  # The runner runs a *.sh hook as `bash -e <file>` with the first bash on
+  # its PATH, where a job's GITHUB_PATH entries come first, and a *.js hook
+  # with its own Node, by absolute path. So the hooks are *.js, which run the
+  # script with the plist's PATH and nothing else from the hook's
+  # environment (scripts/github-runner-hook.js). The *.js case is in the
+  # runner's source (2.338, HostContext.GetDefaultShellForScript), not its
+  # docs. A runner that drops it throws on the hook, which fails the job,
+  # but steps with `if: always()` still run and no job is wiped. One that
+  # resolved `node` on PATH would fail every job-started hook, as no node
+  # is on the runner's PATH. A runner bump should re-read that function.
+  hook = command: pkgs.writeText "github-runner-${command}.js" ''
+    require(${builtins.toJSON "${../scripts/github-runner-hook.js}"})(${builtins.toJSON {
+      inherit command;
+      script = "${script}";
+      config = "${conf}";
+      env = {
+        PATH = runnerPath;
+        HOME = "${root}/home";
+        TMPDIR = "${root}/tmp";
+        LANG = "en_US.UTF-8";
+      };
+    }});
   '';
-  jobCompleted = pkgs.writeScript "github-runner-job-completed.sh" ''
-    exec ${script} job-completed ${conf}
-  '';
+  jobStarted = hook "job-started";
+  jobCompleted = hook "job-completed";
   register = pkgs.writeShellScriptBin "github-runner-register" ''
     exec ${script} register ${conf}
   '';
@@ -212,17 +271,7 @@ in
 
   launchd.daemons.github-runner = {
     command = "${script} start ${conf}";
-    # What job-tracker's Verify jobs call besides Node and pnpm, which the repo
-    # pins itself: git for checkout, python3, unzip, ffmpeg and ffprobe for the
-    # recording checks, and Determinate's nix for the toolchain job. Google
-    # Chrome is the system app from the google-chrome cask (nix/host.nix).
-    path = (with pkgs; [ bash coreutils git gnutar gzip unzip python3 ffmpeg-headless ]) ++ [
-      "/nix/var/nix/profiles/default/bin"
-      "/usr/bin"
-      "/bin"
-      "/usr/sbin"
-      "/sbin"
-    ];
+    path = [ runnerPath ];
     environment = {
       LANG = "en_US.UTF-8";
       # nixpkgs ships the runner with Node 24 only (Node 20 is EOL), so
@@ -245,8 +294,8 @@ in
       # so a broken runner retries once a minute, not every 10 seconds.
       ThrottleInterval = 60;
       ProcessType = "Interactive"; # no background CPU and I/O throttling for builds
-      StandardOutPath = "${logDir}/github-runner.log";
-      StandardErrorPath = "${logDir}/github-runner.log";
+      StandardOutPath = runnerLog;
+      StandardErrorPath = runnerLog;
     };
   };
 

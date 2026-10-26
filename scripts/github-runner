@@ -3,9 +3,11 @@
 # nix/github-runner.nix declares for job-tracker.
 #
 # Usage: github-runner <command> <config> [<new plist>]
-#   start          launchd entry point, as the runner user: refuse to run if
-#                  the isolation check fails, wipe all job state, register if a
-#                  token is queued, then run the listener.
+#   start          launchd entry point, as the runner user: check sudo, enter
+#                  the seatbelt (see seatbelt below), refuse to run if the
+#                  isolation check fails, wipe all job state, register if a
+#                  token is queued, then run the listener, whose jobs inherit
+#                  the seatbelt.
 #   job-started    runner hook before every job: the isolation check again, so
 #                  a job fails rather than run without it; then copy the pinned
 #                  tools into the job's tool cache.
@@ -13,10 +15,15 @@
 #                  so one PR's run cannot leave state for the next.
 #   check          isolation check: the runner user must not list or enter the
 #                  owner's home, use sudo, be a trusted Nix user, or connect to
-#                  any other user's listener on the tailnet, and must still
-#                  reach its own servers on loopback. It only warns about the
-#                  listeners it reaches on this Mac's loopback and LAN
-#                  addresses, which pf on macOS cannot filter.
+#                  any other user's listener on the tailnet or on a port the
+#                  seatbelt denies, and must still reach its own servers on
+#                  loopback. It only warns about the other listeners it
+#                  reaches on this Mac's loopback and LAN addresses, which pf
+#                  on macOS cannot filter. Checks sudo first, then the rest
+#                  under the seatbelt, as jobs run, which it must find in
+#                  force.
+#   seatbelt       print the sandbox-exec profile that start and check run
+#                  under.
 #   activate       activation, as root, before nix-darwin's launchd step,
 #                  with the new system's plist for the runner: if launchd
 #                  runs the runner, install the plist and leave the reload
@@ -25,24 +32,68 @@
 #   firewall       launchd entry point, as root, every minute: keep the pf
 #                  rules behind the tailnet part (nix/github-runner.pf) loaded
 #                  and pf enabled, then reload the runner if a reload is
-#                  pending and two polls a minute apart found it idle.
+#                  pending and two polls a minute apart found it idle, and
+#                  note a runner whose start keeps failing.
 #   register       run by the owner (github-runner-register): mint a one-hour
 #                  registration token with gh and queue it for the runner,
 #                  never printing it.
 #
 # <config> is the store file nix/github-runner.nix writes (url name labels bin
 # state work home tmp tool seed inbox protected anchor rules loaded user
-# label plist reload reload_status). Paths come from it, never from the
-# environment: a job can rewrite HOME or TMPDIR for later steps through
-# GITHUB_ENV, and the completed hook must not follow that.
+# label plist reload reload_status deny_ports canary_port log). Paths come from it, never
+# from the environment: a job can rewrite HOME or TMPDIR for later steps through
+# GITHUB_ENV, and the completed hook must not follow that. The hooks run this
+# through scripts/github-runner-hook.js, by path, with only PATH, HOME, TMPDIR
+# and LANG, so nothing else in the hook's environment reaches this bash.
 # Tests: tests/github_runner_test.sh
 # shellcheck disable=SC2154 # url, name and the paths come from <config>
 set -euo pipefail
 [ $# = 2 ] || { [ $# = 3 ] && [ "$1" = activate ]; } \
-  || { echo "usage: github-runner start|job-started|job-completed|check|firewall|register <config>, or activate <config> <new plist>" >&2; exit 64; }
+  || { echo "usage: github-runner start|job-started|job-completed|check|seatbelt|firewall|register <config>, or activate <config> <new plist>" >&2; exit 64; }
 cmd="$1"
+config="$2"
 # shellcheck source=/dev/null
-. "$2"
+. "$config"
+
+# seatbelt: the sandbox-exec profile the runner and every job run under. It
+# allows everything but TCP connections to the ports in $deny_ports (comma
+# separated, as the config is shell), at any address: the agent Chrome (its
+# gate on 9333, its raw DevTools port 9334), the owner's own Chrome (9222)
+# and the owner's other servers. pf cannot stop those
+# connections, because macOS delivers traffic to its own addresses without
+# pf seeing it. It denies $canary_port too, which nothing else uses: the
+# check proves the seatbelt holds by failing to connect to it (canary).
+# A sandboxed process may not exec a setuid binary, and
+# job-tracker's stray-process cleanup needs /bin/ps, so ps alone runs outside
+# the sandbox; it only reads. sudo, also setuid, stays refused. Sandboxes do
+# not nest: a job cannot run sandbox-exec itself, and Chrome must run with
+# --no-sandbox, as Playwright launches it by default. Nor may a job ask
+# launchd for a new job (launchctl submit or bootstrap, or the same over
+# XPC), which launchd would start outside the seatbelt.
+seatbelt() {
+  local port ports=() rules=''
+  IFS=, read -ra ports <<<"${deny_ports:-}"
+  [ "${#ports[@]}" != 0 ] || { echo "github-runner: deny_ports is empty" >&2; return 1; }
+  ports+=("${canary_port:-}")
+  for port in "${ports[@]}"; do
+    # Digits with no leading zero, which the check could not match as text.
+    case "$port" in
+      '' | *[!0-9]* | 0*) echo "github-runner: deny_ports or canary_port has a bad port: '$port'" >&2; return 1 ;;
+    esac
+    [ "$port" -le 65535 ] || { echo "github-runner: deny_ports or canary_port has a bad port: '$port'" >&2; return 1; }
+    rules+=" (remote tcp \"*:$port\")"
+  done
+  printf '%s\n' '(version 1)' '(allow default)' "(deny network-outbound$rules)" '(deny job-creation)' \
+    '(allow process-exec (literal "/bin/ps") (with no-sandbox))'
+}
+
+# in_seatbelt <command>: run this script's <command> under the seatbelt. If
+# sandbox-exec cannot apply it, nothing runs, and launchd retries.
+in_seatbelt() {
+  local profile
+  profile="$(seatbelt)"
+  exec /usr/bin/sandbox-exec -p "$profile" "$BASH" "$0" "$1" "$config"
+}
 
 # unlock <path>: undo what keeps the runner user from deleting its own files
 # in and under <path>. Jobs leave read-only trees (Go, Nix), and a job can
@@ -227,13 +278,15 @@ tailnet() {
 
 # probe_listeners: no listener of another user on the tailnet may accept a
 # connection from the runner user; pf blocks the tailnet, so one that does
-# means the firewall is down. Traffic to this Mac's loopback and LAN addresses
-# never reaches pf on macOS (2026-10-11), so a listener there that answers is
-# a warning, not a failure: the owner accepted that gap. Finding nothing to
+# means the firewall is down. Nor may one on a port the seatbelt denies; one
+# that does means the runner runs outside it. Traffic to this Mac's loopback
+# and LAN addresses never reaches pf on macOS (2026-10-11), so any other
+# listener there that answers is a warning, not a failure: the owner
+# accepted that gap. Finding nothing to
 # probe fails: there is always at least launchd's sshd, so an empty list means
 # the probe itself broke.
 probe_listeners() {
-  local addr port target probed=0 on_tailnet=() reached_tailnet=() reached_here=()
+  local addr port target probed=0 on_tailnet=() reached_tailnet=() reached_denied=() reached_here=()
   while read -r addr port; do
     case "$addr" in *:*) target="[$addr]:$port" ;; *) target="$addr:$port" ;; esac
     probed=$((probed + 1))
@@ -241,7 +294,10 @@ probe_listeners() {
       on_tailnet+=("$target")
       if nc -z -G 2 -w 2 "$addr" "$port" >/dev/null 2>&1; then reached_tailnet+=("$target"); fi
     elif nc -z -G 2 -w 2 "$addr" "$port" >/dev/null 2>&1; then
-      reached_here+=("$target")
+      case ",${deny_ports:-}," in
+        *",$port,"*) reached_denied+=("$target") ;;
+        *) reached_here+=("$target") ;;
+      esac
     fi
   done < <(listeners)
   if [ "$probed" = 0 ]; then
@@ -251,10 +307,16 @@ probe_listeners() {
   if [ "${#reached_here[@]}" != 0 ]; then
     echo "isolation warning: can connect to ${#reached_here[@]} listeners of other users on this Mac's own addresses, which pf cannot filter: ${reached_here[*]}" >&2
   fi
+  local failed=0
+  if [ "${#reached_denied[@]}" != 0 ]; then
+    echo "isolation FAILED: the runner user can connect to listeners its seatbelt denies (is it running outside it?): ${reached_denied[*]}" >&2
+    failed=1
+  fi
   if [ "${#reached_tailnet[@]}" != 0 ]; then
     echo "isolation FAILED: the runner user can connect to listeners of other users on the tailnet: ${reached_tailnet[*]}" >&2
-    return 1
+    failed=1
   fi
+  [ "$failed" = 0 ] || return 1
   if [ "${#on_tailnet[@]}" = 0 ]; then
     echo "isolation ok: no listeners of other users on the tailnet to probe"
   else
@@ -275,19 +337,61 @@ for family, host in ((socket.AF_INET, "127.0.0.1"), (socket.AF_INET6, "::1")):
 '
 }
 
-check() {
+# canary: the seatbelt must refuse a connection to $canary_port, on both
+# loopback addresses, with a listener there that the check starts itself.
+# So the check proves the seatbelt whether or not any denied listener is up,
+# and notices if macOS stops honouring the profile. Another listener already
+# on the port answers as well as its own would. Only EPERM passes: outside
+# the seatbelt, a port another socket holds without listening is refused
+# or never answers, and its timeout has no strerror.
+canary() {
+  python3 -c '
+import errno, socket, sys
+port = int(sys.argv[1])
+for family, host in ((socket.AF_INET, "127.0.0.1"), (socket.AF_INET6, "::1")):
+    with socket.socket(family) as server:
+        try:
+            server.bind((host, port))
+            server.listen()
+        except OSError:
+            pass
+        try:
+            socket.create_connection((host, port), timeout=2).close()
+        except OSError as e:
+            if e.errno == errno.EPERM:
+                continue
+            sys.exit(f"{host}:{port}: {e.strerror or e}")
+        sys.exit(f"{host}:{port}: connected")
+' "$canary_port"
+}
+
+# deny <what> <command...>: the command must fail for the runner user; sets
+# failed if it does not.
+deny() {
+  local what="$1"
+  shift
+  if "$@" >/dev/null 2>&1; then
+    echo "isolation FAILED: the runner user can $what" >&2
+    failed=1
+  else
+    echo "isolation ok: cannot $what"
+  fi
+}
+
+# check_sudo: the part of the check the seatbelt would hide, run by start and
+# check before they enter it. The seatbelt refuses to exec sudo, as every
+# setuid binary but ps, so sudo inside it fails whatever sudoers says. Jobs
+# never get out of the seatbelt (it denies them new launchd jobs), so sudoers
+# is checked at each start, not before each job.
+check_sudo() {
   local failed=0
-  # deny <what> <command...>: the command must fail for the runner user.
-  deny() {
-    local what="$1"
-    shift
-    if "$@" >/dev/null 2>&1; then
-      echo "isolation FAILED: the runner user can $what" >&2
-      failed=1
-    else
-      echo "isolation ok: cannot $what"
-    fi
-  }
+  deny "run sudo" sudo -n true
+  [ "$failed" = 0 ] || { echo "refusing to run jobs until this is fixed" >&2; return 1; }
+}
+
+# check: the rest of the isolation check, under the seatbelt.
+check() {
+  local failed=0 why
   enter() ( cd "$1" )
   # Read before matching: grep -q exiting early would fail nix with SIGPIPE,
   # and pipefail would turn a trusted user into "ok".
@@ -295,10 +399,15 @@ check() {
     local info
     info="$(nix store info --json 2>/dev/null)" && grep -Eq '"trusted": ?(true|1)' <<<"$info"
   }
+  if why="$(canary 2>&1)"; then
+    echo "isolation ok: runs under its seatbelt, which refused a connection to its canary listener on 127.0.0.1:$canary_port and [::1]:$canary_port"
+  else
+    echo "isolation FAILED: the runner user runs outside its seatbelt: its canary listener on port $canary_port answered or failed (${why//[$'\n\r']/ })" >&2
+    failed=1
+  fi
   deny "list $protected" ls "$protected"
   # Entering is what reaching anything below takes, world-readable or not.
   deny "enter $protected" enter "$protected"
-  deny "run sudo" sudo -n true
   deny "act as a trusted Nix user" nix_trusted
   probe_listeners || failed=1
   if own_servers >/dev/null 2>&1; then
@@ -417,8 +526,37 @@ seed_tools() {
 # its idle minute starts again.
 loaded_runner() { launchctl print "system/$label" >/dev/null 2>&1; }
 
+# Failed starts. A runner that fails its isolation check, or cannot enter
+# its seatbelt (sandbox-exec is deprecated, and a macOS update could remove
+# or change it), exits non-zero, and launchd starts it again a minute later,
+# runs no jobs, and tells nobody: GitHub only queues them. So each poll asks
+# launchd how the runner's last start ended, and how many times it has
+# started it (runs), which $reload_status keeps for the next poll. The last
+# start failed if it exited non-zero or a signal ended it. Then the status
+# carries a "start" note, which `dotfiles-autoupdate status` turns into an
+# alarm once it is 5 minutes old, while launchd is not running the runner,
+# or while it is but runs grew since the last poll: a listener that fails a
+# few seconds after each start is up at every poll, but never the same run.
+# Only a poll that finds the same run still up, or a clean last exit, clears
+# it. Asked of launchd, as root, so no job can forge it.
+# runner_start prints <state>|<runs>|<failure>, the failure empty for a clean
+# or no exit. launchctl print puts the job's own fields one tab in; the exit
+# code may carry its name (78: EX_CONFIG), the signal is a description.
+runner_start() {
+  launchctl print "system/$label" 2>/dev/null | awk '
+    /^\tstate = / { state = $3 }
+    /^\truns = [0-9]/ { runs = $3 + 0 }
+    /^\tlast exit code = [0-9]/ { code = $5 + 0 }
+    /^\tlast terminating signal = / { signal = substr($0, index($0, "= ") + 2) }
+    END {
+      if (code != 0) failure = "exit " code
+      else if (signal != "") failure = "start killed by " signal
+      if (NR) print state "|" runs "|" failure
+    }' || true
+}
+
 reload_when_idle() {
-  local now seen state busy=0 failure='' installed ok
+  local now seen state busy=0 failure='' installed ok since started runs='' failed='' last_runs
   now="$(date +%s)"
   if [ -e "$reload.pending" ]; then
     seen="$(cat "$reload.pending")"
@@ -477,11 +615,24 @@ reload_when_idle() {
   installed="$(awk -F '\t' '$1 == "installed" { print $2; exit }' "$reload_status" 2>/dev/null || true)"
   ok="$(awk -F '\t' '$1 == "ok" { print $2; exit }' "$reload_status" 2>/dev/null || true)"
   [ -n "$failure" ] || ok="$now"
+  last_runs="$(awk -F '\t' '$1 == "runs" { print $2; exit }' "$reload_status" 2>/dev/null || true)"
+  IFS='|' read -r started runs failed <<<"$(runner_start)" || true
+  case "$runs" in '' | *[!0-9]*) runs='' ;; esac
+  # A first poll, with no count to compare, takes a running runner as up.
+  if [ -n "$failed" ] && [ "$started" = running ] && [ "${last_runs:-$runs}" = "$runs" ]; then failed=''; fi
+  if [ -n "$failed" ]; then
+    # A note keeps its first time while the starts go on failing.
+    since="$(awk -F '\t' '$1 == "note" && $2 == "start" { print $3; exit }' "$reload_status" 2>/dev/null || true)"
+    case "$since" in '' | *[!0-9]*) since=''; echo "$(date '+%F %T') the runner's last start failed (last $failed); see $log" >&2 ;; esac
+  fi
   {
     printf 'installed\t%s\n' "${installed:-$now}"
     [ -z "$ok" ] || printf 'ok\t%s\n' "$ok"
     printf 'ran\t%s\n' "$now"
     [ -z "$failure" ] || printf 'fail\t%s\n' "$failure"
+    [ -z "$runs" ] || printf 'runs\t%s\n' "$runs"
+    [ -z "$failed" ] || printf 'note\tstart\t%s\t300\t%s\n' "${since:-$now}" \
+      "the runner keeps failing to start (last $failed), so it runs no jobs; see $log"
   } >"$reload_status.new" && chmod 644 "$reload_status.new" && mv -f "$reload_status.new" "$reload_status" \
     || echo "$(date '+%F %T') could not write $reload_status" >&2
 }
@@ -489,6 +640,16 @@ reload_when_idle() {
 case "$cmd" in
   start)
     echo "=== $(date '+%F %T') github-runner start"
+    check_sudo
+    in_seatbelt listen
+    ;;
+  check)
+    check_sudo
+    in_seatbelt check-in-seatbelt
+    ;;
+  seatbelt) seatbelt ;;
+  # Internal: start and check under the seatbelt.
+  listen)
     check
     wipe_jobs
     # config.sh and the listener read RUNNER_ROOT; jobs inherit HOME and TMPDIR.
@@ -497,6 +658,19 @@ case "$cmd" in
     if [ ! -f "$state/.runner" ]; then
       echo "not registered: run github-runner-register as the owner; this service starts again when the token lands"
       exit 0
+    fi
+    # The listener loads $RUNNER_ROOT/.env into its own environment at start,
+    # so into every job and hook. config.sh writes it with .path, which only
+    # runsvc.sh reads (nixpkgs' env-sh-use-runner-root patch), and this
+    # runner does not use runsvc.sh. The runner user owns its root, so a job
+    # could write a NODE_OPTIONS there that the hooks' Node would load
+    # before the wipe, as would every later job. The plist sets the
+    # environment, so neither file is needed. A link goes too, dangling or
+    # not: [ -e ] follows it, but the listener reads a dangling .env and
+    # aborts at every start. rm -f removes the link, never its target.
+    if [ -e "$state/.env" ] || [ -L "$state/.env" ] || [ -e "$state/.path" ] || [ -L "$state/.path" ]; then
+      rm -f "$state/.env" "$state/.path"
+      echo "removed .env and .path from $state, which a job could have written"
     fi
     exec "$bin/Runner.Listener" run --startuptype service
     ;;
@@ -522,7 +696,7 @@ case "$cmd" in
     wipe_jobs _temp _PipelineMapping
     echo "wiped job state: $home, $tmp, $work"
     ;;
-  check)
+  check-in-seatbelt)
     check
     ;;
   activate)

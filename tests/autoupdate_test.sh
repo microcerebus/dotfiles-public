@@ -1282,6 +1282,21 @@ expect_report "a good runner poll reports a success, worded as the daemon's poll
 runner_poll "ok	$((FAKE_NOW - 120))" "ran	$FAKE_NOW" "fail	deferred reload failed: launchd has not loaded /Library/LaunchDaemons/x.plist"
 expect_alarm "a failed deferred reload alarms, pointing at the firewall daemon's log" \
   "^dotfiles auto-update: runner-reload: deferred reload failed: launchd has not loaded /Library/LaunchDaemons/x.plist; see /var/log/github-runner-firewall.log$"
+# The daemon notes a runner whose starts keep failing (its isolation check,
+# or its seatbelt), and status alarms once that is 5 minutes old.
+failing="the runner keeps failing to start (last exit 1), so it runs no jobs; see /var/log/github-runner/github-runner.log"
+runner_poll "ok	$FAKE_NOW" "ran	$FAKE_NOW" "note	start	$((FAKE_NOW - 240))	300	$failing"
+expect_no_alarm "a runner failing to start for 4 minutes is no alarm"
+expect_report "a runner failing to start for 4 minutes is reported" "^info: runner-reload: the runner keeps failing to start"
+runner_poll "ok	$FAKE_NOW" "ran	$FAKE_NOW" "note	start	$((FAKE_NOW - 300))	300	$failing"
+expect_alarm "a runner failing to start for 5 minutes alarms, pointing at its log" \
+  "^dotfiles auto-update: runner-reload: the runner keeps failing to start \(last exit 1\), so it runs no jobs; see /var/log/github-runner/github-runner.log \(for 5 min\)$"
+# The daemon keeps launchd's count of runs beside the note, for its next poll.
+runner_poll "ok	$FAKE_NOW" "ran	$FAKE_NOW" "runs	15" "note	start	$((FAKE_NOW - 300))	300	${failing/exit 1/start killed by Abort trap: 6}"
+expect_alarm "the runs count beside the note changes nothing in status" \
+  "^dotfiles auto-update: runner-reload: the runner keeps failing to start \(last start killed by Abort trap: 6\), so it runs no jobs; see /var/log/github-runner/github-runner.log \(for 5 min\)$"
+runner_poll "ok	$FAKE_NOW" "ran	$FAKE_NOW" "runs	15"
+expect_no_alarm "a runs count alone is no alarm"
 waiting="the runner restarts on its new config once no job is running"
 runner_poll "ok	$FAKE_NOW" "ran	$FAKE_NOW"
 mkdir -p "${AUTOUPDATE_RUNNER_RELOAD%/*}"
