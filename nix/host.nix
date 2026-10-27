@@ -280,13 +280,16 @@
   };
 
   # ── Daily unattended update, root half ──────────────────────────────────
-  # scripts/dotfiles-autoupdate, tests in tests/autoupdate_test.sh. The
-  # dotfiles-sync agent (nix/user.nix) fetches origin in myuser's GUI session,
-  # where the login keychain answers, and hands over the origin/main revision
-  # it fetched, hourly on the hour. At ten past, this daemon switches to
-  # exactly that revision, never the working tree, so uncommitted or unpushed
-  # work is never applied as root, and a running system built from such work
-  # waits for the push.
+  # scripts/dotfiles-autoupdate, tests in tests/autoupdate_test.sh. Hourly at
+  # ten past, this daemon fetches GitHub's main into its own clone in
+  # /var/lib/dotfiles-autoupdate (root only, 0700) with a read-only deploy
+  # key there (docs/secrets.md), and switches to exactly that revision, built
+  # from that clone. myuser's uid can push to GitHub's main, but nothing it
+  # can write on this Mac picks the revision or its source: until 26 Oct
+  # 2026 the daemon built the revision the dotfiles-sync agent handed over
+  # from ~/dotfiles, so any process running as myuser could pick what root
+  # built (audit H2). Unpushed work is never applied as root, and a running
+  # system built from it waits for the push.
   # Until 11 Oct 2026 one root daemon did all of it and never once succeeded:
   # the keychain refuses a background session, a boot read as "already
   # switched today", and failures reached only a banner nobody opened.

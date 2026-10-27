@@ -4,17 +4,20 @@
 #
 #   sync     myuser's launchd agent (nix/user.nix), in his GUI session, where
 #            the login keychain answers. Hourly: fetch origin, fast-forward
-#            ~/dotfiles, hand the fetched origin/main revision to the daemon
-#            (sync.status), publish it to the public mirror, and notify
-#            the owner of a switch that needs him.
+#            ~/dotfiles (sync.status), publish origin/main to the public
+#            mirror, and notify the owner of a switch that needs him.
 #            Daily from 04:00 (daily.status): update pnpm globals, brew
 #            upgrade, report pending macOS updates. A `--now` run does both;
 #            before 04:00 it leaves the day's run to come.
 #            `autoupdate-now` runs the same program in a terminal, which
 #            shows each step and where sudo can prompt for brew.
-#   apply    the root launchd daemon (nix/host.nix). Hourly: switches the
-#            system to exactly the handed-over revision, never the working
-#            tree, and never rolls back a system built from unpushed work.
+#   apply    the root launchd daemon (nix/host.nix). Hourly: fetches GitHub's
+#            main into its own clone with a read-only deploy key, switches
+#            the system to exactly that revision, never the working tree,
+#            and never rolls back a system built from unpushed work. myuser's
+#            uid can push to GitHub's main, but nothing it can write on this
+#            Mac picks the revision or the source root builds (audit H2,
+#            26 Oct 2026).
 #   rebuild  the owner's `rebuild` alias (nix/user.nix), under sudo: the same
 #            switch, holding the switch lock apply decides and switches under.
 #   rollback the owner's `rollback` alias (nix/user.nix), under sudo, for the
@@ -44,15 +47,29 @@ switch_lock=$daemon_dir/switch.lock
 runner_status=${AUTOUPDATE_RUNNER_STATUS:-/var/lib/github-runner/reload.status}
 runner_reload=${AUTOUPDATE_RUNNER_RELOAD:-/var/run/github-runner-reload}
 runner_firewall_log=/var/log/github-runner-firewall.log
+# apply's own clone of GitHub's main and the read-only deploy key it fetches
+# with (docs/secrets.md, "Auto-update deploy key"). Root's alone: myuser's
+# uid can push to GitHub, but it cannot pick what root builds without it.
+# The program (nix/autoupdate.nix) pins GitHub's host keys for every run.
+root_dir=${AUTOUPDATE_ROOT_DIR:-/var/lib/dotfiles-autoupdate}
+root_repo=$root_dir/repo.git
+deploy_key=$root_dir/deploy_key
+root_uid=${AUTOUPDATE_ROOT_UID:-0} # the tests' own uid; they cannot run as root
+remote=${AUTOUPDATE_REMOTE:-git@github.com:microcerebus/dotfiles-public.git}
+remote_443=${AUTOUPDATE_REMOTE_443-ssh://git@ssh.github.com:443/microcerebus/dotfiles-public.git}
+known_hosts=${AUTOUPDATE_KNOWN_HOSTS:-}
+ssh_bin=${AUTOUPDATE_SSH:-/usr/bin/ssh}
 
 stale_after=$((36 * 3600))    # no successful run for this long is an alarm
 running_after=$((2 * 3600))   # a run unfinished for this long was killed
 push_after=$((2 * 3600))      # waiting for push this long alarms and notifies
 macos_after=$((7 * 86400))    # a same-major macOS update pending this long
 retry_after=86400             # a failed revision is retried at most daily
+stall_after=$((6 * 3600))     # GitHub unreachable, or a sync lock held, this long
 rebuild_wait=${AUTOUPDATE_REBUILD_WAIT:-1800} # rebuild waits this long for apply's switch
 
-terminal=  # set when sync runs in a terminal (autoupdate-now)
+terminal=   # set when sync runs in a terminal (autoupdate-now)
+foreground= # set for steps a terminal must reach: that sync's, and rollback's fetch
 
 log() { # a terminal run also copies its lines to the sync log
   local line
@@ -68,9 +85,10 @@ log() { # a terminal run also copies its lines to the sync log
 # reach it: on 14 Oct 2026 pnpm stopped there on a build-approval prompt and
 # the terminal took no input. A terminal run keeps each step in the foreground.
 timed() { # timed <seconds> <command>...
-  if [ -n "$terminal" ]; then timeout --foreground "$@"; else timeout "$@"; fi
+  if [ -n "$foreground" ]; then timeout --foreground "$@"; else timeout "$@"; fi
 }
 last_line() { printf '%s\n' "$1" | sed '/^[[:space:]]*$/d' | tail -n 1; }
+first_line() { printf '%s\n' "$1" | sed '/^[[:space:]]*$/d' | head -n 1; }
 
 # ── Status files ──────────────────────────────────────────────────────────
 # One per runner, tab-separated, replaced whole by rename:
@@ -127,11 +145,11 @@ cmd_sync() {
   now=$(date +%s)
   # Every step reads /dev/null, as under launchd, so none of them prompts in
   # a terminal either; only brew gets the terminal, for sudo (sync_brew).
-  if { : </dev/tty; } 2>/dev/null; then terminal=1; fi
+  if { : </dev/tty; } 2>/dev/null; then terminal=1 foreground=1; fi
   exec </dev/null
   mkdir -p "$sync_dir" || return 1
-  # Hourly, the hand-over, so a push goes live within the hour (the owner, 16 Oct
-  # 2026). Daily from 04:00, after the cloud routine's 02:00 SGT flake.lock
+  # Hourly, the fetch and fast-forward, so ~/dotfiles follows a push within
+  # the hour, as the daemon's switch does (the owner, 16 Oct 2026). Daily from 04:00, after the cloud routine's 02:00 SGT flake.lock
   # bump, the heavy steps too. `--now` runs both.
   local daily=1 now_run=
   [ "${1:-}" != --now ] || now_run=1
@@ -187,7 +205,12 @@ cmd_sync() {
   trap 'fail "interrupted (Ctrl-C)"; finish; exit 130' INT
 
   phase sync
-  local out fetched='' handed
+  local out fetched='' before
+  # The daemon fetches GitHub's main itself, so nothing here is handed over.
+  # The old hand-over file named the revision root built, which let any
+  # process running as myuser pick it (audit H2); it goes on the first sync.
+  rm -f "$sync_dir/revision" "$sync_dir/revision.tmp"
+  before=$(git -C "$repo" rev-parse --verify -q refs/remotes/origin/main)
   [ -z "$daily" ] || log "--- git fetch origin"
   if out=$(GIT_TERMINAL_PROMPT=0 timed 300 git -C "$repo" fetch --quiet origin 2>&1); then
     fetched=$(git -C "$repo" rev-parse --verify -q refs/remotes/origin/main)
@@ -198,10 +221,8 @@ cmd_sync() {
     sync_main "$fetched"
     # The daemon waits while this sync holds its lock, so the switch's own
     # brew bundle never races the brew upgrade below.
-    handed=$(cat "$sync_dir/revision" 2>/dev/null)
-    printf '%s\n' "$fetched" >"$sync_dir/revision.tmp" && mv -f "$sync_dir/revision.tmp" "$sync_dir/revision"
-    [ -z "$daily" ] && [ "$fetched" = "$handed" ] || log "handed origin/main ${fetched:0:12} to the daemon"
-    sync_public "$([ -z "$daily" ] && [ "$fetched" = "$handed" ] || echo 1)"
+    [ -z "$daily" ] && [ "$fetched" = "$before" ] || log "fetched origin/main ${fetched:0:12}"
+    sync_public "$([ -z "$daily" ] && [ "$fetched" = "$before" ] || echo 1)"
   fi
   finish
 
@@ -420,7 +441,32 @@ cmd_apply() {
   # mid-activation when a rebuild installs it), or a sync still running
   # brew upgrade: try next hour.
   pgrep -qf darwin-rebuild && return 0
-  kill -0 "$(cat "$sync_dir/lock/pid" 2>/dev/null)" 2>/dev/null && return 0
+  if sync_running; then
+    # myuser's uid writes that pid, so a pid that never dies (a stuck sync, or
+    # any process's pid) would stall every switch in silence. Keep the last
+    # run's results, and alarm once apply has waited this long.
+    carry_records sync-lock
+    note sync-lock "$stall_after" "every switch waits for dotfiles-sync, whose lock names a live pid ($(sync_pid)); see $sync_log"
+    finish
+    return 0
+  fi
+  # Fetch before the switch lock, so a slow or stalled GitHub (two 5 min
+  # timeouts at worst) never holds up a human switch. Under the lock, the
+  # decision reads the clone's tip.
+  if ! root_ready || ! root_fetch; then
+    if [ -n "$root_unreachable" ]; then
+      # Common right after a wake. A tick that cannot reach GitHub decides
+      # nothing, so it keeps the last run's results: a failed switch keeps
+      # alarming, and its failure keeps `ok` from moving.
+      carry_records github-unreachable sync-lock
+      note github-unreachable "$stall_after" "$root_error; the next tick retries"
+    else
+      carry_switch_failure
+      fail "$root_error"
+    fi
+    finish
+    return 0
+  fi
   # Decide and switch under the switch lock, which `rebuild` holds for the
   # whole of a human's switch (cmd_rebuild). Without it, a rebuild of
   # unpushed work could finish between the decision below and its switch,
@@ -439,19 +485,15 @@ cmd_apply_locked() {
   local host=${AUTOUPDATE_HOST:?set AUTOUPDATE_HOST to the darwinConfigurations name}
   status=$daemon_dir/status
   now=$(date +%s)
-  local target running
-  target=$(head -c 64 "$sync_dir/revision" 2>/dev/null | tr -d '\n')
-  running=$(system_revision)
-
-  if [ -z "$target" ]; then
-    note handoff 0 "no revision from dotfiles-sync yet"
+  local tip running
+  # cmd_apply fetched it just before taking the lock.
+  tip=$(root_git rev-parse --verify -q 'refs/remotes/origin/main^{commit}' 2>/dev/null)
+  if [ -z "$tip" ]; then
+    fail "root's clone $root_repo has no main; nothing was switched"
     finish
     return
   fi
-  case $target in
-    *[!0-9a-f]*) fail "the revision handed over by dotfiles-sync is not a commit id"; finish; return ;;
-  esac
-  [ "${#target}" = 40 ] || { fail "the revision handed over by dotfiles-sync is not a commit id"; finish; return; }
+  running=$(system_revision)
 
   case $running in
     '')
@@ -463,18 +505,18 @@ cmd_apply_locked() {
       finish
       return ;;
   esac
-  # The newest pushed revision wins: a system the owner rebuilt after a push is
-  # newer than the last handover, and stays.
-  local want=$target
-  if [ "$running" != "$target" ] && user_git merge-base --is-ancestor "$target" "$running" \
-      && user_git merge-base --is-ancestor "$running" refs/remotes/origin/main; then
-    want=$running
-  fi
+  # Switch only forward along GitHub's main: a force-push that drops the
+  # running revision is never applied silently, whatever tree it brings.
+  local want=$tip
   if [ "$running" = "$want" ]; then
     if hm_applied; then finish; return; fi
     log "system is at ${want:0:12} but Home Manager is not applied; switching again"
-  elif ! user_git merge-base --is-ancestor "$running" "$want"; then
-    note "waiting:$running" "$push_after" "the running system is built from ${running:0:12}, which is not on origin/main yet; waiting for push"
+  elif ! root_git merge-base --is-ancestor "$running" "$want" 2>/dev/null; then
+    if was_on_main "$running"; then
+      note "rewritten:$running" "$push_after" "GitHub's main was rewritten and no longer contains ${running:0:12}, which this Mac runs; run rebuild from main to accept it"
+    else
+      note "waiting:$running" "$push_after" "the running system is built from ${running:0:12}, which is not on origin/main (if main was rewritten, run rebuild from main); waiting for push"
+    fi
     finish
     return
   fi
@@ -482,6 +524,11 @@ cmd_apply_locked() {
   local attempt
   attempt=$(cat "$daemon_dir/attempt" 2>/dev/null)
   if [ "${attempt% *}" = "$want" ] && [ $((now - ${attempt#* })) -lt "$retry_after" ]; then
+    # Held for a day after a failed switch to it, or a rollback from it. A
+    # failed switch stands until then, so it keeps alarming; every note the
+    # last run left is answered by this one.
+    carry_switch_failure "$want"
+    finish
     return 0
   fi
 
@@ -489,7 +536,7 @@ cmd_apply_locked() {
   # sync that started since the check above.
   echo $$ >"$daemon_dir/switching"
   trap 'rm -f "$daemon_dir/switching"' EXIT
-  kill -0 "$(cat "$sync_dir/lock/pid" 2>/dev/null)" 2>/dev/null && return 0
+  sync_running && return 0
   # A darwin-rebuild run without `rebuild` takes no lock, so just before the
   # switch, look again for one (or for a rebuild waiting on this lock), and
   # for a system that changed since the decision.
@@ -502,10 +549,9 @@ cmd_apply_locked() {
   fi
   mark_running
   log "=== switching to ${want:0:12} (running: $running)"
-  # Nix opens the repo through libgit2, which lets root read a repo another
-  # user owns only when SUDO_UID names that owner, as it does under `rebuild`.
-  # the owner's read-only sudo check of 11 Oct says whether root needs it here.
-  SUDO_UID=$(stat -f %u "$repo") darwin-rebuild switch --flake "git+file://$repo?rev=$want#$host"
+  # Built from root's own clone, which nothing else can write. Nix reads a
+  # bare repo at an exact ?rev= (probe of 26 Oct 2026).
+  darwin-rebuild switch --flake "git+file://$root_repo?rev=$want#$host"
   local code=$?
   running=$(system_revision)
   if [ "$code" != 0 ]; then
@@ -525,6 +571,183 @@ cmd_apply_locked() {
 }
 
 system_revision() { sed -n 's/.*"configurationRevision": *"\([^"]*\)".*/\1/p' "$system/darwin-version.json" 2>/dev/null; }
+
+# sync_pid: the pid in myuser's sync lock. myuser's uid can put anything at
+# that path, so it is opened once, following no link and without blocking,
+# and read only if that open is a regular file: a FIFO there would hang
+# root's read, and a link would point it at any file. bash can do neither.
+sync_pid() {
+  local pid
+  # One statement each: perl's `my` names exist only from the next one.
+  # shellcheck disable=SC2016 # perl's own variables
+  pid=$(perl -e 'use Fcntl; sysopen(my $f, $ARGV[0], O_RDONLY | O_NOFOLLOW | O_NONBLOCK) or exit 1;
+      -f $f or exit 1; sysread($f, my $pid, 16) or exit 1; print $pid' "$sync_dir/lock/pid" 2>/dev/null | tr -d '\n') || return 1
+  case $pid in '' | *[!0-9]*) return 1 ;; esac
+  echo "$pid"
+}
+sync_running() { local pid; pid=$(sync_pid) && kill -0 "$pid" 2>/dev/null; }
+
+# carry_records [<note key>...]: keeps the last run's failures and notes,
+# with their ages, but the named notes, which the caller writes afresh, for
+# a run that decides nothing.
+carry_records() {
+  local line key
+  [ -f "$status" ] || return 0
+  while IFS= read -r line; do
+    case $line in
+      fail*) records+=("$line"); failed=1 ;;
+      note*)
+        key=${line#note	}; key=${key%%	*}
+        [[ " $* " == *" $key "* ]] || records+=("$line") ;;
+    esac
+  done <"$status"
+}
+
+# carry_switch_failure [<rev>]: keeps the last run's failed switch (to
+# <rev>), which stands until a later switch, for a run that does not switch.
+carry_switch_failure() {
+  local line rev=${1:-}
+  [ -f "$status" ] || return 0
+  while IFS= read -r line; do
+    case $line in "fail	switch to ${rev:0:12}"*) records+=("$line"); failed=1 ;; esac
+  done <"$status"
+}
+
+# ── root's clone of GitHub's main ───────────────────────────────────────────
+# Root runs git on its own clone only, never on a repo myuser's uid can write
+# (a repo's own config can run commands), and with no system or global config.
+root_git() { GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_TERMINAL_PROMPT=0 git --git-dir="$root_repo" "$@"; }
+
+# owned <path> <type> <modes>: <path> itself, not what a link points at, is
+# a <type> ("Directory", "Regular File") of root's, with a mode in <modes>.
+owned() {
+  local info uid mode type
+  info=$(/usr/bin/stat -f '%u %Lp %HT' "$1" 2>/dev/null) || return 1
+  read -r uid mode type <<<"$info"
+  [ "$type" = "$2" ] && [ "$uid" = "$root_uid" ] && [[ " $3 " == *" $mode "* ]]
+}
+
+# root_problem: what makes root's clone or key untrustworthy, or nothing.
+# Creates nothing and changes no mode: a wrong owner or mode is a human's
+# mistake or someone else's doing, and either way a human looks first.
+root_problem() {
+  local parent=${root_dir%/*} info uid mode type
+  info=$(/usr/bin/stat -f '%u %Lp %HT' "$parent" 2>/dev/null)
+  read -r uid mode type <<<"$info"
+  if [ "$type" != Directory ] || { [ "$uid" != 0 ] && [ "$uid" != "$root_uid" ]; } || [ $((8#${mode:-777} & 8#022)) != 0 ]; then
+    echo "$parent is not a directory that only root can write"
+  elif [ -e "$root_dir" ] || [ -L "$root_dir" ]; then
+    if ! owned "$root_dir" Directory 700; then
+      echo "$root_dir must be a directory (not a link) owned by root with mode 700"
+    elif [ ! -e "$deploy_key" ] && [ ! -L "$deploy_key" ]; then
+      echo "there is no deploy key at $deploy_key; generate it as root and add it to GitHub read-only (docs/secrets.md, \"Auto-update deploy key\", steps 1-3)"
+    elif ! owned "$deploy_key" "Regular File" "600 400"; then
+      echo "$deploy_key must be a regular file (not a link) owned by root with mode 600 or 400"
+    elif [ -e "$root_repo" ] && ! owned "$root_repo" Directory "700 755"; then
+      echo "$root_repo must be a directory (not a link) owned by root"
+    fi
+  fi
+}
+
+# root_ready: the clone is ready to fetch into. It creates root's directory
+# and the bare clone when they are missing, and otherwise fails, with
+# root_error naming what is wrong. The clone's HEAD names main, which the
+# fetch fills, so Nix finds it (it warns on every switch otherwise).
+root_error='' root_unreachable=''
+root_ready() {
+  local problem out
+  root_error=''
+  problem=$(root_problem)
+  if [ -z "$problem" ] && [ ! -e "$root_dir" ]; then
+    mkdir -m 700 "$root_dir" || { root_error="could not create $root_dir"; return 1; }
+    problem=$(root_problem)
+  fi
+  if [ -n "$problem" ]; then
+    root_error="$problem; nothing was fetched or switched"
+    return 1
+  fi
+  if [ ! -e "$root_repo" ]; then
+    out=$(root_git init --quiet --bare --initial-branch=main 2>&1) \
+      || { root_error="could not create $root_repo: $(last_line "$out")"; return 1; }
+  fi
+}
+
+# fetch_main <url>: fetches main from <url> into the clone, as origin/main
+# and as the main HEAD names. The URL and refspecs go on the command line,
+# so no repo config steers the fetch. Its reflog keeps every tip the clone
+# has seen and never expires, so gc never drops a commit main once had
+# (was_on_main). ssh reads no config file and no agent, uses only the deploy
+# key, and trusts only the pinned host keys.
+fetch_main() {
+  local ssh
+  ssh=$(printf '%q ' "$ssh_bin" -F /dev/null -i "$deploy_key" -o IdentitiesOnly=yes -o IdentityAgent=none \
+    -o BatchMode=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$known_hosts" \
+    -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o ConnectTimeout=20)
+  GIT_SSH_COMMAND=$ssh timed 300 env GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_TERMINAL_PROMPT=0 \
+    git -c core.logAllRefUpdates=always -c gc.reflogExpire=never -c gc.reflogExpireUnreachable=never \
+    --git-dir="$root_repo" fetch --quiet --no-tags \
+    "$1" +refs/heads/main:refs/remotes/origin/main +refs/heads/main:refs/heads/main 2>&1
+}
+
+# A connection that never reached GitHub, as opposed to GitHub saying no.
+unreachable() { # unreachable <exit code> <output>
+  [ "$1" = 124 ] && return 0
+  case $2 in
+    *"ssh: connect to host "* | *"Could not resolve hostname"* | *"Network is unreachable"* | *"No route to host"* \
+      | *"Operation timed out"* | *"Connection timed out"* | *"Connection refused"* | *"Connection closed by"* \
+      | *"Connection reset by"* | *kex_exchange_identification*) return 0 ;;
+  esac
+  return 1
+}
+
+# root_fetch: fetches GitHub's main into the clone, or fails with root_error
+# saying why, and root_unreachable set when no port reached GitHub. A clone
+# that cannot fetch never falls back to anything myuser's uid can write.
+root_fetch() {
+  local out code before tip
+  root_error='' root_unreachable=''
+  if [ -z "$known_hosts" ] || [ ! -f "$known_hosts" ]; then
+    root_error="AUTOUPDATE_KNOWN_HOSTS (${known_hosts:-unset}) names no file of GitHub's host keys; the program (nix/autoupdate.nix) sets it"
+    return 1
+  fi
+  before=$(root_git rev-parse --verify -q refs/remotes/origin/main 2>/dev/null)
+  out=$(fetch_main "$remote"); code=$?
+  if [ "$code" != 0 ] && [ -n "$remote_443" ] && unreachable "$code" "$out"; then
+    out=$(fetch_main "$remote_443"); code=$?
+  fi
+  if [ "$code" = 0 ]; then
+    tip=$(root_git rev-parse --verify -q 'refs/remotes/origin/main^{commit}' 2>/dev/null)
+    if [ -z "$tip" ]; then
+      root_error="fetching GitHub main into $root_repo left no main"
+      return 1
+    fi
+    [ "$tip" = "$before" ] || log "fetched GitHub main $tip"
+    return 0
+  fi
+  printf '%s\n' "$out"
+  case $out in
+    *"Host key verification failed"*)
+      root_error="GitHub's SSH host key does not match the pinned keys in $known_hosts (a GitHub key rotation needs a change to nix/github-known-hosts, or the network is intercepting); nothing was fetched" ;;
+    *"Permission denied (publickey"* | *"Repository not found"*)
+      root_error="GitHub refused the deploy key at $deploy_key (not added to microcerebus/dotfiles-public, or revoked; docs/secrets.md, \"Auto-update deploy key\"): $(first_line "$out")" ;;
+    *)
+      if unreachable "$code" "$out"; then
+        root_unreachable=1
+        root_error="GitHub is unreachable over SSH, on ports 22 and 443 ($(first_line "$out"))"
+      else
+        root_error="fetching GitHub main into $root_repo failed: $(first_line "$out")"
+      fi ;;
+  esac
+  return 1
+}
+
+# was_on_main <rev>: some tip this clone fetched from GitHub's main had
+# <rev>. The clone holds only commits fetched from GitHub's main, and keeps
+# them all (fetch_main), so it holds <rev> exactly when a fetch brought it.
+# Asking the reflog instead misread an expired entry as unpushed work. A
+# clone made after <rev> left main cannot tell; the caller's note claims
+# neither.
+was_on_main() { root_git cat-file -e "$1^{commit}" 2>/dev/null; }
 
 # ── rebuild and rollback: the owner's switches ──────────────────────────────────
 # rebuild <flake> [darwin-rebuild options]: the `rebuild` alias, as root
@@ -557,6 +780,16 @@ cmd_rollback() {
       gen=$1 ;;
     *) echo "usage: dotfiles-autoupdate rollback [generation]" >&2; return 2 ;;
   esac
+  # Fetched first, and before the lock, so no network runs under it, and the
+  # hold rollback-locked records asks a clone as fresh as GitHub's main: the
+  # commonest rollback leaves a push the owner rebuilt before the hourly fetch
+  # saw it. Unreachable, it rolls back anyway; apply cannot fetch then either.
+  # The fetch stays in the terminal's foreground, so Ctrl-C reaches it.
+  foreground=1
+  if [ -e "$root_repo" ] && [ -z "$(root_problem)" ] && ! root_fetch >/dev/null; then
+    echo "rollback: could not fetch GitHub's main first: $root_error." \
+      "Rolling back anyway; the hold goes by the auto-update's last fetch." >&2
+  fi
   mkdir -p "$daemon_dir" && result=$(mktemp "$daemon_dir/rollback.XXXXXX") || return 1
   # Expanded now: the trap runs after this function returns, without its locals.
   # shellcheck disable=SC2064
@@ -617,7 +850,11 @@ cmd_rollback_locked() {
   running=$(system_revision)
   [ "$running" != "$from" ] || return 0
   case $from in *[!0-9a-f]* | '') return 0 ;; esac
-  [ "${#from}" = 40 ] && user_git merge-base --is-ancestor "$from" refs/remotes/origin/main || return 0
+  # Root's clone answers, as cmd_rollback fetched it just before the lock, so
+  # no network runs under the lock. With no clone yet there is no hold, and
+  # apply cannot switch either.
+  [ "${#from}" = 40 ] && [ -e "$root_repo" ] && [ -z "$(root_problem)" ] \
+    && root_git merge-base --is-ancestor "$from" refs/remotes/origin/main 2>/dev/null || return 0
   prev=$(cat "$daemon_dir/attempt" 2>/dev/null)
   prev_at=${prev#* }
   case $prev_at in '' | *[!0-9]*) prev_at=0 ;; esac
@@ -660,10 +897,6 @@ switch_locked() {
   fi
   return "$code"
 }
-
-# Root asks git questions about myuser's repo as myuser, never as itself: a
-# repo's own config can run commands.
-user_git() { sudo -u "$user" -H "$(command -v git)" -C "$repo" "$@" 2>/dev/null; }
 
 # An equal system path does not prove Home Manager applied (AGENTS.md, the
 # brew bundle sharp edge): compare the closure's generation with HM's own.

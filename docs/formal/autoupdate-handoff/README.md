@@ -16,7 +16,8 @@ One switch lock, `/var/db/dotfiles-autoupdate/switch.lock`, held through macOS's
 
 - `apply` makes its whole decision and switch as one command under the lock (`cmd_apply` runs `cmd_apply_locked` through `lockf -t 0`).
   If the lock is held, a rebuild is in flight, and the next hourly tick decides again.
-  Fetching stays with the sync agent and never holds the lock.
+  Since 26 Oct 2026 apply fetches GitHub's main into root's own clone just before it takes the lock, so a slow fetch never holds up a human switch, and under the lock takes the clone's tip as the target; the sync agent hands over nothing (source map, "Root fetch").
+  The sync agent's own fetch of `~/dotfiles` never holds the lock.
 - `rebuild` now runs `sudo dotfiles-autoupdate rebuild ~/dotfiles`, which runs darwin-rebuild switch under the same lock.
   It switches at once if the lock is free; if the daemon is switching, it prints that it is waiting for the hourly auto-update to finish, with the daemon's pid and log, and waits up to 30 minutes.
   It then switches, so the owner's switch lands last.
@@ -26,11 +27,12 @@ One switch lock, `/var/db/dotfiles-autoupdate/switch.lock`, held through macOS's
   Without a number it takes the generation before the current one, read before it waits, so a daemon switch that lands meanwhile does not change where it goes.
   A rollback to a generation built from unpushed work stays, as a rebuild of it would.
   A rollback from a pushed revision records that revision as a failed attempt once the switch lands, still under the lock, so the hourly apply holds off switching back to it for a day; `rollback` says until when and points to pushing a revert.
+  `rollback` fetches GitHub's main into root's clone before it waits for the lock, so a push the owner rebuilt before the hourly fetch counts as pushed; if GitHub is unreachable it says so and rolls back anyway.
   A rollback stopped (Ctrl-C, TERM, HUP) or failed before its switch lands records nothing.
 - Just before invoking darwin-rebuild, `apply` checks again for a darwin-rebuild process and for a running revision that differs from its sample.
   This only catches a darwin-rebuild run outside `rebuild` and `rollback` that finished before that check; the lock is what closes the race.
 
-Apply still switches only to the exact handed-over revision (`git+file://...?rev=`), never the working tree.
+Apply still switches only to an exact revision (`git+file:///var/lib/dotfiles-autoupdate/repo.git?rev=...`), now the tip of GitHub's main in root's clone, never the working tree.
 
 ## Model results
 

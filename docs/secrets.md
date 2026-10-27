@@ -21,6 +21,27 @@ Host *
   IdentityFile ~/.ssh/id_ed25519
 ```
 
+## Auto-update deploy key (root, read-only; human runs the key steps)
+
+The root auto-update daemon (`scripts/dotfiles-autoupdate apply`, `nix/host.nix`) fetches GitHub's main into its own clone and builds only that.
+It fetches with a read-only deploy key that only root can read, so nothing running as your user can choose what root builds.
+The key never passes through your user or an agent.
+Run these once per Mac:
+
+```sh
+sudo install -d -m 700 -o root -g wheel /var/lib/dotfiles-autoupdate
+sudo ssh-keygen -t ed25519 -N '' -C "$(scutil --get LocalHostName) dotfiles-autoupdate (root, read-only)" -f /var/lib/dotfiles-autoupdate/deploy_key
+sudo cat /var/lib/dotfiles-autoupdate/deploy_key.pub
+```
+
+Then on GitHub: microcerebus/dotfiles-public, Settings, Deploy keys, Add deploy key.
+Paste the public key and leave "Allow write access" off.
+
+Check: at the next ten past the hour, `dotfiles-autoupdate status` shows no switch alarm, and `/var/log/dotfiles-autoupdate.log` has a line `fetched GitHub main <revision>`.
+Until the key exists, every hourly run alarms "there is no deploy key at /var/lib/dotfiles-autoupdate/deploy_key" and switches nothing.
+Root's fetch, hourly and before each `rollback`, trusts only GitHub's host keys pinned in `nix/github-known-hosts` (the program sets them, `nix/autoupdate.nix`); if GitHub rotates them, update that file from GitHub's published fingerprints.
+To rotate the deploy key, delete it on GitHub, then repeat the steps (`ssh-keygen` asks before it overwrites).
+
 ## Dashlane CLI (optional; Phase 0 decision)
 
 If chosen: read the current official Dashlane CLI docs at setup time and verify

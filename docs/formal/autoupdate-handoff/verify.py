@@ -22,7 +22,7 @@ ROOT = HERE.parents[2]
 SOURCE = ROOT / "scripts/dotfiles-autoupdate"
 # The reviewed fixed source. A change to the script stops the run until the
 # source map and model are reviewed against it (README.md, "Rerunning").
-SOURCE_SHA256 = "1938ceeffcf3b7639846ba67d5e9b8ec5d85530d69e773802016d5d3bc196320"
+SOURCE_SHA256 = "c3d8339f961a33f4fd0ab70489bd6c312c2c59b17989aa73434007b204cae45b"
 UNFIXED_MODEL = ROOT / "docs/pstack-audit/batch-4-proof/Handoff.tla"
 # Same pin as the batch 4 runner, so both results come from one TLC.
 NIXPKGS = "7a6522c868711d06e3a520bbcdfafe9806f4337f"
@@ -38,11 +38,13 @@ FIXED = {"HumanLocks": "TRUE", "ApplyLocks": "TRUE", "Recheck": "TRUE"}
 ANCHORS = [
     'lockf -k -t 0 "$switch_lock" "$BASH" "$0" apply-locked',
     '[ "$code" = 75 ] || return "$code"\n  log "the switch lock is held',
-    'running=$(system_revision)\n\n  if [ -z "$target" ]',
+    'if ! root_ready || ! root_fetch; then',
+    "# cmd_apply fetched it just before taking the lock.\n  tip=$(root_git rev-parse",
+    'running=$(system_revision)\n\n  case $running in',
     'echo $$ >"$daemon_dir/switching"',
     '  pgrep -qf darwin-rebuild && return 0\n  local now_running',
     'if [ "$now_running" != "$running" ]; then',
-    'darwin-rebuild switch --flake "git+file://$repo?rev=$want#$host"',
+    'darwin-rebuild switch --flake "git+file://$root_repo?rev=$want#$host"',
     'lockf -k -t 0 "$switch_lock" "$@"',
     'lockf -k -t "$rebuild_wait" "$switch_lock" "$@"',
     'switch_locked rebuild rebuilt rebuilding darwin-rebuild switch --flake "$@"',

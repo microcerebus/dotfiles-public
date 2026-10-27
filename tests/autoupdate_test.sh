@@ -60,37 +60,16 @@ while case $1 in -*) true ;; *) false ;; esac; do shift; done
 shift
 exec "$@"
 EOF
-# sudo -u <user> [-H] [env VAR=...] cmd: runs cmd as the caller, keeping the
-# stub PATH whatever the caller asked for. It refuses any user but testuser:
-# root asks git about the repo as its owner, never as itself. STUB_SYNC_STARTS=<pid>: a sync
-# takes its lock as pid <pid> while the daemon asks git about the repo.
-# STUB_HUMAN_SWITCH=<rev>: at that moment, after apply sampled the system,
-# a darwin-rebuild run outside `rebuild` finishes a switch to <rev>, once.
+# sudo: a tripwire. Root runs git only on its own clone, never as myuser on
+# his repo (audit H2), so nothing calls sudo; any call, across the whole
+# suite, is recorded in $STUB_SUDO_LOG and refused.
 cat >"$stubs/sudo" <<'EOF'
-#!/usr/bin/env bash
-if [ -n "${STUB_SYNC_STARTS:-}" ]; then
-  mkdir -p "$AUTOUPDATE_HOME/.local/state/dotfiles-autoupdate/lock"
-  echo "$STUB_SYNC_STARTS" >"$AUTOUPDATE_HOME/.local/state/dotfiles-autoupdate/lock/pid"
-fi
-if [ -n "${STUB_HUMAN_SWITCH:-}" ] && [ ! -e "$STUB_LOG/human-switched" ]; then
-  touch "$STUB_LOG/human-switched"
-  ln -sfn "$(mksystem "$STUB_HUMAN_SWITCH")" "$AUTOUPDATE_SYSTEM"
-fi
-while [ $# -gt 0 ]; do
-  case $1 in
-    -u) [ "$2" = testuser ] || { echo "sudo: refused -u $2" >>"$STUB_LOG/calls"; exit 1; }; shift 2 ;;
-    -H|--set-home) shift ;;
-    *) break ;;
-  esac
-done
-if [ "${1:-}" = env ]; then
-  shift
-  args=()
-  while [[ ${1:-} == *=* ]]; do [[ $1 == PATH=* ]] || args+=("$1"); shift; done
-  exec env "${args[@]}" "$@"
-fi
-exec "$@"
+#!/bin/sh
+echo "sudo $*" >>"$STUB_SUDO_LOG"
+exit 1
 EOF
+export STUB_SUDO_LOG="$tmp/sudo.log"
+: >"$STUB_SUDO_LOG"
 # stub-terminal-check <name>: in a terminal run (STUB_TTY), records a step
 # outside the terminal's foreground process group, where a terminal read or
 # mode change stops it and Ctrl-C cannot reach it, and a step handed the
@@ -102,10 +81,46 @@ cat >"$stubs/stub-terminal-check" <<'EOF'
   || echo "$1 ran outside the terminal's foreground process group" >>"$STUB_LOG/calls"
 [ ! -t 0 ] || echo "$1 had the terminal as stdin" >>"$STUB_LOG/calls"
 EOF
+# git: the real git. STUB_SYNC_STARTS=<pid>: a sync takes its lock as pid
+# <pid> at apply's first git call, after its first look at the sync lock.
+# STUB_HUMAN_SWITCH=<rev>: at apply's first ancestry question, after it
+# sampled the system, a darwin-rebuild run outside `rebuild` finishes a
+# switch to <rev>, once.
 cat >"$stubs/git" <<EOF
-#!/bin/sh
+#!/usr/bin/env bash
 stub-terminal-check git
+if [ -n "\${STUB_SYNC_STARTS:-}" ]; then
+  mkdir -p "\$AUTOUPDATE_HOME/.local/state/dotfiles-autoupdate/lock"
+  echo "\$STUB_SYNC_STARTS" >"\$AUTOUPDATE_HOME/.local/state/dotfiles-autoupdate/lock/pid"
+fi
+if [ -n "\${STUB_HUMAN_SWITCH:-}" ] && [ ! -e "\$STUB_LOG/human-switched" ] && [[ " \$* " == *" merge-base "* ]]; then
+  touch "\$STUB_LOG/human-switched"
+  ln -sfn "\$(mksystem "\$STUB_HUMAN_SWITCH")" "\$AUTOUPDATE_SYSTEM"
+fi
 exec $(command -v git) "\$@"
+EOF
+# ssh, as git runs it for root's fetch: records its arguments in
+# $STUB_LOG/ssh, then answers as GitHub would. STUB_SSH: ok (unset) serves
+# $STUB_SSH_REPO on any port; auth refuses the key; hostkey fails the host
+# key check; offline reaches no port; offline22 reaches only port 443.
+cat >"$stubs/ssh" <<'EOF'
+#!/usr/bin/env bash
+echo "ssh $*" >>"$STUB_LOG/ssh"
+port=22 host=
+while [ $# -gt 0 ]; do
+  case $1 in
+    -p) port=$2; shift 2 ;;
+    -F | -i | -o) shift 2 ;;
+    -*) shift ;;
+    *) host=$1; shift; break ;;
+  esac
+done
+case ${STUB_SSH:-ok}:$port in
+  auth:*) echo "$host: Permission denied (publickey)." >&2; exit 255 ;;
+  hostkey:*) echo "Host key verification failed." >&2; exit 255 ;;
+  offline:* | offline22:22) echo "ssh: connect to host ${host#*@} port $port: Operation timed out" >&2; exit 255 ;;
+esac
+exec git upload-pack "$STUB_SSH_REPO"
 EOF
 cat >"$stubs/curl" <<'EOF'
 #!/bin/sh
@@ -258,6 +273,7 @@ if [ "$1" != switch ]; then
   exit 0
 fi
 ref=$3
+echo "$ref" >>"$STUB_LOG/flake-refs"
 if [[ $ref == *'?rev='* ]]; then
   rev=${ref#*\?rev=}; rev=${rev%%#*}
 else
@@ -285,6 +301,7 @@ chmod +x "$stubs"/*
 # at <YYYY-MM-DD HH:MM>: sets the fake clock, seconds pinned to :00 (without
 # them, date -j takes the real clock's seconds, and "7 days later" could land
 # a few seconds short when a run crossed a minute).
+uid=$(id -u)
 at() { FAKE_NOW=$(/bin/date -j -f '%Y-%m-%d %H:%M:%S' "$1:00" +%s); export FAKE_NOW; }
 
 # fresh: origin with one pushed commit A, a clean checkout of it on main, and
@@ -303,7 +320,15 @@ fresh() {
   export AUTOUPDATE_PUBLIC_SYNC="$stubs/public-sync" AUTOUPDATE_RUNNER_STATUS="$s/runner-reload.status"
   export AUTOUPDATE_RUNNER_RELOAD="$s/run/github-runner-reload"
   export HM_GCROOT="$home/.local/state/home-manager/gcroots/current-home"
-  unset STUB_HUMAN_SWITCH STUB_SWITCH_HOLD AUTOUPDATE_REBUILD_WAIT STUB_OFFLINE STUB_REBUILD_RUNNING STUB_PNPM_FAIL STUB_PNPM_CTRL_C STUB_BREW_OUTPUT STUB_BREW_SUDO STUB_TTY STUB_BREW_KILL STUB_SWITCH_EXIT STUB_HM_BROKEN STUB_SILL_TEAM STUB_OSASCRIPT_FAIL STUB_PNPM_STARTS_REBUILD STUB_SYNC_STARTS STUB_PUBLIC_FAIL STUB_LIST
+  # Root's clone and deploy key, as the owner's key steps leave them (owned by
+  # this suite's uid, standing in for root), fetching from the local origin.
+  # The ssh cases unset AUTOUPDATE_REMOTE to fetch GitHub's URLs via the stub.
+  root="$s/var-lib/dotfiles-autoupdate"
+  mkdir -p "$s/var-lib" && chmod 755 "$s" "$s/var-lib"
+  mkdir -m 700 "$root" && : >"$root/deploy_key" && chmod 600 "$root/deploy_key"
+  export AUTOUPDATE_ROOT_DIR="$root" AUTOUPDATE_ROOT_UID="$uid" AUTOUPDATE_REMOTE="$s/origin.git"
+  export AUTOUPDATE_KNOWN_HOSTS="$repo/nix/github-known-hosts" AUTOUPDATE_SSH="$stubs/ssh" STUB_SSH_REPO="$s/origin.git"
+  unset STUB_SSH STUB_HUMAN_SWITCH STUB_SWITCH_HOLD AUTOUPDATE_REBUILD_WAIT STUB_OFFLINE STUB_REBUILD_RUNNING STUB_PNPM_FAIL STUB_PNPM_CTRL_C STUB_BREW_OUTPUT STUB_BREW_SUDO STUB_TTY STUB_BREW_KILL STUB_SWITCH_EXIT STUB_HM_BROKEN STUB_SILL_TEAM STUB_OSASCRIPT_FAIL STUB_PNPM_STARTS_REBUILD STUB_SYNC_STARTS STUB_PUBLIC_FAIL STUB_LIST
   at "2026-10-11 12:00"
   git init -q --bare -b main "$s/origin.git"
   git clone -q "$s/origin.git" "$s/upstream" 2>/dev/null
@@ -712,6 +737,12 @@ built_by=$(nix eval --json "$hm.programs.zsh.shellAliases.autoupdate-now" \
   --apply 'a: map (d: d + "^*") (builtins.attrNames (builtins.getContext a))' | jq -r '.[]')
 # shellcheck disable=SC2086 # one installable per derivation
 [ -z "$built_by" ] || nix build --no-link $built_by
+# The program sets the pinned host keys itself: `rollback` runs it under
+# sudo, which drops the caller's env, and fetches with them too.
+program_hosts=$(sed -n 's/^export AUTOUPDATE_KNOWN_HOSTS=//p' "$agent")
+if [ "${program_hosts#/nix/store/}" != "$program_hosts" ] && cmp -s "$program_hosts" "$repo/nix/github-known-hosts"; then
+  ok "every run of the program fetches trusting only the store copy of nix/github-known-hosts"
+else bad "every run of the program fetches trusting only the store copy of nix/github-known-hosts" "got: ${program_hosts:-<none>}"; fi
 terminal="$tmp/terminal" # the stubs, less timeout
 mkdir -p "$terminal"
 for f in "$stubs"/*; do [ "${f##*/}" = timeout ] || ln -s "$f" "$terminal/"; done
@@ -847,10 +878,7 @@ C=$(git -C "$s/upstream" rev-parse HEAD)
 echo "$held" >"$AUTOUPDATE_DAEMON_DIR/switching"
 at "2026-10-12 05:00"
 as "$home" bash "$script" sync </dev/null >>"$s/log/out" 2>&1 || true
-expect_eq "a sync waits for a switch past its lock check" "$(calls brew) $(cat "$home/.local/state/dotfiles-autoupdate/revision" 2>/dev/null)" "0 "
-# Seed a real pending handoff so apply reaches its final lock check.
-git -C "$home/dotfiles" fetch -q origin
-echo "$C" >"$home/.local/state/dotfiles-autoupdate/revision"
+expect_eq "a sync waits for a switch past its lock check" "$(calls brew) $(calls public-sync)" "0 0"
 STUB_SYNC_STARTS=$held as "$root_home" bash "$script" apply </dev/null >>"$s/log/out" 2>&1 || true
 expect_eq "the wake-race probe actually starts a sync" "$(cat "$home/.local/state/dotfiles-autoupdate/lock/pid" 2>/dev/null)" "$held"
 expect_eq "a switch waits for a sync that took its lock after the switch checked" "$(built)" ""
@@ -980,9 +1008,6 @@ at "2026-10-12 01:00"; commit_local "L: unpushed"
 L=$(git -C "$home/dotfiles" rev-parse HEAD)
 at "2026-10-12 02:00"; commit_upstream "C: flake.lock bump" flake.lock
 C=$(git -C "$s/upstream" rev-parse HEAD)
-git -C "$home/dotfiles" fetch -q origin
-mkdir -p "$home/.local/state/dotfiles-autoupdate"
-echo "$C" >"$home/.local/state/dotfiles-autoupdate/revision"
 at "2026-10-12 05:10"
 STUB_HUMAN_SWITCH=$L as "$root_home" bash "$script" apply </dev/null >>"$s/log/out" 2>&1 || true
 expect_eq "the race probe switches the system after apply sampled it" "$(ls "$s/log/human-switched" 2>/dev/null)" "$s/log/human-switched"
@@ -990,7 +1015,7 @@ expect_eq "a human switch that lands after apply's decision is not rolled back" 
 at "2026-10-12 06:10"
 as "$root_home" bash "$script" apply </dev/null >>"$s/log/out" 2>&1 || true
 expect_eq "the next tick waits for the push instead" "$(running_rev) $(built)" "$L "
-expect_report "and says it waits for the push" "not on origin/main yet; waiting for push"
+expect_report "and says it waits for the push" "not on origin/main \(if main was rewritten, run rebuild from main\); waiting for push$"
 
 # A daemon switch in progress makes `rebuild` say so and wait, then switch.
 fresh
@@ -998,9 +1023,6 @@ at "2026-10-12 01:00"; commit_local "L: unpushed"
 L=$(git -C "$home/dotfiles" rev-parse HEAD)
 at "2026-10-12 02:00"; commit_upstream "C: flake.lock bump" flake.lock
 C=$(git -C "$s/upstream" rev-parse HEAD)
-git -C "$home/dotfiles" fetch -q origin
-mkdir -p "$home/.local/state/dotfiles-autoupdate"
-echo "$C" >"$home/.local/state/dotfiles-autoupdate/revision"
 mkdir -p "$s/hold"; export STUB_SWITCH_HOLD="$s/hold" AUTOUPDATE_REBUILD_WAIT=60
 at "2026-10-12 05:10"
 as "$root_home" bash "$script" apply </dev/null >>"$s/log/out" 2>&1 &
@@ -1041,9 +1063,6 @@ at "2026-10-12 01:00"; commit_local "L: unpushed"
 L=$(git -C "$home/dotfiles" rev-parse HEAD)
 at "2026-10-12 02:00"; commit_upstream "C: flake.lock bump" flake.lock
 C=$(git -C "$s/upstream" rev-parse HEAD)
-git -C "$home/dotfiles" fetch -q origin
-mkdir -p "$home/.local/state/dotfiles-autoupdate"
-echo "$C" >"$home/.local/state/dotfiles-autoupdate/revision"
 mkdir -p "$s/hold"; export STUB_SWITCH_HOLD="$s/hold" AUTOUPDATE_REBUILD_WAIT=60
 at "2026-10-12 05:10"
 rebuild_bg "$s/rebuild.out"
@@ -1104,8 +1123,6 @@ B=$(git -C "$s/upstream" rev-parse HEAD)
 at "2026-10-12 01:10"; tick
 at "2026-10-12 02:00"; commit_upstream "C: flake.lock bump" flake.lock
 C=$(git -C "$s/upstream" rev-parse HEAD)
-git -C "$home/dotfiles" fetch -q origin
-echo "$C" >"$home/.local/state/dotfiles-autoupdate/revision"
 mkdir -p "$s/hold"; export STUB_SWITCH_HOLD="$s/hold" AUTOUPDATE_REBUILD_WAIT=60
 at "2026-10-12 05:10"
 as "$root_home" bash "$script" apply </dev/null >>"$s/log/out" 2>&1 &
@@ -1163,7 +1180,6 @@ at "2026-10-12 05:10"; tick
 before=$(running_rev)
 rollback_bg "$s/rollback.out"; rollback_code=0; wait "$rollback_pid" || rollback_code=$?
 expect_eq "rollback from a pushed revision lands" "${before:0:12} $(running_rev) $rollback_code" "${C:0:12} $A 0"
-expect_eq "with no git question as any user but the repo's owner" "$(calls "sudo: refused")" 0
 expect_eq "and says when the auto-update may switch back" \
   "$(grep -c "^rollback: this Mac now runs $A\\. The hourly auto-update will not switch back to ${C:0:12} before Tue 13 Oct 05:10; a newer push to main switches forward sooner\\. To stay on this revision, push a revert to main\\.$" "$s/rollback.out")" 1
 at "2026-10-12 06:10"; tick
@@ -1225,7 +1241,7 @@ as "$root_home" bash "$script" rebuild "$home/dotfiles#testhost" </dev/null >/de
 rollback_bg "$s/rollback.out"; rollback_code=0; wait "$rollback_pid" || rollback_code=$?
 at "2026-10-12 05:10"; tick
 expect_eq "a rollback to an unpushed generation stays through the hourly apply" "$(running_rev) $rollback_code" "$L 0"
-expect_eq "with the waiting-for-push note" "$(report | grep -c "${L:0:12}, which is not on origin/main yet; waiting for push")" 1
+expect_eq "with the waiting-for-push note" "$(report | grep -c "${L:0:12}, which is not on origin/main (if main was rewritten, run rebuild from main); waiting for push$")" 1
 
 # A rollback to an older generation of the running revision (a Home Manager
 # repair rebuilds it) leaves nothing for apply to undo, so it holds nothing.
@@ -1376,5 +1392,330 @@ else
 fi
 expect_eq "the updater runs with exactly the clean env, and the sandbox's settings only under test-sandbox" \
   "$(as "$home" /usr/bin/env | LC_ALL=C sort)" "$(printf '%s\n' "${want[@]}" | LC_ALL=C sort)"
+
+# 36. Audit H2 (26 Oct 2026): any process running as myuser could commit on
+# top of the running revision in ~/dotfiles, write that commit to the sync's
+# hand-over file, and the root daemon built it at the next tick. Root now
+# fetches GitHub's main into its own clone and builds only that.
+apply_now() { as "$root_home" bash "$script" apply </dev/null >>"$s/log/out" 2>&1 || true; }
+state="$home/.local/state/dotfiles-autoupdate"
+fresh
+at "2026-10-12 05:00"; tick
+commit_local "X: not on GitHub"
+X=$(git -C "$home/dotfiles" rev-parse HEAD)
+echo "$X" >"$state/revision"
+at "2026-10-12 05:10"; apply_now
+expect_eq "a commit written to myuser's hand-over file is never built as root" "$(running_rev) $(built)" "$A "
+git -C "$home/dotfiles" update-ref refs/remotes/origin/main "$X"
+echo "$X" >"$state/revision"
+at "2026-10-12 06:10"; apply_now
+expect_eq "nor when myuser's own origin/main ref names it too" "$(running_rev) $(built)" "$A "
+
+# A push goes live with no sync at all: the daemon fetches GitHub's main.
+fresh
+at "2026-10-12 05:00"; tick
+at "2026-10-12 05:30"; commit_upstream "C: push"
+C=$(git -C "$s/upstream" rev-parse HEAD)
+at "2026-10-12 06:10"; apply_now
+expect_eq "apply switches to a new push by itself, with no sync" "$(running_rev)" "$C"
+expect_eq "built from root's own clone at exactly that revision" \
+  "$(tail -n 1 "$s/log/flake-refs")" "git+file://$root/repo.git?rev=$C#testhost"
+expect_eq "and logs the fetch for the real-machine check" "$(grep -c "fetched GitHub main $C$" "$s/log/out")" 1
+expect_eq "the sync leaves no hand-over file behind" "$(at "2026-10-12 07:00"; tick; ls "$state/revision" 2>/dev/null)" ""
+
+# A hand-over file with anything in it means nothing to apply now.
+fresh
+at "2026-10-12 05:00"; tick
+printf 'not a commit\n' >"$state/revision"
+at "2026-10-12 05:10"; apply_now
+expect_no_alarm "a garbage hand-over file is ignored"
+
+# Root's clone and key are root's alone. Anything else alarms at once and
+# stops before any fetch or build, and apply never changes a mode or writes
+# through a link.
+# expect_refused <name> <alarm regex>: the next tick alarms and builds nothing.
+expect_refused() {
+  at "2026-10-12 04:30"; commit_upstream "C: push"
+  at "2026-10-12 05:00"; tick
+  expect_alarm "$1 alarms" "$2"
+  expect_eq "$1 fetches and builds nothing" \
+    "$(built) $(git --git-dir="$root/repo.git" rev-parse -q --verify refs/remotes/origin/main 2>/dev/null)" " "
+}
+fresh
+rm -f "$root/deploy_key"
+expect_refused "no deploy key" \
+  "^dotfiles auto-update: switch: there is no deploy key at $root/deploy_key; generate it as root and add it to GitHub read-only \(docs/secrets\.md, \"Auto-update deploy key\", steps 1-3\); nothing was fetched or switched; see "
+fresh
+chmod 644 "$root/deploy_key"
+expect_refused "a deploy key others can read" "switch: $root/deploy_key must be a regular file \(not a link\) owned by root with mode 600 or 400"
+expect_eq "and its mode stays" "$(/usr/bin/stat -f %Lp "$root/deploy_key")" 644
+fresh
+chmod 755 "$root"
+expect_refused "a clone dir others can list" "switch: $root must be a directory \(not a link\) owned by root with mode 700"
+expect_eq "and its mode stays" "$(/usr/bin/stat -f %Lp "$root")" 755
+fresh
+mv "$root" "$s/elsewhere-root"
+ln -s "$s/elsewhere-root" "$root"
+expect_refused "a clone dir that is a link" "switch: $root must be a directory \(not a link\)"
+expect_eq "and nothing is written through the link" "$(ls -A "$s/elsewhere-root") $(/usr/bin/stat -f %Lp "$s/elsewhere-root")" "deploy_key 700"
+fresh
+chmod 777 "$s/var-lib"
+expect_refused "a parent dir others can write" "switch: $s/var-lib is not a directory that only root can write"
+chmod 755 "$s/var-lib"
+
+# Before the owner's key steps: the daemon makes its 0700 dir, then alarms on
+# the missing key each tick and switches nothing; the sync agent notifies
+# him once.
+fresh
+rm -rf "$root"
+expect_refused "a Mac with no key steps done yet" "switch: there is no deploy key at $root/deploy_key"
+expect_eq "creates only root's dir, mode 700" "$(/usr/bin/stat -f %Lp "$root") $(ls -A "$root")" "700 "
+for h in 06 07 08; do at "2026-10-12 $h:00"; tick; done
+expect_eq "and notifies once" "$(grep -c '^notify there is no deploy key' "$s/log/calls")" 1
+
+# The fetch from GitHub: pinned ssh options, the 443 fallback, and how each
+# failure reads. Through the stub ssh, on the real default URLs.
+fresh
+unset AUTOUPDATE_REMOTE
+at "2026-10-12 04:30"; commit_upstream "C: push"
+C=$(git -C "$s/upstream" rev-parse HEAD)
+at "2026-10-12 05:00"; tick
+expect_eq "apply fetches GitHub's main over ssh and switches to it" "$(running_rev)" "$C"
+expect_eq "ssh reads no config or agent, uses only the deploy key and trusts only the pinned host keys" \
+  "$(head -n 1 "$s/log/ssh" | sed 's/ -o SendEnv=GIT_PROTOCOL//; s/ git-upload-pack .*//')" \
+  "ssh -F /dev/null -i $root/deploy_key -o IdentitiesOnly=yes -o IdentityAgent=none -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$repo/nix/github-known-hosts -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o ConnectTimeout=20 git@github.com"
+fresh
+unset AUTOUPDATE_REMOTE
+export STUB_SSH=offline22
+at "2026-10-12 04:30"; commit_upstream "C: push"
+C=$(git -C "$s/upstream" rev-parse HEAD)
+at "2026-10-12 05:00"; tick
+expect_eq "a blocked port 22 falls back to ssh.github.com:443" \
+  "$(running_rev) $(grep -c -- '-p 443 git@ssh.github.com ' "$s/log/ssh")" "$C 1"
+expect_no_alarm "and raises no alarm"
+for kind in auth hostkey; do
+  fresh
+  unset AUTOUPDATE_REMOTE
+  export STUB_SSH=$kind
+  case $kind in
+    auth) refusal="switch: GitHub refused the deploy key at $root/deploy_key \(not added to microcerebus/dotfiles-public, or revoked" ;;
+    hostkey) refusal="switch: GitHub's SSH host key does not match the pinned keys in $repo/nix/github-known-hosts" ;;
+  esac
+  expect_refused "a fetch that fails with STUB_SSH=$kind" "$refusal"
+  expect_eq "and it does not retry on port 443" "$(grep -c -- '-p 443' "$s/log/ssh")" 0
+done
+fresh
+unset AUTOUPDATE_REMOTE
+export STUB_SSH=offline
+at "2026-10-12 04:30"; commit_upstream "C: push"
+at "2026-10-12 05:10"; tick
+expect_report "GitHub unreachable on both ports is reported" "^info: switch: GitHub is unreachable over SSH, on ports 22 and 443"
+expect_no_alarm "and is no alarm at first, as after a wake"
+for h in 06 07 08 09 10 11; do at "2026-10-12 $h:10"; apply_now; done
+expect_alarm "and alarms after 6 h" "switch: GitHub is unreachable over SSH, on ports 22 and 443 .* \(for 6 h\)$"
+expect_eq "and never builds" "$(built)" ""
+
+# A force-push that drops the running revision is never applied silently,
+# whatever tree it brings: apply says so and waits for a human rebuild.
+fresh
+at "2026-10-12 04:30"; commit_upstream "C: push"
+C=$(git -C "$s/upstream" rev-parse HEAD)
+at "2026-10-12 05:00"; tick
+git -C "$s/upstream" reset -q --hard "$A"
+echo "F" >>"$s/upstream/notes"
+git -C "$s/upstream" -c user.email=t@example.com -c user.name=t commit -qam "F: rewritten"
+git -C "$s/upstream" push -q -f origin main
+at "2026-10-12 06:10"; apply_now
+expect_eq "a rewritten main is not switched to" "$(running_rev) $(built | wc -l | tr -d ' ')" "$C 1"
+expect_report "and apply says main was rewritten" "^info: switch: GitHub's main was rewritten and no longer contains ${C:0:12}, which this Mac runs; run rebuild from main to accept it$"
+at "2026-10-12 08:10"; apply_now
+expect_alarm "and alarms after 2 h" "switch: GitHub's main was rewritten"
+
+# A sync lock naming a live pid (myuser's uid writes it) stalls every switch;
+# apply alarms once it has waited 6 h, keeping the last run's notes.
+fresh
+at "2026-10-12 01:00"; commit_local "L: unpushed"
+ln -sfn "$(PATH="$stubs:$PATH" mksystem "$(git -C "$home/dotfiles" rev-parse HEAD)")" "$AUTOUPDATE_SYSTEM"
+ln -sfn "$(cat "$AUTOUPDATE_SYSTEM/closure")" "$HM_GCROOT"
+at "2026-10-12 05:00"; tick
+mkdir -p "$state/lock"
+/bin/sleep 600 & held=$!
+echo "$held" >"$state/lock/pid"
+for h in 06 07 08 09 10 11; do at "2026-10-12 $h:10"; apply_now; done
+expect_report "a held sync lock is reported" "^info: switch: every switch waits for dotfiles-sync"
+at "2026-10-12 12:10"; apply_now
+expect_alarm "a sync lock held 6 h alarms" "switch: every switch waits for dotfiles-sync, whose lock names a live pid \($held\); see .* \(for 6 h\)$"
+expect_alarm "and keeps the waiting-for-push alarm it carried" "switch: the running system is built from .* waiting for push \(for 7 h\)$"
+rm -f "$state/lock/pid"; mkfifo "$state/lock/pid"
+at "2026-10-12 13:10"
+as "$root_home" "$coreutils/bin/timeout" 30 bash "$script" apply </dev/null >>"$s/log/out" 2>&1 || true
+# Reads the alarms first: under pipefail, `alarms | grep -q` fails whenever
+# grep's early exit kills the writer, which read a match as no match.
+expect_no_alarm_matching() {
+  local got; got=$(alarms)
+  if grep -q -- "$2" <<<"$got"; then bad "$1" "want no alarm matching: $2" "got: $got"; else ok "$1"; fi
+}
+expect_no_alarm_matching "a FIFO for a lock pid is no sync, and never hangs apply" "every switch waits"
+kill "$held" 2>/dev/null; wait "$held" 2>/dev/null || true
+
+# GitHub's host keys, pinned in nix/github-known-hosts for both names root
+# connects to, match the fingerprints GitHub publishes at
+# https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/githubs-ssh-key-fingerprints
+# (read 26 Oct 2026). A key rotation needs both changed.
+expect_eq "the pinned GitHub host keys match GitHub's published fingerprints" \
+  "$(ssh-keygen -lf "$repo/nix/github-known-hosts" | awk '{ print $2, $3, $4 }' | LC_ALL=C sort)" \
+  "$(printf '%s\n' \
+    'SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU github.com,[ssh.github.com]:443 (ED25519)' \
+    'SHA256:p2QAMXNIC1TJYWeIOttrVc98/R1BUFWu3/LiyKgUfQM github.com,[ssh.github.com]:443 (ECDSA)' \
+    'SHA256:uNiVztksCsDhcc0u9e8BujQXVUpKZIDTMczCvj3tD2s github.com,[ssh.github.com]:443 (RSA)' | LC_ALL=C sort)"
+
+# 37. The review of 26 Oct 2026 (c41-d1-review-r1b), fix round 2.
+# A failed switch, then a tick with GitHub unreachable (as right after a
+# wake), then GitHub back while the failed revision is held for a day (probe
+# P1). The failure alarm stays the whole time, and no stale "unreachable"
+# note alarms 6 h after GitHub answered again.
+fresh
+unset AUTOUPDATE_REMOTE
+at "2026-10-12 04:00"; tick
+at "2026-10-12 04:30"; commit_upstream "C: push"
+C=$(git -C "$s/upstream" rev-parse HEAD)
+export STUB_SWITCH_EXIT=1
+at "2026-10-12 05:10"; apply_now
+unset STUB_SWITCH_EXIT
+export STUB_SSH=offline
+at "2026-10-12 06:10"; apply_now
+expect_alarm "a failed switch still alarms after a tick with GitHub unreachable" "switch: switch to ${C:0:12} failed \(exit 1\)"
+expect_report "and that tick reports GitHub unreachable" "^info: switch: GitHub is unreachable over SSH"
+unset STUB_SSH
+for h in 07 08 09 10 11 12; do at "2026-10-12 $h:10"; apply_now; done
+expect_alarm "and keeps alarming once GitHub is back, while the revision is held" "switch: switch to ${C:0:12} failed \(exit 1\)"
+expect_no_alarm_matching "with no stale 'GitHub is unreachable' alarm 6 h later" "GitHub is unreachable"
+expect_eq "and the held revision is not retried within the day" "$(built | tr '\n' ' ')" "$C "
+at "2026-10-13 05:20"; apply_now
+expect_eq "the retry a day later switches" "$(running_rev)" "$C"
+expect_no_alarm "and clears the alarm"
+
+# the owner pushes P, rebuilds it before the :10 tick, finds it broken and rolls
+# back, still before the tick (probe P2). rollback fetches GitHub's main
+# first, so root's clone knows P and the hold covers it.
+fresh
+at "2026-10-12 05:10"; tick
+at "2026-10-12 05:30"; commit_upstream "P: push"
+P=$(git -C "$s/upstream" rev-parse HEAD)
+git -C "$home/dotfiles" pull -q --ff-only
+as "$root_home" bash "$script" rebuild "$home/dotfiles#testhost" </dev/null >"$s/rebuild.out" 2>&1 || true
+expect_eq "a rebuild of a fresh push lands it before the tick" "$(running_rev)" "$P"
+at "2026-10-12 05:40"
+rollback_bg "$s/rollback.out"; rollback_code=0; wait "$rollback_pid" || rollback_code=$?
+expect_eq "a rollback from it, still before the tick, holds it off for a day" \
+  "$(running_rev) $rollback_code $(cat "$AUTOUPDATE_DAEMON_DIR/attempt" 2>/dev/null)" "$A 0 $P $FAKE_NOW"
+expect_eq "and says so" \
+  "$(grep -c "^rollback: this Mac now runs $A\\. The hourly auto-update will not switch back to ${P:0:12} before Tue 13 Oct 05:40;" "$s/rollback.out")" 1
+for h in 06 07; do at "2026-10-12 $h:10"; tick; done
+expect_eq "so the hourly apply does not switch back to it" "$(running_rev) $(built | grep -c "$P")" "$A 1"
+
+# A rollback that cannot reach GitHub says so and still rolls back; the hold
+# then goes by the clone's last hourly fetch, and rollback's last line says
+# which way it went.
+fresh
+unset AUTOUPDATE_REMOTE
+at "2026-10-12 05:10"; tick
+at "2026-10-12 05:30"; commit_upstream "P: push"
+P=$(git -C "$s/upstream" rev-parse HEAD)
+git -C "$home/dotfiles" pull -q --ff-only
+as "$root_home" bash "$script" rebuild "$home/dotfiles#testhost" </dev/null >"$s/rebuild.out" 2>&1 || true
+export STUB_SSH=offline
+at "2026-10-12 05:40"
+rollback_bg "$s/rollback.out"; rollback_code=0; wait "$rollback_pid" || rollback_code=$?
+unset STUB_SSH
+expect_eq "a rollback with GitHub unreachable still rolls back" "$(running_rev) $rollback_code" "$A 0"
+expect_eq "and says it could not fetch first" \
+  "$(grep -c "^rollback: could not fetch GitHub's main first: GitHub is unreachable over SSH, on ports 22 and 443 (.*)\\. Rolling back anyway; the hold goes by the auto-update's last fetch\\.$" "$s/rollback.out")" 1
+expect_eq "and that the auto-update may switch forward again" \
+  "$(grep -c "^rollback: this Mac now runs $A\\. If that revision is on origin/main, the hourly auto-update switches forward" "$s/rollback.out")" 1
+expect_clean "and leaves no scratch file or shell error"
+
+# Apply fetches before it takes the switch lock, so a slow GitHub never holds
+# up a human switch, and decides under the lock from the clone's tip.
+fresh
+at "2026-10-12 05:30"; commit_upstream "C: push"
+C=$(git -C "$s/upstream" rev-parse HEAD)
+# shellcheck disable=SC2016 # $1 and $2 expand in the holder's shell
+lockf -k "$AUTOUPDATE_DAEMON_DIR/switch.lock" sh -c 'touch "$1"; while [ ! -e "$2" ]; do /bin/sleep 0.1; done' \
+  sh "$s/held" "$s/release-lock" & held=$!
+wait_for 5 test -e "$s/held" || bad "the lock holder starts" "no lock taken"
+at "2026-10-12 06:10"; apply_now
+expect_eq "apply fetches GitHub's main while a rebuild holds the switch lock" \
+  "$(git --git-dir="$root/repo.git" rev-parse -q --verify refs/remotes/origin/main) $(running_rev)" "$C $A"
+expect_eq "and leaves the decision to the next tick" "$(grep -c 'the switch lock is held' "$s/log/out")" 1
+touch "$s/release-lock"; wait "$held" || true
+at "2026-10-12 07:10"; apply_now
+expect_eq "which switches to the clone's tip" "$(running_rev)" "$C"
+
+# Root reads the pid in myuser's sync lock with one open that follows no link,
+# and only from a regular file (the FIFO case is in 36).
+fresh
+at "2026-10-12 05:00"; tick
+mkdir -p "$state/lock"
+echo "$$" >"$s/pid-elsewhere"
+ln -s "$s/pid-elsewhere" "$state/lock/pid"
+at "2026-10-12 05:30"; commit_upstream "C: push"
+C=$(git -C "$s/upstream" rev-parse HEAD)
+at "2026-10-12 06:10"; apply_now
+expect_eq "a sync lock pid that is a link to a live pid is no sync" "$(running_rev)" "$C"
+expect_no_alarm_matching "and is never reported as one" "every switch waits"
+rm -f "$state/lock/pid"
+
+# Whether GitHub's main once had the running revision comes from the commits
+# root's clone holds, which only ever come from GitHub's main, not from its
+# reflog, whose entries can expire. A clone that never saw the revision
+# cannot tell unpushed from rewritten, and its note claims neither.
+fresh
+at "2026-10-12 04:30"; commit_upstream "C: push"
+C=$(git -C "$s/upstream" rev-parse HEAD)
+at "2026-10-12 05:00"; tick
+git -C "$s/upstream" reset -q --hard "$A"
+echo "F" >>"$s/upstream/notes"
+git -C "$s/upstream" -c user.email=t@example.com -c user.name=t commit -qam "F: rewritten"
+git -C "$s/upstream" push -q -f origin main
+git --git-dir="$root/repo.git" reflog expire --expire=now --expire-unreachable=now --all
+at "2026-10-12 06:10"; apply_now
+expect_report "a rewritten main reads as rewritten with the clone's reflog expired" \
+  "^info: switch: GitHub's main was rewritten and no longer contains ${C:0:12}, which this Mac runs; run rebuild from main to accept it$"
+rm -rf "$root/repo.git"
+at "2026-10-12 07:10"; apply_now
+expect_report "a clone made after the rewrite says only what it knows" \
+  "^info: switch: the running system is built from ${C:0:12}, which is not on origin/main \(if main was rewritten, run rebuild from main\); waiting for push$"
+expect_eq "and neither builds" "$(built | wc -l | tr -d ' ')" 1
+
+# Root's fetch reads no global or system git config, so a gitconfig in
+# root's HOME cannot point it at another repo (probe P3).
+fresh
+git init -q --bare -b main "$s/evil.git"
+git clone -q "$s/origin.git" "$s/evilwork" 2>/dev/null
+echo evil >>"$s/evilwork/notes"
+git -C "$s/evilwork" -c user.email=t@example.com -c user.name=t commit -qam "E: evil"
+git -C "$s/evilwork" push -q "$s/evil.git" HEAD:main
+printf '[url "%s"]\n\tinsteadOf = %s\n' "$s/evil.git" "$s/origin.git" >"$root_home/.gitconfig"
+at "2026-10-12 05:10"; apply_now
+expect_eq "a gitconfig in root's HOME does not redirect the fetch" \
+  "$(running_rev) $(git --git-dir="$root/repo.git" rev-parse -q --verify refs/remotes/origin/main)" "$A $A"
+rm -f "$root_home/.gitconfig"
+
+# Nix builds root's clone, in the shape apply makes it, at an exact ?rev=,
+# and prints nothing about a HEAD it cannot resolve (the 26 Oct 2026 probe).
+fresh
+git -C "$s/upstream" rm -q flake.lock
+echo '{ outputs = _: { }; }' >"$s/upstream/flake.nix"
+commit_upstream "N: a flake"
+N=$(git -C "$s/upstream" rev-parse HEAD)
+at "2026-10-12 05:10"; apply_now
+nix flake metadata --json "git+file://$root/repo.git?rev=$N" >"$s/nix.json" 2>"$s/nix.err" || true
+expect_eq "nix reads root's clone at ?rev=" "$(jq -r .revision "$s/nix.json" 2>/dev/null)" "$N"
+expect_eq "and prints no warning or error, about its HEAD or anything else" \
+  "$(tr '\r' '\n' <"$s/nix.err" | grep -Ei '^(warning|error|fatal)' | head -n 3)" ""
+
+# Root asks no git question as myuser anywhere in this suite: nothing ran sudo.
+expect_eq "no run of the updater calls sudo" "$(sort -u "$STUB_SUDO_LOG")" ""
 
 exit "$fail"

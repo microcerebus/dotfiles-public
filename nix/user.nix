@@ -603,13 +603,14 @@ in
   };
 
   # Daily auto-update, myuser's half (scripts/dotfiles-autoupdate sync): fetch
-  # and fast-forward ~/dotfiles, pnpm globals, brew upgrade, pending macOS
-  # updates, then hand origin/main to the root daemon in nix/host.nix. An
-  # agent, not part of that daemon, because git's credential lives in the
+  # and fast-forward ~/dotfiles, publish origin/main to the public mirror,
+  # pnpm globals, brew upgrade, pending macOS updates. An agent, not part of
+  # the root daemon in nix/host.nix, because git's credential lives in the
   # login keychain, which answers only inside this GUI session (a root daemon
   # running `sudo -u myuser git` gets -25308, which broke every run until
-  # 11 Oct 2026). On the hour, every hour: fetch, fast-forward and hand over,
-  # so a push goes live within the hour; the daemon ticks ten minutes later.
+  # 11 Oct 2026). It hands the daemon nothing: the daemon fetches GitHub's
+  # main itself with its own key. On the hour, every hour: fetch and
+  # fast-forward; the daemon ticks ten minutes later.
   # The heavy steps run once a day from 04:00. A tick missed asleep runs on
   # wake, so a Mac that was asleep at 04:00 catches up.
   launchd.agents.dotfiles-sync = {

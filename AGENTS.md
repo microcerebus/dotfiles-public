@@ -26,8 +26,9 @@ Model defaults: `docs/model-routing.md` (Codex-first for new work, Claude fallba
   Do not run `setup/mac.sh` against the real system merely to test it.
 - The daily auto-updater (`scripts/dotfiles-autoupdate`) remains authorized to run without an attended request.
   The `dotfiles-sync` launchd agent (`nix/user.nix`) fast-forwards the main checkout to `origin/main` and updates pnpm globals and brew.
-  The `dotfiles-autoupdate` launchd daemon (`nix/host.nix`) switches the system to the exact `origin/main` revision the agent fetched, never to the working tree.
-  Anything pushed to `main` is live on the machine within about an hour: the agent hands over origin/main hourly, and its heavy steps (pnpm, brew, macOS updates) run daily from 04:00.
+  The `dotfiles-autoupdate` launchd daemon (`nix/host.nix`) fetches GitHub's main hourly at ten past into its own root-only clone in `/var/lib/dotfiles-autoupdate`, with a read-only deploy key the owner generated there (`docs/secrets.md`), and switches to exactly that revision, never to the working tree or anything else the owner's uid can write.
+  Agents never read, list or write that directory or its key; the program pins GitHub's host keys from `nix/github-known-hosts`.
+  Anything pushed to `main` is live on the machine within about an hour; the agent's heavy steps (pnpm, brew, macOS updates) run daily from 04:00.
   Unpushed or uncommitted work is never applied by the updater; a system that `rebuild` built from such work stays until the push.
   Alarms reach the zsh banner, the agent board and agent sessions through `dotfiles-autoupdate status`.
 - Preserve unrelated changes.
