@@ -10,10 +10,11 @@ import net from 'node:net';
 import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const SKILL = '.claude/skills/verify-agent-board/scripts';
@@ -364,7 +365,7 @@ test('a lanes copy leaves out a directory link that loops back and anything not 
   }
 });
 
-test('look refuses the live board, a width that is not a number, and fails on a page that did not answer 2xx', async (t) => {
+test('look refuses the live board, a viewport it does not know, and fails on a page that did not answer 2xx', async (t) => {
   const look = (...args) => spawnSync(process.execPath, [path.join(REPO, SKILL, 'flows/look.mjs'), ...args],
     { encoding: 'utf8', timeout: 60_000 });
   const live = look('http://127.0.0.1:4790/map', path.join(tmp, 'look'), 'live', '390');
@@ -372,12 +373,17 @@ test('look refuses the live board, a width that is not a number, and fails on a 
   assert.match(live.stderr, /refusing the live board on port 4790/);
   const phoneFlag = look('http://127.0.0.1:1/map', path.join(tmp, 'look'), 'flag', '--phone');
   assert.notEqual(phoneFlag.status, 0);
-  assert.match(phoneFlag.stderr, /usage: look.mjs <url> <evidence-dir> <name> \[<width>\]/);
+  assert.match(phoneFlag.stderr, /usage: look.mjs <url> <evidence-dir> <name> \[<viewport>\|<width>\]/);
+  const unknown = look('http://127.0.0.1:1/map', path.join(tmp, 'look'), 'unknown', 'ipad-pro');
+  assert.notEqual(unknown.status, 0);
+  assert.match(unknown.stderr, /viewports: desktop-1920, small-desktop-1080, ipad-portrait-744, ipad-landscape-1133, phone-390/);
 
   const listed = spawnSync('pnpm', ['ls', '-g', '--depth', '0', '--json'], { encoding: 'utf8' }).stdout ?? '';
   if (!listed.includes('"playwright-core"')) return t.skip('playwright-core is not installed');
-  const server = net.createServer((socket) => socket.end('HTTP/1.1 500 Internal Server Error\r\ncontent-type: text/html\r\n'
-    + 'connection: close\r\n\r\n<title>agent board error</title>Could not read T3 state'));
+  const server = http.createServer((_, response) => {
+    response.writeHead(500, { 'content-type': 'text/html' });
+    response.end('<title>agent board error</title>Could not read T3 state');
+  });
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
   try {
@@ -387,10 +393,64 @@ test('look refuses the live board, a width that is not a number, and fails on a 
     run.stdout.on('data', (d) => { out += d; });
     const [code] = await once(run, 'exit');
     assert.equal(code, 1, out);
-    assert.match(out, /^FAIL 500/);
+    // With no viewport named, look shoots all five.
+    assert.deepEqual([...out.matchAll(/^FAIL 500 .* at ([\w-]+) /gm)].map((m) => m[1]),
+      ['desktop-1920', 'small-desktop-1080', 'ipad-portrait-744', 'ipad-landscape-1133', 'phone-390']);
+    const layout = JSON.parse(fs.readFileSync(path.join(tmp, 'look/broken-desktop-1920.json'), 'utf8'));
+    assert.equal(layout.engine, 'chrome');
+    assert.equal(layout.scrollWidth, layout.clientWidth);
+    assert.equal(layout.overflow, 0);
+    assert.deepEqual(layout.lanes, []);
   } finally {
     server.close();
   }
+});
+
+test('look saves full pages at the device scale, and at CSS pixels only past what Chrome can capture', async (t) => {
+  const listed = spawnSync('pnpm', ['ls', '-g', '--depth', '0', '--json'], { encoding: 'utf8' }).stdout ?? '';
+  if (!listed.includes('"playwright-core"')) return t.skip('playwright-core is not installed');
+  // 64 rows of 104 CSS px is 6656 px: 19968 device px on the 3x phone (past 16384), 13312 on the 2x iPad.
+  const server = http.createServer((request, response) => {
+    response.writeHead(200, { 'content-type': 'text/html' });
+    const rows = request.url === '/tall' ? 64 : 20;
+    response.end(`<meta name="viewport" content="width=device-width"><title>rows</title><style>body{margin:0}div{height:100px;border-bottom:4px solid}</style>${'<div></div>'.repeat(rows)}`);
+  });
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  // A PNG's width is the first field of its IHDR chunk.
+  const pngWidth = (file) => fs.readFileSync(file).readUInt32BE(16);
+  try {
+    const shots = [['short', 'phone-390', 1170, 'device'], ['tall', 'phone-390', 390, 'css'], ['tall', 'ipad-portrait-744', 1488, 'device'],
+      ['tall', 'desktop-1920', 1920, 'device']];
+    for (const [page, view, width, scale] of shots) {
+      const run = spawn(process.execPath, [path.join(REPO, SKILL, 'flows/look.mjs'), `http://127.0.0.1:${server.address().port}/${page}`,
+        path.join(tmp, 'look-scale'), page, view], { stdio: ['ignore', 'pipe', 'pipe'] });
+      let out = '';
+      run.stdout.on('data', (d) => { out += d; });
+      const [code] = await once(run, 'exit');
+      assert.equal(code, 0, out);
+      const base = path.join(tmp, 'look-scale', `${page}-${view}`);
+      assert.equal(pngWidth(`${base}-full.png`), width, `${page} at ${view}`);
+      assert.equal(JSON.parse(fs.readFileSync(`${base}.json`, 'utf8')).fullScale, scale, `${page} at ${view}`);
+    }
+  } finally {
+    server.close();
+  }
+});
+
+test('the uneven map fixture has three lanes with the counts that exposed the wide-layout bug', async () => {
+  const { seedMapShape } = await import(pathToFileURL(path.join(REPO, SKILL, 'fixture.mjs')));
+  const { parseUnits } = await import(pathToFileURL(path.join(REPO, 'files/bin/agent-board.mjs')));
+  const dir = path.join(tmp, 'map-shape');
+  seedMapShape(dir);
+  const counts = fs.readdirSync(dir).map((name) => {
+    const lane = path.join(dir, name);
+    const { units, skipped } = parseUnits(fs.readFileSync(path.join(lane, 'units.tsv'), 'utf8'));
+    assert.deepEqual(skipped, []);
+    return [JSON.parse(fs.readFileSync(path.join(lane, 'lane.json'))).priority, units.length,
+      units.filter((u) => u.state !== 'done').length];
+  }).sort((a, b) => a[0] - b[0]);
+  assert.deepEqual(counts, [[1, 51, 22], [2, 17, 8], [3, 106, 35]]);
 });
 
 test('the skill drives with Playwright written flows first and names chrome-devtools-axi only as the fallback', () => {
@@ -410,6 +470,33 @@ test('the skill drives with Playwright written flows first and names chrome-devt
   for (const feature of ['threads', 'auto-update', 'project-map', 'stale-rows', 'phone-and-access']) {
     const recipe = fs.readFileSync(path.join(REPO, '.claude/skills/verify-agent-board/features', `${feature}.md`), 'utf8');
     assert.match(recipe, /These commands are quota fallback only and require active `codex-browser-fallback status`/);
+  }
+});
+
+test('visual checks default to the five viewports the owner reads the board on, defined once for every flow', async () => {
+  const { VIEWPORTS, viewport, pageOptions } = await import(pathToFileURL(path.join(REPO, SKILL, 'flows/viewports.mjs')));
+  const describe = (v) => `${v.name} ${v.width}x${v.height} ${v.deviceScaleFactor}x${v.isMobile ? ' mobile' : ''}${v.hasTouch ? ' touch' : ''}`;
+  assert.deepEqual(VIEWPORTS.map(describe), ['desktop-1920 1920x1440 1x', 'small-desktop-1080 1080x1800 1x',
+    'ipad-portrait-744 744x1133 2x touch', 'ipad-landscape-1133 1133x744 2x touch', 'phone-390 390x844 3x mobile touch']);
+  assert.equal(viewport('744').name, 'ipad-portrait-744');
+  assert.equal(viewport('phone-390').width, 390);
+  assert.equal(viewport('1440'), undefined);
+  assert.deepEqual(pageOptions(viewport('phone-390')),
+    { viewport: { width: 390, height: 844 }, deviceScaleFactor: 3, isMobile: true, hasTouch: true });
+  const flows = path.join(REPO, SKILL, 'flows');
+  for (const flow of fs.readdirSync(flows).filter((f) => f !== 'viewports.mjs')) {
+    const code = fs.readFileSync(path.join(flows, flow), 'utf8');
+    assert.doesNotMatch(code, /\.new(?:Page|Context)\((?!pageOptions\()/, `${flow} opens a page without pageOptions(), so it sizes the page itself`);
+    assert.doesNotMatch(code, /setViewportSize|\bresize\b/, `${flow} resizes a page instead of opening it at a viewport`);
+  }
+  const skill = fs.readFileSync(path.join(REPO, '.claude/skills/verify-agent-board/SKILL.md'), 'utf8');
+  for (const v of VIEWPORTS) assert.ok(skill.includes(`\`${v.name}\``), `SKILL.md names ${v.name}`);
+  const docs = ['SKILL.md', ...fs.readdirSync(path.join(REPO, '.claude/skills/verify-agent-board/features')).map((f) => `features/${f}`)];
+  const axiSizes = VIEWPORTS.map((v) => `${v.width}x${v.height}x${v.deviceScaleFactor}${v.isMobile ? ',mobile' : ''}${v.hasTouch ? ',touch' : ''}`);
+  for (const doc of docs) {
+    const text = fs.readFileSync(path.join(REPO, '.claude/skills/verify-agent-board', doc), 'utf8');
+    assert.doesNotMatch(text, /\b1440\b|1280x900/, `${doc} keeps an old default`);
+    for (const [, size] of text.matchAll(/"(\d+x\d+x\d[^"]*)"/g)) assert.ok(axiSizes.includes(size), `${doc}: axi size ${size} is not one of viewports.mjs`);
   }
 });
 

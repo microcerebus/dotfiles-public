@@ -3,21 +3,23 @@
 // (project-map: map-pr-state, map-pr-checks, map-pr-live). Runs against this checkout's fixture run, whose gh is a
 // stub that answers from scratch/gh/prs-board.json; never the live board.
 //
-//   1. Open $BOARD_URL/map at 1440x900 and at 390 (phone). Read the preview-live row: its PR chip, the PR line, the
-//      checks. Expect `#16 open`, `1 check running`, `1/2 checks` with e2e pending, and a preview link.
-//   2. Screenshots project-map-pr-live-before-{desktop,phone}.png, reads in project-map-pr-live-before.txt.
+//   1. Open $BOARD_URL/map at each of the five viewports in viewports.mjs (desktop 1920, small desktop 1080, iPad mini
+//      portrait 744 and landscape 1133, phone 390). Read the preview-live row: its PR chip, the PR line, the checks.
+//      Expect `#16 open`, `1 check running`, `1/2 checks` with e2e pending, and a preview link.
+//   2. Screenshots project-map-pr-live-before-<viewport>.png, reads in project-map-pr-live-before.txt.
 //   3. In scratch/gh/prs-board.json, let e2e finish green and the PR become mergeable. Nothing reloads the page.
 //   4. Wait for the page's own 15-second refresh until the change shows, at most four reloads (the board asks gh
 //      again after AGENT_BOARD_PR_TTL_MS, 3 s in the fixture).
 //      Expect `#16 ready`, no running check, `2/2 checks` with e2e passed, the same preview link, a later clock.
-//   5. Screenshots project-map-pr-live-after-{desktop,phone}.png, reads in .txt, the page HTML in .html, the changed
-//      gh answer in .json, and the width overflow of both pages (0 means nothing is cut off).
+//   5. Screenshots project-map-pr-live-after-<viewport>.png, reads in .txt, the page HTML in .html, the changed
+//      gh answer in .json, and the width overflow of every page (0 means nothing is cut off).
 //   6. Put the gh answer back.
 //
 // Run: node .claude/skills/verify-agent-board/scripts/flows/map-pr-live.mjs   (prints PASS or FAIL per step)
 import fs from 'node:fs';
 import path from 'node:path';
 import { boardEnv, chrome } from './playwright.mjs';
+import { VIEWPORTS, pageOptions } from './viewports.mjs';
 
 const env = boardEnv();
 if (env.BOARD_MODE !== 'fixture') throw new Error(`needs a fixture run, not ${env.BOARD_MODE}: board.mjs launch --fixture`);
@@ -53,15 +55,15 @@ const after = (r) => r.chip === '#16 ready' && !r.meta?.includes('running') && r
 const original = fs.readFileSync(answer, 'utf8');
 const browser = await chrome();
 try {
-  const desktop = await browser.newPage({ viewport: { width: 1440, height: 900 } });
-  const phone = await browser.newPage({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 3, isMobile: true, hasTouch: true });
-  await desktop.goto(`${env.BOARD_URL}/map`);
-  await phone.goto(`${env.BOARD_URL}/map`);
-  const first = { desktop: await read(desktop), phone: await read(phone) };
+  const pages = {};
+  for (const v of VIEWPORTS) pages[v.name] = await browser.newPage(pageOptions(v));
+  await Promise.all(Object.values(pages).map((page) => page.goto(`${env.BOARD_URL}/map`)));
+  const readAll = async () => Object.fromEntries(await Promise.all(Object.entries(pages).map(async ([n, page]) => [n, await read(page)])));
+  const shootAll = (when) => Promise.all(Object.entries(pages).map(([n, page]) => page.screenshot({ path: out(`${when}-${n}.png`), fullPage: true })));
+  const first = await readAll();
   save('before', first);
-  await desktop.screenshot({ path: out('before-desktop.png'), fullPage: true });
-  await phone.screenshot({ path: out('before-phone.png'), fullPage: true });
-  check('before', before(first.desktop) && before(first.phone), first);
+  await shootAll('before');
+  check('before', Object.values(first).every(before), first);
 
   const json = JSON.parse(original);
   const pr = json.data.repository.p16;
@@ -74,17 +76,18 @@ try {
 
   let seen = first;
   let reloads = 0;
-  while (reloads < 4 && !(after(seen.desktop) && after(seen.phone))) {
-    await Promise.all([desktop.waitForEvent('load', { timeout: 20_000 }), phone.waitForEvent('load', { timeout: 20_000 })]);
+  // Each page refreshes on its own clock, so wait for every page to show the change, at most four reloads each.
+  while (reloads < 4 && !Object.values(seen).every(after)) {
+    await Promise.all(Object.entries(pages).filter(([n]) => !after(seen[n])).map(([, page]) => page.waitForEvent('load', { timeout: 20_000 })));
     reloads += 1;
-    seen = { desktop: await read(desktop), phone: await read(phone) };
+    seen = await readAll();
   }
   save('after', { ...seen, reloads });
-  await desktop.screenshot({ path: out('after-desktop.png'), fullPage: true });
-  await phone.screenshot({ path: out('after-phone.png'), fullPage: true });
-  fs.writeFileSync(out('after.html'), await desktop.content());
+  await shootAll('after');
+  const [desktop] = VIEWPORTS;
+  fs.writeFileSync(out('after.html'), await pages[desktop.name].content());
   fs.writeFileSync(out('after.json'), fs.readFileSync(answer, 'utf8'));
-  check('after', after(seen.desktop) && after(seen.phone) && seen.desktop.clock !== first.desktop.clock, { ...seen, reloads });
+  check('after', Object.values(seen).every(after) && seen[desktop.name].clock !== first[desktop.name].clock, { ...seen, reloads });
 } finally {
   await browser.close();
   fs.writeFileSync(answer, original);

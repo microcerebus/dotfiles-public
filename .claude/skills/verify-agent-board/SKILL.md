@@ -73,9 +73,11 @@ Drivers, in this order:
    Each one writes its user flow down in its header, prints PASS or FAIL per step and saves the evidence.
    They drive a headless Google Chrome with a throwaway profile (`playwright-core`, a pinned pnpm global), so they never touch the shared agent Chrome window.
    - `flows/map-refresh.mjs`: on a fixture run, `/map` updates by itself after a `units.tsv` change ([project map](features/project-map.md)).
-   - `flows/map-pr-live.mjs`: on a fixture run, a PR's checks on `/map` update by themselves when the stub gh's answer changes, at 1440 and 390 ([project map](features/project-map.md)).
-   - `flows/look.mjs <url> <dir> <name> [<width>]`: loads one page of your run at 1440x900, or at the width given (390 is a phone, 844 tall at 3x with touch), saves a full-page screenshot and its text with the horizontal overflow measured, and fails unless the page answered 2xx.
+   - `flows/map-pr-live.mjs`: on a fixture run, a PR's checks on `/map` update by themselves when the stub gh's answer changes, at all five viewports ([project map](features/project-map.md)).
+   - `flows/look.mjs <url> <dir> <name> [<viewport>|<width>]`: loads one page of your run at each of the five viewports, or at the one named by name or width (any other width gets a custom size: under 600 a phone, 844 tall at 3x with touch, otherwise 900 tall at 1x), saves the first screen and the full page with the page text and the horizontal overflow measured, and fails unless every load answered 2xx with zero overflow.
      Like every flow, it refuses the live board on port 4790.
+   - `flows/viewports.mjs` holds the five viewports every visual check uses by default, the screens the owner reads the board on: `desktop-1920` (1920x1440, half his ultrawide), `small-desktop-1080` (1080x1800, a portrait monitor), `ipad-portrait-744` (744x1133 at 2x, touch), `ipad-landscape-1133` (1133x744 at 2x, touch) and `phone-390` (390x844 at 3x, mobile, touch).
+     Flows open every page with its `pageOptions()` rather than writing sizes of their own; only `look.mjs` builds a custom size, for a width you name outside the five.
    A journey you would run twice belongs in a flow.
    For screen-free checks against the signed-in agent Chrome, run a written flow through `agent-chrome-playwright --minutes N --what "..."` in its own background tab (it notifies the owner before and after); see the codex-computer-use skill.
 2. **Codex computer use** for interactive checks no flow covers yet, through the `codex-computer-use` skill and its screen-warning launcher, in the agent Chrome.
@@ -86,12 +88,12 @@ Drivers, in this order:
 
 - Browser: Google Chrome only, never Brave and never the owner's own Chrome.
   Flows launch their own headless Chrome; Codex and the fallback use the agent Chrome (Google Chrome Beta on 127.0.0.1:9333).
-- Codex follows the brief's sentences in the prompt below and never sizes the window, so the phone layout is checked through a Playwright flow (`flows/look.mjs <url> <dir> <name> 390`), not through Codex.
+- Codex follows the brief's sentences in the prompt below and never sizes the window, so layouts are checked through a Playwright flow (`flows/look.mjs <url> <dir> <name>` for all five viewports), not through Codex.
   The bullets below are for the chrome-devtools-axi fallback only.
 - Values: `eval "$(scripts/board.mjs env)"` exports `BOARD_URL`, `BOARD_PHONE_URL`, `BOARD_EVIDENCE`, `BOARD_SCRATCH`, `BOARD_RUN` and `BOARD_MODE` for this checkout's latest run.
   Every tool call is a new shell, so run it at the start of each call; a Codex prompt needs the literal values, not the variable names.
 - Tabs open in the background (the wrapper does that).
-  Set the size per tab with `chrome-devtools-axi emulate --viewport "1280x900x1"` for desktop and `"390x844x3,mobile,touch"` for a phone.
+  Set the size per tab with `chrome-devtools-axi emulate --viewport`, one of the five: `"1920x1440x1"`, `"1080x1800x1"`, `"744x1133x2,touch"`, `"1133x744x2,touch"` and `"390x844x3,mobile,touch"`.
   Never `resize`: it reshapes the one window every agent shares.
 - Stable handles: headings (`Needs you · N`, `Running · N`, `Idle · N`, `Auto-update`), the header links `threads` and `map`, thread cards `.t`, map rows `.u`, the state word `.state`, the stale line `.stale`, the page title with its count, `(N) agent board` or `(N) project map`.
   Read exact values with `chrome-devtools-axi eval` over these selectors; the feature files give the expressions.
@@ -123,7 +125,7 @@ Finish with PASS or FAIL and one line per step saying what you saw."
 
 - Where: `~/.local/state/verify-agent-board/<run-id>/evidence/` (`$BOARD_EVIDENCE`), next to `run.json` (instance, data paths, code revision) and `board.log`.
   It survives `stop`, a reboot and the worktree's removal; report that path.
-- Name files `<feature>-<state>-<desktop|phone>.png`, with the matching `.txt` eval output and `.html` curl beside them.
+- Name files `<feature>-<state>-<viewport>.png` with the viewport names from `scripts/flows/viewports.mjs`, with the matching `.txt` eval output and `.html` curl beside them.
 - Proof standards:
   - Exercise the user path: open the page by URL and the header links, as the owner does on his phone; `render()` in a test is not a drive.
   - Capture the action and the result: for a journey that changes data, capture before, make the change in the scratch data, and capture after the reload.
@@ -131,6 +133,7 @@ Finish with PASS or FAIL and one line per step saying what you saw."
   - The board must write nothing: `shasum` the scratch lane files before and after a journey when a feature claims read-only.
   - Say "fixture-verified" for fixture runs.
     The fixture proves rendering and the lane and git logic; only a live run proves the board against T3's real schema, so a change to the T3 query or the columns it reads needs a live run too.
+  - Visual evidence covers the five viewports by default, the first screen and the full page at each (`map-pr-live.mjs` saves full pages only, because it compares one row across a refresh); a check may narrow to one viewport only when the change cannot affect the others, and says so.
   - Look at every screenshot before reporting: clipped or overlapping text, wrapping, horizontal scroll, and the theme (Catppuccin Mocha, JetBrains Mono).
     `look.mjs` and `map-pr-live.mjs` record the horizontal overflow in pixels; anything but 0 is text cut off.
 - Live-mode evidence shows real thread titles and branches: keep it in the evidence dir, never commit it (every push of this repo republishes a public mirror), and share it only with the owner or the coordinator.
@@ -154,7 +157,7 @@ Finish with PASS or FAIL and one line per step saying what you saw."
 - `scripts/board.mjs`: Node 22, no packages.
   `launch [--fixture | --lanes-copy] [--t3-db <copy>] [--publish] [--ttl <minutes>]`, `doctor [<run-id> | --port <n>]`, `env [<run-id>]`, `stop [<run-id>]`, `runs`.
   `VERIFY_AGENT_BOARD_STATE` moves the state directory (the tests use it).
-- `scripts/flows/`: the Playwright written flows (see Drive) and `playwright.mjs`, which finds the pinned `playwright-core` and launches headless Google Chrome.
+- `scripts/flows/`: the Playwright written flows (see Drive), `viewports.mjs` with the five default viewports, and `playwright.mjs`, which finds the pinned `playwright-core` and launches headless Google Chrome.
 - `scripts/fixture.mjs`: the seeded data.
   Its comments say what each seeded thread, row and branch is for; extend it when a feature needs a state it lacks, and say so in that feature's Gotchas.
 - `scripts/git-env.mjs`: removes inherited `GIT_*` variables before fixture Git commands, revision checks, board children and the feature recipes' Git mutations, so the caller cannot redirect them to another repository or index.

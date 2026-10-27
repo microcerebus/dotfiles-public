@@ -28,7 +28,9 @@ Read this index before driving the board, then use the matching feature file as 
 ## Proof and skip reporting
 
 - Capture the user action and the resulting state, not only the final screen.
-- UI proof is a screenshot plus the `eval` output that names the same rows, saved as `<feature>-<state>-<desktop|phone>.png` and `.txt` in `$BOARD_EVIDENCE`.
+- UI proof is a screenshot plus the `eval` output that names the same rows, saved as `<feature>-<state>-<viewport>.png` and `.txt` in `$BOARD_EVIDENCE`, with the viewport names from `scripts/flows/viewports.mjs`.
+- A layout change is shot at all five viewports, the first screen and the full page at each: `node scripts/flows/look.mjs <url> "$BOARD_EVIDENCE" <name>`.
+  The journeys below run at `desktop-1920` (`"1920x1440x1"`) unless they name a phone.
 - For a data change, capture before and after, and save the changed scratch file or the git command you ran.
 - Record the feature file and sub-feature ID with every artifact.
 - Report an unreachable path with the command you ran and the precondition that was missing.

@@ -406,6 +406,7 @@ function readLane(dir, name, now) {
   }
 
   const units = readLaneFile(dir, 'units.tsv', lane);
+  lane.unitsError = units.error ?? null;
   if (units.error === 'missing') {
     // D1: job-tracker keeps its old log under state/ until the approved phase 2 move converts it.
     lane.notes.push(fs.existsSync(path.join(dir, 'state/units.tsv')) ? 'legacy layout: state/units.tsv converts in phase 2' : 'no units file');
@@ -413,6 +414,7 @@ function readLane(dir, name, now) {
     lane.notes.push(`units.tsv: ${units.error}`);
   } else {
     const parsed = parseUnits(units.text);
+    lane.unitsError = parsed.error || (parsed.skipped.length ? `${parsed.skipped.length} row${parsed.skipped.length === 1 ? '' : 's'} skipped` : null);
     if (parsed.error) lane.notes.push(`units.tsv: ${parsed.error}`);
     else if (!parsed.units.length && !parsed.skipped.length) lane.notes.push('no units');
     lane.units = parsed.units;
@@ -962,6 +964,17 @@ const STALE_MS = 2 * 3600_000; // a running coordinator with no lane file change
 const LANE_STALE_MS = 24 * 3600_000; // no lane file change for a day: "no update since <date>" whoever runs it
 const SHOWN = { queued: 'grey', 'in-flight': 'green', you: 'peach', 'then you': 'peach', stale: 'yellow', paused: 'yellow', done: 'grey' };
 const PR_TONE = { merged: 'grey', closed: 'grey', draft: 'overlay', open: 'subtext', ready: 'green', blocked: 'red' };
+const mapId = (kind, ...parts) => `${kind}-${parts.map(encodeURIComponent).join('/')}`;
+const jumpTo = (id) => `#${encodeURIComponent(id)}`;
+const milestoneGroups = (lane) => [...Map.groupBy(lane.units, (u) => u.milestone)]
+  .sort(([a], [b]) => !a ? 1 : !b ? -1 : a.localeCompare(b, 'en', { numeric: true }));
+const isStalled = (u, now) => u.state === 'in-flight' && Number.isFinite(u.sinceAt) && now - u.sinceAt > STALL_MS;
+const landedAt = (u) => u.github?.mergedAt ?? u.sinceAt;
+const isRecentDone = (u, now) => u.state === 'done' && Number.isFinite(landedAt(u))
+  && landedAt(u) <= now && now - landedAt(u) < 24 * 3600_000;
+const liveGroups = (units) => ['needs-myuser', 'in-flight', 'paused', 'queued'].map((state) => units.filter((u) => u.state === state));
+const childrenOf = (units, parent) => units.filter((u) => (units.includes(u.parent) ? u.parent : null) === parent);
+const treeOrder = (units, parent = null) => childrenOf(units, parent).flatMap((u) => [u, ...treeOrder(units, u)]);
 
 const tilde = (p) => (p.startsWith(`${os.homedir()}/`) ? `~${p.slice(os.homedir().length)}` : p);
 
@@ -1075,10 +1088,11 @@ function depLine(d) {
 // A unit row: state and id with the PR chip; the PR's title as the headline and one sentence from its description;
 // who holds it, its branch and since; the note in full; the PR block; the stale flag; what it waits for. Nothing is
 // clipped: every line wraps, on the phone and the desktop alike.
-function unitRow(u, lane, snap) {
+function unitRow(u, lane, snap, nest = u.nest, next = false) {
   const cls = u.shown === 'you' ? ' needs' : u.state === 'done' ? ' done' : u.github?.state === 'blocked' ? ' blocked' : '';
-  let html = `<div class="u${cls}"><div class="row"><span class="id"><span class="state ${SHOWN[u.shown]}">${u.shown}</span>`
-    + `${escape(u.id)}</span><span class="pr">${prChip(u, lane)}</span></div>`;
+  let html = `<div class="u${cls}" id="${escape(mapId('unit', lane.name, u.id))}"><div class="row"><span class="id"><span class="state ${SHOWN[u.shown]}">${u.shown}</span>`
+    + `${escape(u.id)}</span>${next ? '<span class="next">next up</span>' : ''}<span class="pr">${prChip(u, lane)}</span></div>`;
+  if (isRecentDone(u, snap.now)) html += `<div class="sub">${stamp('landed', landedAt(u), snap.now)}</div>`;
   if (u.state !== 'done') {
     const g = u.github;
     if (g?.title) html += `<div class="title">${escape(g.title)}</div>`;
@@ -1088,8 +1102,8 @@ function unitRow(u, lane, snap) {
     if (u.note) html += `<div class="unit-note">${escape(u.note)}</div>`;
     html += prBlock(u, lane, snap.now);
     html += staleLine(u);
-    const deps = u.deps.filter((d) => d !== u.nest);
-    if (deps.length) html += `<div class="after">${u.nest ? 'also after' : 'after'} ${deps.map(depLine).join(', ')}</div>`;
+    const deps = u.deps.filter((d) => d !== nest);
+    if (deps.length) html += `<div class="after">${nest ? 'also after' : 'after'} ${deps.map(depLine).join(', ')}</div>`;
   }
   return `${html}</div>`;
 }
@@ -1101,12 +1115,29 @@ function warningRow(skipped) {
     + `${skipped.why.startsWith('unknown state') ? `; states are ${UNIT_STATES.join(', ')}` : ''}</div></div>`;
 }
 
-// Units in file order, each nested under the unit it waits for (D3). Nesting edges never form a cycle.
-function unitTree(units, lane, snap, parent = null) {
-  return units.filter((u) => u.parent === parent).map((u) => {
-    const kids = unitTree(units, lane, snap, u);
-    return unitRow(u, lane, snap) + (kids ? `<div class="kids">${kids}</div>` : '');
+// Preserve nesting within a state group; a dependency in another group is written as an after line.
+function unitTree(units, lane, snap, next = null, parent = null) {
+  return childrenOf(units, parent).map((u) => {
+    const kids = unitTree(units, lane, snap, next, u);
+    return unitRow(u, lane, snap, units.includes(u.parent) ? u.nest : null, u === next) + (kids ? `<div class="kids">${kids}</div>` : '');
   }).join('');
+}
+
+function milestoneRows(id, units, lane, snap, params) {
+  const next = units.find((u) => u.state === 'queued' && u.deps.every((d) => d.target?.state === 'done' && !d.cycle));
+  const live = liveGroups(units).map((group) => unitTree(group, lane, snap, next)).join('');
+  const recent = units.filter((u) => isRecentDone(u, snap.now));
+  const closed = units.filter((u) => u.state === 'done' && !recent.includes(u));
+  if (!closed.length) return live + unitTree(recent, lane, snap);
+  const key = `${lane.name}/${id}`;
+  const open = params.getAll('done').includes(key);
+  const toggled = new URLSearchParams(params);
+  toggled.delete('done', key);
+  if (!open) toggled.append('done', key);
+  const href = `?${toggled}${jumpTo(mapId('milestone', lane.name, id))}`;
+  return live + unitTree(recent, lane, snap)
+    + `<div class="done-group"><a href="${escape(href)}" aria-expanded="${open}">${closed.length} done${open ? ' · hide' : ''}</a></div>`
+    + (open ? unitTree(closed, lane, snap) : '');
 }
 
 function milestoneHead(id, units, lane) {
@@ -1115,11 +1146,11 @@ function milestoneHead(id, units, lane) {
   // The bar fills with done only, so it reads as the count beside it; the hover title breaks the rest down by state.
   const counts = UNIT_STATES.map((state) => [state, units.filter((u) => u.state === state).length]).filter(([, n]) => n);
   const key = counts.map(([state, n]) => `${n} ${state}`).join(', ');
-  return `<div class="ms"><b>${escape(title)}</b><span>${done} of ${units.length} done</span></div>`
-    + `<div class="bar" title="${escape(key)}">${done ? `<i style="width:${((done / units.length) * 100).toFixed(1)}%"></i>` : ''}</div>`;
+  return `<div class="ms" id="${escape(mapId('milestone', lane.name, id))}"><b>${escape(title)}</b><span>${done} of ${units.length} done</span></div>`
+    + (id ? `<div class="bar" title="${escape(key)}">${done ? `<i style="width:${((done / units.length) * 100).toFixed(1)}%"></i>` : ''}</div>` : '');
 }
 
-function laneSection(lane, snap) {
+function laneSection(lane, snap, params) {
   const head = [];
   if (Number.isFinite(lane.priority)) head.push(`priority ${lane.priority}`);
   const t = lane.head ? snap.threads.get(lane.head) : null;
@@ -1133,16 +1164,14 @@ function laneSection(lane, snap) {
     else head.push(t?.state === 'running' && quiet > STALE_MS ? tone('yellow kept', `no update for ${ago(quiet)}`) : tone('kept', `updated ${ago(quiet)} ago`));
   }
   if (lane.prs.size || lane.prError) head.push(lane.prError ? tone('yellow', `GitHub: ${lane.prError}`) : tone('kept', `PRs ${ago(snap.now - lane.prsAt)} ago`));
-  // Milestones in the order of their first unit, so the coordinator orders them by writing them.
-  const groups = Map.groupBy(lane.units, (u) => u.milestone);
-  const titled = lane.units.some((u) => u.milestone);
+  const groups = milestoneGroups(lane);
   const ledgerNotes = lane.ledgerSkipped.length
     ? [`${lane.ledgerFile}: ${lane.ledgerSkipped.length} row${lane.ledgerSkipped.length === 1 ? '' : 's'} skipped (${lane.ledgerSkipped.slice(0, 2).map((s) => `line ${s.line}: ${s.why}`).join('; ')}${lane.ledgerSkipped.length > 2 ? '; more' : ''})`]
     : [];
-  return `<section><div class="lane"><b>${escape(lane.name)}</b><small>${head.join(' · ')}</small></div>`
+  return `<section id="${escape(mapId('lane', lane.name))}"><div class="lane"><b>${escape(lane.name)}</b><small>${head.join(' · ')}</small></div>`
     + [...lane.notes, ...ledgerNotes].map((n) => `<div class="note">${escape(n)}</div>`).join('')
     + lane.skipped.map(warningRow).join('')
-    + [...groups].map(([id, units]) => (titled ? milestoneHead(id, units, lane) : '') + unitTree(units, lane, snap)).join('')
+    + groups.map(([id, units]) => milestoneHead(id, units, lane) + milestoneRows(id, units, lane, snap, params)).join('')
     + '</section>';
 }
 
@@ -1162,21 +1191,38 @@ function laneIssues(lane) {
   return ` ${escape(lane.name)}: <b>${kinds.map(([list, count]) => count(list.length)).join(', ')}</b> (${escape(shown)}).`;
 }
 
-// Desktop: lanes fill the left column in priority order until it holds about half the rows; one column on a phone.
+// Partition whole lanes in priority order into three columns, weighing a lane by its rows not done plus two for its
+// header. The two cuts are the ones whose tallest column is shortest (ties: the shorter two-column page, then the
+// earlier cuts). At middling widths the grid has two columns, so the adjacent pair of groups that makes the shorter
+// tallest column shares a .pair wrapper; from 1280 px that wrapper is display:contents. Phones stack all three.
 function columns(sections, lanes) {
-  const weight = (lane) => lane.units.length + 2;
-  const total = lanes.reduce((n, lane) => n + weight(lane), 0);
-  let split = 1;
-  let left = weight(lanes[0]);
-  while (split < lanes.length - 1 && left + weight(lanes[split]) / 2 <= total / 2) left += weight(lanes[split++]);
-  return `<div class="cols"><div>${sections.slice(0, split).join('')}</div><div>${sections.slice(split).join('')}</div></div>`;
+  const div = (html) => `<div>${html}</div>`;
+  if (lanes.length < 3) return `<div class="cols">${sections.map(div).join('')}</div>`;
+  const weights = lanes.map((lane) => lane.units.filter((u) => u.state !== 'done').length + 2);
+  const sum = (from, to) => weights.slice(from, to).reduce((a, b) => a + b, 0);
+  let best;
+  for (let i = 1; i < lanes.length - 1; i++) {
+    for (let j = i + 1; j < lanes.length; j++) {
+      const [a, b, c] = [sum(0, i), sum(i, j), sum(j, lanes.length)];
+      const left = Math.max(a + b, c);
+      const right = Math.max(a, b + c);
+      const score = [Math.max(a, b, c), Math.min(left, right)];
+      if (!best || score[0] < best.score[0] || (score[0] === best.score[0] && score[1] < best.score[1])) {
+        best = { i, j, score, pairLeft: left < right };
+      }
+    }
+  }
+  const [first, second, third] = [sections.slice(0, best.i), sections.slice(best.i, best.j), sections.slice(best.j)]
+    .map((group) => div(group.join('')));
+  return `<div class="cols">${best.pairLeft
+    ? `<div class="pair">${first}${second}</div>${third}` : `${first}<div class="pair">${second}${third}</div>`}</div>`;
 }
 
 // One line per item at the top of the map, the to-do: the ask, the wait and the links where he acts. The unit's
 // detail stays in its lane, so the phone page does not carry every row twice.
 function needsRow(item, snap) {
   const todo = (name, ask, tag) => `<div class="u needs todo"><span class="state peach">you</span><b class="id">${escape(name)}</b>`
-    + `${ask.length ? `<span class="ask">${ask.join(' · ')}</span>` : ''}<span class="tag">${escape(tag ?? '')}</span></div>`;
+    + `${ask.length ? `<span class="ask">${ask.join(' · ')}</span>` : ''}${tag ? `<span class="tag">${escape(tag)}</span>` : ''}</div>`;
   if (!item.unit) {
     const t = item.thread;
     return todo(t.title, [t.ask && escape(t.ask), t.askedAt && stamp('asked', t.askedAt, snap.now), t.branch && escape(t.branch)].filter(Boolean), t.project);
@@ -1187,16 +1233,36 @@ function needsRow(item, snap) {
   return todo(u.id, [...ask, ...actLinks(u, lane)], u.lane);
 }
 
-export function renderMap(snap) {
+function statusStrip(snap, needs) {
+  const lanes = snap.lanes.lanes ?? [];
+  const units = lanes.flatMap((lane) => milestoneGroups(lane).flatMap(([, rows]) => liveGroups(rows).flatMap((group) => treeOrder(group))));
+  const problems = [snap.t3.unavailable.length ? 'T3 state unavailable' : '',
+    !snap.lanes.lanes ? 'lanes unavailable' : '',
+    ...lanes.filter((lane) => lane.unitsError).map((lane) => `${lane.name} units.tsv ${lane.skipped.length ? 'incomplete' : 'unavailable'} (${lane.unitsError})`)].filter(Boolean);
+  const count = (rows, label) => rows.length
+    ? `<a href="${jumpTo(mapId('unit', rows[0].lane, rows[0].id))}">${rows.length} ${label}</a>` : `<span>0 ${label}</span>`;
+  const attention = needs.length ? `<a href="#needs-you">${needs.length} need you</a>`
+    : problems.length ? '<span class="yellow">needs you unknown</span>' : '<span class="green">nothing needs you</span>';
+  const stats = [attention, count(units.filter((u) => u.state === 'in-flight'), 'in flight'),
+    count(units.filter((u) => isStalled(u, snap.now)), 'stalled'), count(units.filter((u) => u.state === 'paused'), 'paused'),
+    count(units.filter((u) => u.state === 'queued'), 'queued')];
+  const links = lanes.map((lane) => `<a href="${jumpTo(mapId('lane', lane.name))}">${escape(lane.name)}</a>`);
+  // Each item keeps its trailing "·" in one box, so a narrow strip wraps between items and no line starts with a "·";
+  // the no-break space keeps the "·" on the item's last line when a long warning wraps inside its box.
+  const items = (list) => list.map((item, i) => `<span class="strip-item">${item}${i < list.length - 1 ? '&nbsp;·' : ''}</span>`).join(' ');
+  return `<nav class="status-strip" aria-label="Map status">${items([...stats, ...links])}${problems.length ? ` <span class="source-warning yellow">${items(problems.map(escape))}</span>` : ''}</nav>`;
+}
+
+export function renderMap(snap, params = new URLSearchParams()) {
   const needs = needsYou(snap);
   const { dir, lanes } = snap.lanes;
   let body;
   if (!lanes) body = `<p class="more">No lanes at ${escape(tilde(dir))}</p>`;
   else if (!lanes.length) body = `<p class="more">No lanes in ${escape(tilde(dir))}</p>`;
-  else body = columns(lanes.map((lane) => laneSection(lane, snap)), lanes);
+  else body = columns(lanes.map((lane) => laneSection(lane, snap, params)), lanes);
   const issues = (lanes ?? []).map(laneIssues).join('');
   return page('project map', needs.length + t3Gaps(snap), `${pageHeader('map', snap.now)}
-${t3Section(snap)}${needs.length ? `<h2 class="attn">Needs you · ${needs.length}</h2>${needs.map((item) => needsRow(item, snap)).join('')}` : ''}
+${statusStrip(snap, needs)}${t3Section(snap)}${needs.length ? `<h2 class="attn">Needs you · ${needs.length}</h2>${needs.map((item, i) => i ? needsRow(item, snap) : `<div id="needs-you">${needsRow(item, snap)}</div>`).join('')}` : ''}
 ${body}
 <footer>Read-only view of ${escape(tilde(path.dirname(dir)))} lanes and T3 state.${issues}</footer>`, true);
 }
@@ -1220,12 +1286,12 @@ function errorPage(message) {
 }
 
 // Catppuccin Mocha and JetBrains Mono (AGENTS.md theme rule). No external assets.
-const STYLE = `:root{--base:#1e1e2e;--mantle:#181825;--crust:#11111b;--surface0:#313244;--surface1:#45475a;--overlay1:#7f849c;
+const STYLE = `:root{color-scheme:dark;--base:#1e1e2e;--mantle:#181825;--crust:#11111b;--surface0:#313244;--surface1:#45475a;--overlay1:#7f849c;
 --overlay2:#9399b2;--text:#cdd6f4;--subtext:#a6adc8;--blue:#89b4fa;--sapphire:#74c7ec;--teal:#94e2d5;--green:#a6e3a1;--yellow:#f9e2af;
 --peach:#fab387;--red:#f38ba8;--lavender:#b4befe;--mono:'JetBrains Mono','JetBrainsMono Nerd Font',ui-monospace,SFMono-Regular,Menlo,monospace}
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:var(--crust);color:var(--text);font-family:var(--mono);font-size:14px;line-height:1.5;padding:0 12px 40px}
-main{max-width:720px;margin:0 auto;min-width:0}main.wide{max-width:1040px}
+main{max-width:720px;margin:0 auto;min-width:0}main.wide{max-width:1400px}
 header{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:baseline;gap:4px 12px;padding:18px 4px 6px}
 h1{font-size:17px;color:var(--lavender)}h1 span{color:var(--overlay1);font-weight:400}
 ::selection{background:var(--surface1);color:var(--text)}a:focus-visible,.check:focus-visible{outline:2px solid var(--lavender);outline-offset:2px;border-radius:3px}
@@ -1249,6 +1315,13 @@ h2.attn{color:var(--peach)}
 .note{font-size:12px;color:var(--overlay2);margin:0 4px 7px;overflow-wrap:anywhere}
 .ms{display:flex;justify-content:space-between;align-items:baseline;gap:8px;margin:12px 4px 5px;font-size:12px;color:var(--subtext)}
 .ms b{font-weight:500;color:var(--text)}
+.ms{flex-wrap:wrap;overflow-wrap:anywhere}.ms span{white-space:nowrap}
+.status-strip{font-size:12px;color:var(--subtext);margin:6px 4px 12px;overflow-wrap:anywhere}
+.status-strip a{display:inline-block;padding:3px 0}.status-strip a:hover,.done-group a:hover{text-decoration:underline}
+.strip-item{display:inline-block;max-width:100%}.source-warning{display:block;margin-top:4px}
+:target{outline:2px solid var(--lavender);outline-offset:3px;border-radius:8px;scroll-margin-top:12px}
+.done-group{font-size:12px;color:var(--overlay2);margin:5px 4px 12px}.done-group a{display:inline-block;padding:4px 0}
+.next{font-size:12px;color:var(--teal);white-space:nowrap}
 .bar{display:flex;height:4px;background:var(--surface0);border-radius:3px;overflow:hidden;margin:0 4px 8px}.bar i{display:block;height:100%;background:var(--green)}
 .u{background:var(--base);border:1px solid var(--surface0);border-radius:10px;padding:8px 12px;margin-bottom:7px;min-width:0}
 .u.done{opacity:.62}.u.blocked{border-color:#5a3a48}.u.warn{background:#2a2a28;border-color:#5a5340}
@@ -1278,7 +1351,11 @@ h2.attn{color:var(--peach)}
 .after b{font-weight:500;color:var(--subtext)}
 .stale{font-size:12px;color:var(--yellow);margin-top:3px;overflow-wrap:anywhere}
 .kids{margin-left:12px;padding-left:10px;border-left:1px solid var(--surface1)}
-@media (min-width:900px){.cols{display:grid;grid-template-columns:minmax(0,3fr) minmax(0,2fr);gap:0 22px;align-items:start}}
+.cols>div,.pair>div{min-width:0}
+.cols>div:only-child{grid-column:1/-1}
+@media (min-width:900px){.cols{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 22px;align-items:start}
+.todo .tag{margin-left:0}.todo .tag::before{content:'· '}}
+@media (min-width:1280px){.cols:has(>.pair){grid-template-columns:repeat(3,minmax(0,1fr))}.pair{display:contents}}
 footer{color:var(--overlay1);font-size:11px;margin:20px 4px 0}footer b{font-weight:500;color:var(--yellow)}`;
 
 // Allow loopback and this Mac's MagicDNS names, on our port only. Anything else is a DNS rebinding attempt or a
@@ -1314,7 +1391,7 @@ function handle(req, res) {
     try {
       const snap = route === 'map' ? snapshot({ autoupdate: null }) : snapshot();
       logChange('t3', snap.t3.unavailable.join('; '), 'T3 state readable again');
-      html = route === 'map' ? renderMap(snap) : render(snap);
+      html = route === 'map' ? renderMap(snap, new URL(req.url, 'http://board').searchParams) : render(snap);
       logChange('page', '', 'pages render again');
     } catch (error) {
       status = 500;

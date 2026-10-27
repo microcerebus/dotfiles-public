@@ -15,6 +15,24 @@ export const MARKERS = { thread: 'Coordinator 3 (fixture)', lane: 'fixture-board
 
 const TSV = (rows) => rows.map((r) => r.join('\t')).join('\n') + '\n';
 
+// A counts-only copy of the three-lane map shape that exposed the wide-layout bug.
+// Pass a fresh directory, separate from the normal fixture lanes. No real unit titles or lane identifiers.
+export function seedMapShape(dir, now = Date.now()) {
+  const names = ['fixture-board', 'fixture-spruce', 'fixture-willow'];
+  for (const [i, [total, active]] of [[51, 22], [17, 8], [106, 35]].entries()) {
+    const lane = path.join(dir, names[i]);
+    fs.mkdirSync(lane, { recursive: true });
+    fs.writeFileSync(path.join(lane, 'lane.json'), JSON.stringify({ priority: i + 1,
+      milestones: [{ id: 'M1', title: 'Fixture work' }] }));
+    const rows = [['unit', 'state', 'owner', 'branch', 'pr', 'milestone', 'after', 'since', 'note']];
+    for (let j = 0; j < total; j++) rows.push([`sample-${j + 1}`, j < active ? 'queued' : 'done',
+      '', '', '', 'M1', '', '', '']);
+    fs.writeFileSync(path.join(lane, 'units.tsv'), TSV(rows));
+    const at = new Date(now);
+    fs.utimesSync(path.join(lane, 'units.tsv'), at, at);
+  }
+}
+
 export function seed(dir, now = Date.now()) {
   const iso = (min) => new Date(now - min * 60_000).toISOString();
   const epoch = (min) => String(Math.floor((now - min * 60_000) / 1000));

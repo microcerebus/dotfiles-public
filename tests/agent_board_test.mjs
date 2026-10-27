@@ -378,7 +378,83 @@ function lanesFixture() {
   return { ...f, lanesDir: dir, autoupdate: null };
 }
 
-const mapHtml = () => renderMap(snapshot({ ...lanesFixture(), now: NOW }));
+const mapHtml = (params) => renderMap(snapshot({ ...lanesFixture(), now: NOW }), params);
+
+test('map proposal 1: live rows precede persistent done groups and ready queues say next up', () => {
+  const f = fixture();
+  const dir = path.join(path.dirname(f.dbPath), 'lanes', 'work');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'lane.json'), '{}');
+  fs.writeFileSync(path.join(dir, 'units.tsv'), TSV([
+    UNIT_COLUMNS,
+    ['unassigned-goal', 'queued', '', '', '', '', '', '', ''],
+    ['later', 'queued', '', '', '', 'M2', '', '', ''],
+    ['old-done', 'done', '', '', '', 'M1', '', iso(1500), ''],
+    ['blocked', 'queued', '', '', '', 'M1', 'running', '', ''],
+    ['ready', 'queued', '', '', '', 'M1', 'old-done', '', ''],
+    ['also-ready', 'queued', '', '', '', 'M1', '', '', ''],
+    ['resting', 'paused', '', '', '', 'M1', '', '', ''],
+    ['running', 'in-flight', '', '', '', 'M1', 'old-done', '', ''],
+    ['recent-done', 'done', '', '', '', 'M1', '', iso(60), ''],
+    ['future-done', 'done', '', '', '', 'M1', '', iso(-60), ''],
+    ['yesterday-done', 'done', '', '', '', 'M1', '', iso(1440), ''],
+    ['unknown-date', 'done', '', '', '', 'M1', '', 'bad date', ''],
+  ]));
+  const snap = snapshot({ ...f, lanesDir: path.dirname(dir), autoupdate: null, now: NOW });
+  const html = renderMap(snap);
+  const positions = ['running', 'resting', 'blocked', 'ready', 'also-ready', 'recent-done'].map(id => html.indexOf(`</span>${id}</span>`));
+  assert.ok(positions.every((at, i) => at > 0 && (!i || at > positions[i - 1])), `live order ${positions}`);
+  assert.match(html, /ready<\/span><span class="next">next up<\/span>/);
+  assert.doesNotMatch(fullRowOf(html, 'blocked'), /class="next"/);
+  assert.doesNotMatch(fullRowOf(html, 'also-ready'), /class="next"/);
+  assert.match(html, /recent-done<\/span>[^]*?<span class="kept">landed 10:30<\/span>/);
+  for (const id of ['old-done', 'future-done', 'yesterday-done', 'unknown-date']) assert.ok(!html.includes(`</span>${id}</span>`), `${id} folded`);
+  assert.match(html, /href="\?done=work%2FM1#milestone-work%2FM1"[^>]*>4 done<\/a>/);
+  const open = renderMap(snap, new URLSearchParams('done=work/M1'));
+  assert.match(open, /old-done<\/span>/);
+  assert.doesNotMatch(open, /<details class="done/);
+  assert.match(open, /href="\?#milestone-work%2FM1"[^>]*>4 done · hide<\/a>/);
+  const multiple = renderMap(snap, new URLSearchParams('done=other/M2'));
+  assert.match(multiple, /href="\?done=other%2FM2&amp;done=work%2FM1#milestone-work%2FM1"/);
+  assert.ok(html.indexOf('<b>M1</b>') < html.indexOf('<b>M2</b>'));
+  assert.ok(html.indexOf('<b>M2</b>') < html.indexOf('<b>No milestone</b>'));
+  assert.doesNotMatch(html.slice(html.indexOf('<b>No milestone</b>')), /class="bar"/);
+});
+
+test('map proposal 2: status strip links to visible rows and reports unavailable sources', () => {
+  const f = lanesFixture();
+  const html = renderMap(snapshot({ ...f, now: NOW }));
+  const strip = html.slice(html.indexOf('<nav class="status-strip"'), html.indexOf('</nav>', html.indexOf('<nav class="status-strip"')));
+  assert.match(strip, /3 need you/);
+  assert.match(strip, /href="#unit-alpha%2Freview-me">3 in flight/);
+  assert.match(strip, /href="#unit-alpha%2Freview-me">1 stalled/);
+  assert.match(strip, /0 paused/);
+  assert.match(strip, /4 queued/);
+  assert.match(strip, /href="#lane-alpha">alpha<\/a>/);
+  assert.match(strip, /alpha units.tsv incomplete \(3 rows skipped\)/);
+  assert.match(strip, /gamma units.tsv unavailable/);
+  assert.match(strip, /delta units.tsv unavailable/);
+  // Each item carries its own "·", so a narrow strip breaks between items and never starts a line with a separator.
+  assert.doesNotMatch(strip, /> · </);
+  assert.match(strip, /<span class="strip-item"><a href="#unit-alpha%2Freview-me">3 in flight<\/a>&nbsp;·<\/span> <span class="strip-item">/);
+  assert.match(strip, /<span class="strip-item">alpha units.tsv incomplete \(3 rows skipped\)&nbsp;·<\/span>/);
+  assert.match(html, /\.strip-item\{display:inline-block;max-width:100%\}/);
+  assert.match(html, /id="unit-alpha\/review-me"/);
+  assert.match(html, /:target\{/);
+  const empty = fixture();
+  const lanesDir = path.join(path.dirname(empty.dbPath), 'empty-lanes');
+  fs.mkdirSync(lanesDir);
+  const db = new DatabaseSync(empty.dbPath);
+  db.exec('DELETE FROM orchestration_v2_projection_runtime_requests');
+  db.close();
+  assert.match(renderMap(snapshot({ ...empty, lanesDir, autoupdate: null, now: NOW })), /nothing needs you/);
+  const unavailable = renderMap(snapshot({ ...empty, dbPath: path.join(lanesDir, 'missing.db'), lanesDir, autoupdate: null, now: NOW }));
+  assert.match(unavailable, /status-strip[^]*?T3 state unavailable/);
+  assert.doesNotMatch(unavailable, /nothing needs you/);
+  const missing = renderMap(snapshot({ ...empty, lanesDir: path.join(lanesDir, 'missing'), autoupdate: null, now: NOW }));
+  assert.match(missing, /status-strip[^]*?lanes unavailable/);
+  assert.doesNotMatch(missing, /nothing needs you/);
+});
 // The rendered row for one unit, from its opening div to the next row.
 const unitRowOf = (html, id) => html.slice(html.lastIndexOf('<div class="u', html.indexOf(`</span>${id}</span>`)), html.indexOf(`</span>${id}</span>`) + 600);
 
@@ -390,6 +466,93 @@ test('map: lanes in priority order, a lane without a readable lane.json last', (
   assert.match(html, /<div class="note">lane\.json: [^<]*JSON[^<]*<\/div>/);
   assert.match(html, /<title>\(3\) project map<\/title>/);
   assert.match(html, /<h1><span>agent board ·<\/span> <a href="\/">threads<\/a> · <u>map<\/u><\/h1>/);
+});
+
+// The lane columns with each section reduced to its lane name, e.g. <div class="cols"><div>a</div><div>b</div></div>.
+const skeletonOf = (cols) => cols.replace(/<section id="lane-([^"]+)">[^]*?<\/section>/g, '$1').trim();
+// One column div per lane up to three. From three lanes on, exactly one adjacent pair of columns shares a .pair
+// wrapper (two columns at middling widths, display:contents from 1280 px). No column is ever empty.
+function assertSkeleton(cols, count) {
+  const skeleton = skeletonOf(cols);
+  assert.doesNotMatch(skeleton, /<div><\/div>/, `${count} lanes: no empty column\n${skeleton}`);
+  const column = '<div>[^<]+</div>';
+  const shape = count === 1 ? `${column}` : count === 2 ? `${column}${column}`
+    : `(?:<div class="pair">${column}${column}</div>${column}|${column}<div class="pair">${column}${column}</div>)`;
+  assert.match(skeleton, new RegExp(`^<div class="cols">${shape}</div>$`), `${count} lanes: ${Math.min(count, 3)} columns\n${skeleton}`);
+}
+
+test('map: lanes take three columns on a wide window, two at middling widths, one on a phone, and never split', () => {
+  const html = mapHtml();
+  const cols = html.slice(html.indexOf('<div class="cols">'), html.indexOf('<footer'));
+  assert.deepEqual([...cols.matchAll(/<section id="lane-([^"]+)">/g)].map((m) => m[1]),
+    ['alpha', 'gamma', 'epsilon', 'beta', 'delta'], 'every lane appears exactly once, in priority order');
+  assert.match(html, /main\.wide\{max-width:1400px\}/);
+  assertSkeleton(cols, 5);
+  assert.match(html, /@media \(min-width:900px\)\{\.cols\{display:grid;grid-template-columns:repeat\(2,minmax\(0,1fr\)\)/);
+  assert.match(html, /@media \(min-width:1280px\)\{\.cols:has\(>\.pair\)\{grid-template-columns:repeat\(3,minmax\(0,1fr\)\)\}\.pair\{display:contents\}/);
+  assert.match(html, /\.cols>div:only-child\{grid-column:1\/-1\}/);
+  // On a wide page the lane tag follows the ask instead of sitting at the far edge of a Needs you card.
+  assert.match(html, /@media \(min-width:900px\)\{[^@]*\.todo \.tag\{margin-left:0\}/);
+});
+
+// The lane columns of a map whose lanes have these [units, units not done] counts, named fixture-0, fixture-1, ...
+function columnsOf(counts) {
+  const snap = snapshot({ ...lanesFixture(), now: NOW });
+  const lane = snap.lanes.lanes[0];
+  const lanes = counts.map(([total, active], i) => ({ ...lane, name: `fixture-${i}`, units: Array.from({ length: total },
+    (_, j) => ({ ...lane.units[0], id: `sample-${j}`, state: j < active ? 'queued' : 'done' })) }));
+  const html = renderMap({ ...snap, lanes: { ...snap.lanes, lanes } });
+  return html.slice(html.indexOf('<div class="cols">'), html.indexOf('<footer'));
+}
+
+test('map: uneven lanes split so the tallest column is shortest, and folded done rows do not change the split', () => {
+  const cases = [
+    // Minimise the three-column page first, even when different cuts would shorten the two-column page.
+    [[[2, 2], [0, 0], [0, 0], [2, 2]], '<div>fixture-0</div><div class="pair"><div>fixture-1fixture-2</div><div>fixture-3</div></div>'],
+    [[[3, 3], [3, 3], [3, 3], [3, 3], [3, 3], [3, 3]], '<div>fixture-0fixture-1</div><div class="pair"><div>fixture-2fixture-3</div><div>fixture-4fixture-5</div></div>'],
+    // the owner's lane shape (27 Oct). Three columns from 1280 px; at 900-1279 px lanes 1 and 2 share the left column,
+    // since 24+10 rows beside 37 is shorter than 24 beside 10+37.
+    [[[51, 22], [17, 8], [106, 35]], '<div class="pair"><div>fixture-0</div><div>fixture-1</div></div><div>fixture-2</div>'],
+    // Two small lanes, then a busy one: the busy one alone, the small ones paired.
+    [[[2, 2], [2, 2], [100, 100]], '<div class="pair"><div>fixture-0</div><div>fixture-1</div></div><div>fixture-2</div>'],
+    [[[100, 100], [2, 2], [2, 2]], '<div>fixture-0</div><div class="pair"><div>fixture-1</div><div>fixture-2</div></div>'],
+    // Greedy thirds gave 14 | 10+22 | 10 here; the best cuts give 14+10 | 22 | 10.
+    [[[12, 12], [8, 8], [20, 20], [8, 8]], '<div>fixture-0fixture-1</div><div class="pair"><div>fixture-2</div><div>fixture-3</div></div>'],
+    // Weights 2, 3, 2, 4: cuts 2+3 | 2 | 4 and 2 | 3+2 | 4 both top out at 5, and the first makes the shorter
+    // 2-column page (5 beside 2+4, against 2+5 beside 4).
+    [[[4, 0], [5, 1], [4, 0], [6, 2]], '<div>fixture-0fixture-1</div><div class="pair"><div>fixture-2</div><div>fixture-3</div></div>'],
+    // Equal live weights: 1+1+2 and 2+1+1 both halve the 2-column page, and the earlier cuts win the tie. A large
+    // folded history on lane 3 must not change that.
+    [[[5, 5], [5, 5], [5, 5], [5, 5]], '<div class="pair"><div>fixture-0</div><div>fixture-1</div></div><div>fixture-2fixture-3</div>'],
+    [[[5, 5], [5, 5], [205, 5], [5, 5]], '<div class="pair"><div>fixture-0</div><div>fixture-1</div></div><div>fixture-2fixture-3</div>'],
+  ];
+  for (const [counts, expected] of cases) {
+    assert.equal(skeletonOf(columnsOf(counts)), `<div class="cols">${expected}</div>`, JSON.stringify(counts));
+  }
+});
+
+test('map: every lane section occurs once, in columns with no empty one, for each lane count and weighting', () => {
+  for (let count = 1; count <= 12; count++) {
+    const names = Array.from({ length: count }, (_, i) => `fixture-${i}`);
+    // Even lanes, then [small, ..., small, huge] and [huge, small, ..., small].
+    const shapes = [names.map(() => [3, 3]), names.map((_, i) => (i === count - 1 ? [100, 100] : [2, 2])),
+      names.map((_, i) => (i === 0 ? [100, 100] : [2, 2]))];
+    for (const counts of shapes) {
+      const cols = columnsOf(counts);
+      assert.deepEqual([...cols.matchAll(/<section id="lane-([^"]+)">/g)].map((m) => m[1]), names,
+        `${count} lanes must have ${count} sections, each exactly once in priority order`);
+      assertSkeleton(cols, count);
+    }
+  }
+});
+
+test('map: a Needs you card without a project has no dangling tag separator', () => {
+  const f = lanesFixture();
+  const db = new DatabaseSync(f.dbPath);
+  db.exec('DELETE FROM projection_projects');
+  db.close();
+  const html = renderMap(snapshot({ ...f, now: NOW }));
+  assert.doesNotMatch(html, /<span class="tag"><\/span>/);
 });
 
 test('map: the states the board accepts are the lane rule\'s, as the lane template documents them', () => {
@@ -424,29 +587,29 @@ test('map: skipped rows, bad dependencies and bad ledger rows are counted in the
   assert.equal((alpha.match(/class="u warn"/g) ?? []).length, 3);
 });
 
-test('map: milestones in file order with done counts, a bar filled by done only and a key in its title', () => {
+test('map: milestones in id order with done counts, a bar filled by done only and a key in its title', () => {
   const html = mapHtml();
   const m1 = html.indexOf('<b>M1 Apply</b><span>0 of 3 done</span>');
   const m0 = html.indexOf('<b>M0</b><span>1 of 4 done</span>');
   const m2 = html.indexOf('<b>M2</b><span>0 of 3 done</span>');
-  assert.ok(m1 > 0 && m0 > m1 && m2 > m0, `milestones at ${m1}, ${m0}, ${m2}`);
+  assert.ok(m0 > 0 && m1 > m0 && m2 > m1, `milestones at ${m0}, ${m1}, ${m2}`);
   assert.match(html.slice(m0), /^[^]*?<div class="bar" title="1 in-flight, 2 needs-myuser, 1 done"><i style="width:25\.0%"><\/i><\/div>/);
   assert.match(html.slice(m1), /^[^]*?<div class="bar" title="2 in-flight, 1 needs-myuser"><\/div>/, 'nothing done, nothing filled');
 });
 
 test('map: unit rows show state, PR verdict, owner and its live state, and nest under the unit they wait for', () => {
-  const html = mapHtml();
+  const html = mapHtml(new URLSearchParams('done=alpha/M0'));
   const ui = unitRowOf(html, 'ui');
   assert.match(ui, /<span class="state green">in-flight<\/span>ui<\/span><span class="pr"><a href="https:\/\/github\.com\/o\/alpha\/pull\/20" rel="noreferrer"><b>#20<\/b> approve r2<\/a>/);
   assert.match(ui, /<div class="sub">Coordinator 13 · <span class="green">[^<]+<\/span> · feat\/ui · <span class="kept">since 11:10<\/span><\/div><\/div><div class="kids">/);
   assert.match(unitRowOf(html, 'pickers'), /<div class="sub">worker \(opus high\)<\/div>/);
-  assert.match(unitRowOf(html, 'ship'), /<span class="state peach">then you<\/span>ship<\/span><span class="pr">rebuild<\/span><\/div><div class="unit-note">run rebuild at the Mac<\/div><\/div>/);
+  assert.match(unitRowOf(html, 'ship'), /<span class="state peach">then you<\/span>ship<\/span><span class="pr">rebuild<\/span><\/div><div class="unit-note">run rebuild at the Mac<\/div><div class="after">after <b>ui<\/b><\/div><\/div>/);
   const review = unitRowOf(html, 'review-me');
   assert.match(review, /<b>#71<\/b> no verdict/);
   assert.match(review, /<span class="peach">no owner thread<\/span> · <span class="yellow"><span class="kept">in flight 10 h<\/span>, <span class="kept">since 02:00<\/span><\/span>/);
   assert.match(review, /<div class="after">after <b>ship<\/b> \(then you\)<\/div>/);
-  assert.match(unitRowOf(html, 'old'), /^<div class="u done"><div class="row"><span class="id"><span class="state grey">done<\/span>old<\/span><span class="pr"><a [^>]+><b>#51<\/b> merged<\/a><\/span><\/div><\/div>/);
-  assert.match(unitRowOf(html, 'sign'), /^<div class="kids"><div class="u needs">|^<div class="u needs">/);
+  assert.match(unitRowOf(html, 'old'), /^<div class="u done" id="unit-alpha\/old"><div class="row"><span class="id"><span class="state grey">done<\/span>old<\/span><span class="pr"><a [^>]+><b>#51<\/b> merged<\/a><\/span><\/div><\/div>/);
+  assert.match(unitRowOf(html, 'sign'), /^<div class="u needs" id="unit-alpha\/sign">/);
 });
 
 test('map: a missing or cyclic dependency is drawn in yellow and the units still render', () => {
@@ -470,7 +633,7 @@ test('map: Needs you merges input cards with units that are the owner\'s turn, o
   assert.doesNotMatch(needs, />Design worker</);
   assert.doesNotMatch(needs, />ship</);
   const lane = html.slice(html.indexOf('<div class="cols">'));
-  assert.match(unitRowOf(lane, 'ci'), /<div class="u needs"><div class="row"><span class="id"><span class="state peach">you<\/span>ci<\/span><span class="pr">push<\/span><\/div><div class="sub"><span class="kept">since 10:45<\/span><\/div><div class="unit-note">push the runner fix<\/div>/);
+  assert.match(unitRowOf(lane, 'ci'), /<div class="u needs" id="unit-alpha\/ci"><div class="row"><span class="id"><span class="state peach">you<\/span>ci<\/span><span class="pr">push<\/span><\/div><div class="sub"><span class="kept">since 10:45<\/span><\/div><div class="unit-note">push the runner fix<\/div>/);
 });
 
 test('map: the lane header shows its coordinator live and flags two quiet hours while it runs', () => {
@@ -713,7 +876,7 @@ test('map: a needs-myuser row whose branch already landed on origin/main is flag
     const lanes = html.slice(html.indexOf('<div class="cols">'));
     const rebased = unitRowOf(lanes, 'rebased');
     // A stale row is the lane owner's cleanup, not the owner's turn: it reads stale, not you, and leaves Needs you.
-    assert.match(rebased, /^<div class="u"><div class="row"><span class="id"><span class="state yellow">stale<\/span>rebased<\/span>/);
+    assert.match(rebased, /^<div class="u" id="unit-repo\/rebased"><div class="row"><span class="id"><span class="state yellow">stale<\/span>rebased<\/span>/);
     assert.match(rebased, /<div class="sub">feat\/rebased<\/div><div class="unit-note">say push<\/div><div class="stale" title="every commit on feat\/rebased is on origin\/main under another id, as after a rebase">looks stale: branch already on main · lane owner&#39;s cleanup<\/div>/);
     assert.match(unitRowOf(lanes, 'merged'), /<div class="stale" title="feat\/merged is merged into origin\/main">looks stale: branch already on main · lane owner&#39;s cleanup<\/div>/);
     assert.match(unitRowOf(lanes, 'squash'), /<div class="stale" title="origin\/main has the squash or merge commit of #12">looks stale: PR #12 merged · lane owner&#39;s cleanup<\/div>/);
@@ -972,7 +1135,7 @@ const fullRowOf = (html, id) => {
 
 test('map: a unit\'s PR shows its GitHub state, head, preview, checks and summary, with the ledger read from state/', () => {
   const f = jobsFixture();
-  const html = renderMap(snapshot({ ...f, now: NOW }));
+  const html = renderMap(snapshot({ ...f, now: NOW }), new URLSearchParams('done=jobs/J1'));
   assert.deepEqual(f.asked, [['o/jobs', [7, 8]]], 'asks GitHub for the open units\' PRs only, once per repo');
   const leads = fullRowOf(html, 'leads');
   assert.match(leads, /<span class="pr"><a href="https:\/\/github\.com\/o\/jobs\/pull\/7" rel="noreferrer"><b>#7<\/b> <span class="subtext">open<\/span><\/a><\/span>/);
@@ -983,7 +1146,7 @@ test('map: a unit\'s PR shows its GitHub state, head, preview, checks and summar
   assert.match(leads, /<div class="pr-block"><div class="meta"><span class="yellow">1 check running<\/span> · head <code>abc1234<\/code> · <a class="link" href="https:\/\/jobs-git-feat-leads\.example\.app" rel="noreferrer">preview ↗<\/a> · verdict approve r1 on this head<\/div><details class="more"><summary><span class="count">1\/2 checks<\/span> · review ledger<\/summary>/);
   assert.match(leads, /<div class="checks"><a class="check" href="https:\/\/ci\/verify" rel="noreferrer" title="pass"><i class="dot pass"><\/i>verify<\/a><a class="check" href="https:\/\/ci\/preview" rel="noreferrer" title="pending"><i class="dot pending"><\/i>preview<\/a><\/div>/);
   assert.match(leads, /<div class="meta">review ledger: hosted walkthrough on abc1234 · <span class="green">approved at this head<\/span> · 2 review rounds, 1 extra allowed<\/div><\/details><\/div>/);
-  const apply = fullRowOf(html.slice(html.indexOf('<section>')), 'apply'); // the lane's row, not the Needs you one
+  const apply = fullRowOf(html.slice(html.indexOf('<section ')), 'apply'); // the lane's row, not the Needs you one
   assert.match(apply, /<b>#8<\/b> <span class="overlay">draft<\/span>/);
   assert.match(apply, /<div class="meta">behind main · head <code>ccc3333<\/code> · <span class="overlay">no preview<\/span> · verdict changes r1 on an older head ddd0000<\/div>/);
   // A blocker that is the owner's action stays inline; the rest of the ledger folds.
@@ -997,7 +1160,7 @@ test('map: a draft PR\'s failing check reaches its status line', () => {
     [8, prView(prNode(8, { isDraft: true, mergeStateStatus: 'BLOCKED', reviewDecision: 'REVIEW_REQUIRED' }, { checks: [run('verify', 'SUCCESS'), run('lint', 'FAILURE')] }))],
   ]) }) });
   const html = renderMap(snapshot({ ...f, now: NOW }));
-  const apply = fullRowOf(html.slice(html.indexOf('<section>')), 'apply');
+  const apply = fullRowOf(html.slice(html.indexOf('<section ')), 'apply');
   assert.match(apply, /<b>#8<\/b> <span class="overlay">draft<\/span>/);
   assert.match(apply, /<div class="meta"><span class="red">blocked on: 1 check failing: lint<\/span> · head <code>abc1234<\/code>/);
 });
@@ -1036,7 +1199,7 @@ test('map: a PR blocker that names the owner is in Needs you; GitHub trouble sho
   assert.match(render(snapshot({ ...f, now: NOW, autoupdate: updater(HEALTHY) })), /<div class="name">apply<\/div><div class="sub"><span class="state peach">you<\/span> · jobs · the owner picks the job batch \(order 56\) · <span class="kept">since 11:00<\/span> · <a href="https:\/\/github\.com\/o\/jobs\/pull\/8" rel="noreferrer"><b>#8<\/b> <span class="overlay">draft<\/span><\/a><\/div>/);
   const blocked = jobsFixture({ prs: () => ({ at: NOW - 1000, error: null, prs: new Map([[7, prView(prNode(7, { mergeStateStatus: 'BLOCKED' }, { checks: [run('lint', 'FAILURE')] }))]]) }) });
   const row = fullRowOf(renderMap(snapshot({ ...blocked, now: NOW })), 'leads');
-  assert.match(row, /^<div class="u blocked">/);
+  assert.match(row, /^<div class="u blocked" id="unit-jobs\/leads">/);
   assert.match(row, /<b>#7<\/b> <span class="red">blocked<\/span>/);
   assert.match(row, /<div class="meta"><span class="red">blocked on: 1 check failing: lint<\/span> · head <code>abc1234<\/code> · <span class="overlay">no preview<\/span> · verdict approve r1 on this head<\/div>/);
   assert.match(row, /<summary><span class="count">0\/1 checks<\/span> · review ledger<\/summary>/);
@@ -1071,7 +1234,7 @@ test('map: Needs you skips done units, lists one item per PR, and only blockers 
   const prs = () => ({ at: NOW - 1000, error: null, prs: new Map([
     [7, prView(prNode(7, {}, { preview: 'https://acts-git-feat-front.example.app' }))], [8, prView(prNode(8))], [9, prView(prNode(9))],
   ]) });
-  const html = renderMap(snapshot({ ...f, lanesDir: dir, autoupdate: null, prs, now: NOW }));
+  const html = renderMap(snapshot({ ...f, lanesDir: dir, autoupdate: null, prs, now: NOW }), new URLSearchParams('done=acts/'));
   assert.match(html, /<title>\(3\) project map<\/title>/, 'two units and the fixture thread with an input card');
   const needs = html.slice(html.indexOf('Needs you · 3'), html.indexOf('<div class="cols">'));
   assert.match(needs, /<b class="id">waiting<\/b><span class="ask">approve the budget · <span class="kept">since 11:28<\/span> · <a href="https:\/\/github\.com\/o\/jobs\/pull\/9" rel="noreferrer"><b>#9<\/b> <span class="green">ready<\/span><\/a><\/span>/);
