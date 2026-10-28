@@ -19,6 +19,7 @@ Needs PyYAML, which nix/user.nix adds to python3. Before a rebuild has applied
 that, run it under the flake's pinned Python:
   nix shell --impure --expr '(builtins.getFlake (toString ./.)).inputs.nixpkgs.legacyPackages.${builtins.currentSystem}.python3.withPackages (p: [p.pyyaml])' -c python3 -I scripts/check-skills
 """
+import os
 import re
 import sys
 from pathlib import Path
@@ -35,7 +36,6 @@ NO_LICENSE = {
     "chrome-devtools-axi": "vendored SKILL.md from the pnpm package",
     "codex-computer-use": "own authorship",
     "codex-review": "own authorship",
-    "grilling": "mattpocock/skills ships no per-skill LICENSE",
     "no-mistakes": "vendored from the pinned no-mistakes tag",
     "verify-agent-board": "own authorship",
     "visual-reply": "own authorship",
@@ -98,7 +98,7 @@ def targets(md, skill_dir, skills_dirs):
             yield token, skill_dir / token
 
 
-def check(skill_dir, skills_dirs):
+def check(skill_dir, skills_dirs, repo_root=None, local=False):
     problems = []
     skill_md = skill_dir / "SKILL.md"
     if not skill_md.is_file():
@@ -120,7 +120,19 @@ def check(skill_dir, skills_dirs):
         for mention, path in targets(md, skill_dir, skills_dirs):
             refs += 1
             if not path.exists():
-                problems.append(f"{md.relative_to(skill_dir)}: {mention} does not resolve")
+                problem = f"{md.relative_to(skill_dir)}: {mention} does not resolve"
+                # A bare scripts/... or references/... path names a file in
+                # the skill's own directory. If the repo has it, say how to
+                # name that file instead (the 28 Oct pre-push failure). A
+                # global skill is read from ~/.claude/skills, where a link
+                # relative to this repo breaks, so it names ~/dotfiles.
+                if repo_root and LOCAL_PATH.match(mention) and (repo_root / mention).exists():
+                    if local:
+                        link = os.path.relpath(repo_root / mention, md.parent)
+                        problem += f" in the skill's directory; to name the repo file, link it: [{mention}]({link})"
+                    else:
+                        problem += f" in the skill's directory; to name the repo file, write `~/dotfiles/{mention}`"
+                problems.append(problem)
     return problems, meta, refs
 
 
@@ -160,7 +172,7 @@ def check_codex_links(nix_file, skills_dir):
     return len(problems)
 
 
-def check_tree(skills_dir, links, nix_name, skills_dirs, global_names=None):
+def check_tree(skills_dir, links, nix_name, skills_dirs, global_names=None, repo_root=None):
     """Check one skills tree; global_names is set for a repo-local tree.
 
     Returns (failed count, listing chars, skill names)."""
@@ -168,7 +180,7 @@ def check_tree(skills_dir, links, nix_name, skills_dirs, global_names=None):
     listing = 0
     skill_dirs = sorted(p for p in skills_dir.iterdir() if p.is_dir()) if skills_dir.is_dir() else []
     for skill_dir in skill_dirs:
-        problems, meta, refs = check(skill_dir, skills_dirs)
+        problems, meta, refs = check(skill_dir, skills_dirs, repo_root, local=global_names is not None)
         if global_names is not None:
             if skill_dir.name in links:
                 problems.append("is repo-local, so it needs no home.file line; one would also load it in every other repo")
@@ -204,15 +216,17 @@ def main(argv):
     skills_dir = Path(args[0]) if args else root / "files/.claude/skills"
     local_dir = opts["--local"] or (None if args else root / ".claude/skills")
     links = nix_links(nix_file)
+    # Hints name repo files only when checking this repo's own trees.
+    repo_root = None if args else root
     skills_dirs = [d for d in (local_dir, skills_dir) if d]
-    failed, listing, names = check_tree(skills_dir, links, nix_file.name, skills_dirs)
+    failed, listing, names = check_tree(skills_dir, links, nix_file.name, skills_dirs, repo_root=repo_root)
     failed += check_codex_links(nix_file, skills_dir)
     for name in sorted(set(links) - names):
         print(f"FAIL {name}: {nix_file.name} links it, but {skills_dir.name}/{name} is not a directory")
         failed += 1
     print(f"model-invocable listing: {listing} chars of name plus description")
     if local_dir:
-        local_failed, local_listing, _ = check_tree(local_dir, links, nix_file.name, skills_dirs, global_names=names)
+        local_failed, local_listing, _ = check_tree(local_dir, links, nix_file.name, skills_dirs, global_names=names, repo_root=repo_root)
         failed += local_failed
         print(f"repo-local listing: {local_listing} more chars, in sessions inside this repo only")
     print(f"{failed} failed" if failed else "all skills ok")

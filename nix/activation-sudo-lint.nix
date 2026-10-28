@@ -188,9 +188,14 @@ rec {
       # would stay a thunk pointing at the one before, a chain as long as the
       # text, and forcing it at the end would recurse once per link: three
       # times today's activate overflowed Nix's max-call-depth. So each step
-      # forces every field but the three growing lists, those lists' spines,
-      # and their newest entries (whose thunks would keep an old state
-      # alive). The depth then stays the same at any text length.
+      # forces every field but the three growing lists, and then those lists'
+      # newest entries, which forces their spines too. The spines hold the
+      # depth flat; the entries keep old states from piling up in memory.
+      # Without the entries, their thunks would keep old states alive.
+      # Without the spines, `done` would grow into a chain of `++` thunks: it
+      # costs no max-call-depth, but forcing it at the end crashes
+      # nix natively (no Nix error) from about 60000 lines. The depth then
+      # stays the same at any text length.
       strict = st:
         let newest = xs: if xs == [ ] then null else lib.last xs;
         in builtins.deepSeq
@@ -254,11 +259,13 @@ rec {
       bypasses = l:
         builtins.match ''(.*[^[:alnum:]_])?(command|exec|builtin)[[:space:]]+(-[^[:space:]]+[[:space:]]+([^-[:space:]][^[:space:]]*[[:space:]]+)?)*sudo([^[:alnum:]_-].*)?'' l != null;
 
-      # Every PATH=<homebrew prefix> on a line, with the text before it and
-      # the text after it up to the next one. A backslash escape counts as a
-      # boundary: a child shell reads the \n of $'...\nPATH=' or printf
-      # as a newline.
-      pathRe = ''(^|[^[:alnum:]_]|\\[[:alnum:]])(PATH=["']?${lib.escapeRegex prefix})'';
+      # Every PATH=<homebrew prefix> on a line, with the text before it, the
+      # quote that opens its value (if any) and the text after it up to the
+      # next one. A backslash escape of any length counts as a boundary: a
+      # child shell reads the \n, \x0a, \012, \u000a or \cJ of
+      # $'...\x0aPATH=' or printf as a newline. Text like \nfooPATH= then
+      # fails closed.
+      pathRe = ''(^|[^[:alnum:]_]|\\[[:alnum:]]+)(PATH=["']?${lib.escapeRegex prefix})'';
       matches = l:
         let
           parts = builtins.split pathRe l;
@@ -271,6 +278,7 @@ rec {
             in {
               before = lib.concatMapStrings render (lib.sublist 0 idx parts)
                 + str (builtins.head (builtins.elemAt parts idx));
+              quote = lib.findFirst (q: lib.hasPrefix "PATH=${q}" (builtins.elemAt (builtins.elemAt parts idx) 1)) "" [ "\"" "'" ];
               after = builtins.elemAt parts (idx + 1);
             })
           ((builtins.length parts - 1) / 2);
@@ -280,14 +288,27 @@ rec {
       # (env PATH=...) or text a child shell runs (bash -c '...'), and that
       # program looks sudo up in PATH without the function.
       startsCommand = m: lib.trim m.before == "";
-      # The command word after the assignment, and the words after it. An
-      # unquoted value ends at a control character: `PATH=...; sudo` is a
-      # plain assignment that stays set, with no command behind it.
+      # The command word after the assignment, and the words after it. The
+      # value is read as bash reads one word, from a whitelist: plain
+      # characters, \x escapes, $name, the $() that scan leaves of a
+      # substitution, ${name} with no space or quote inside, and quoted
+      # parts. Anything else reads as no command, which fails closed. So an
+      # unquoted value ends at a control character (`PATH=...; sudo` is a
+      # plain assignment that stays set, with no command behind it), and a
+      # space inside ${...} or after \ does not end the word: in
+      # `PATH=...${x:- sudo -u myuser } brew`, brew is the command.
+      dqUnit = ''[^"\\$`]|\\.|\$[^"({[\\`]|\$\(\)|\$\{[^"'{}()\\`]*\}'';
+      wordUnit = ''[^[:space:]"'\\;&|<>(){}$`]|'[^']*'|\\.|\$[^[:space:]"'({[}\\;&|<>)`]|\$\(\)|\$\{[^"'{}()\\`[:space:]]*\}|"(${dqUnit})*\$?"'';
+      opened = {
+        "" = "";
+        "\"" = ''(${dqUnit})*\$?"'';
+        "'" = "[^']*'";
+      };
       command = m:
-        let w = builtins.match ''[^[:space:]"';&|<>()]*["']?[[:space:]]+([^[:space:]]+)(.*)'' m.after;
+        let w = builtins.match ''${opened.${m.quote}}(${wordUnit})*[[:space:]]+([^[:space:]]+)(.*)'' m.after;
         in if w == null then { word = null; args = [ ]; } else {
-          word = builtins.head w;
-          args = builtins.filter (x: builtins.isString x && x != "") (builtins.split "[[:space:]]+" (builtins.elemAt w 1));
+          word = builtins.elemAt w (builtins.length w - 2);
+          args = builtins.filter (x: builtins.isString x && x != "") (builtins.split "[[:space:]]+" (lib.last w));
         };
       isSudo = m: builtins.elem (command m).word [ "sudo" "/usr/bin/sudo" ];
       # sudo's target user from its options (up to the first word that is

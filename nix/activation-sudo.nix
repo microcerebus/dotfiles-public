@@ -51,7 +51,10 @@
 # see a function that reaches a child shell (`export -f f; bash -c f`), an
 # alias under `shopt -s expand_aliases`, or the definition sitting in a
 # function body or an `if` branch that never runs (it tracks `( ... )` and
-# `$( ... )`, not braces or keywords).
+# `$( ... )`, not braces or keywords). Nor does it see a separator a
+# later program makes (printf '%c', tr), a `$'...'` around the prefix
+# (`PATH=$'/opt/homebrew/bin' sudo true`) or a `\` inside it
+# (`PATH=/opt/home\brew/bin sudo true`).
 # The rules live in nix/activation-sudo-lint.nix and are pinned by
 # tests/activation_sudo_lint_test.nix.
 # Once nix-darwin calls /usr/bin/sudo itself, the function is a no-op and

@@ -69,8 +69,8 @@ Rule of thumb from pstack: when an agent does the same thing by hand twice, have
 
 ## Rituals
 
-- **On request**: poteto-mode routes "catch me up" to ketchup, a check of the agent's understanding to in-your-own-words, and requested questioning or interview drills to grilling.
-  Catch-up stays read-only, goal restatement does not start implementation, and grilling waits for answers between rounds.
+- **On request**: poteto-mode routes "catch me up" to ketchup, a check of the agent's understanding to in-your-own-words, requested questioning or interview drills to grilling, and session retrospectives to retro (pinned mattpocock/skills, 2026-10-28).
+  Catch-up stays read-only, goal restatement does not start implementation, grilling waits for answers between rounds, and retro only proposes.
   Ordinary plan reviews keep the review route.
   Batch 2's routes are pushed and applied; see docs/pstack-audit/audit.md#rollout-status.
 - **Decision log**: every lane appends to `decisions.tsv` (show-me-your-work); the coordinator reads it instead of transcripts.

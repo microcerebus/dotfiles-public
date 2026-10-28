@@ -4,7 +4,8 @@
 # Pure evaluation: nothing here runs a shell or a sudo.
 # Case names starting B, F or m are the probes and mutant gaps of the
 # round-3 review (B: must fail, F: must pass, m: a mutant the table missed);
-# b, f and M1 name the round-4 review's probes and its must-fix.
+# b, f and M1 name the round-4 review's probes and its must-fix; r5 names
+# the round-5 check's should-fixes.
 { lib }:
 
 let
@@ -46,6 +47,13 @@ let
   # overflows max-call-depth on 30 times this, or on today's size plus
   # one 3000-line plist.
   activateLike = lines: lib.concatStrings (lib.replicate (lines / 4) "x=\"$(echo 'a')\"\ny=\${z}\nfalse # c\ntrue\n");
+  # Without the spine forcing in strict, `done` becomes a chain of `++`
+  # thunks that costs no max-call-depth but crashes nix natively when forced
+  # (measured 28 Oct: rc 139 from 60000 such lines; 50000 passed). Lines of
+  # one word make the most steps for the least eval time. Nix 2.35.3: crash
+  # between 50000 and 55000 lines (measured 29 Oct); re-measure after a Nix
+  # upgrade, since a Nix that spends less stack per frame could pass 70000.
+  oneWord = lines: lib.concatStrings (lib.replicate lines "t\n");
   plist = lines: "defaults write x y '<plist>\n" + lib.concatStrings (lib.replicate lines "  <key>k</key><integer>1</integer>\n") + "</plist>'";
 
   # { name; text; fails = [ rule ... ]; } with fails = [ ] for a pass.
@@ -64,8 +72,15 @@ let
     { name = "commented-out bad line"; text = after "# env PATH=\"/opt/homebrew/bin:$PATH\" sudo true"; fails = [ ]; }
     { name = "sudo as a later word"; text = after "echo no sudo here; command -v true"; fails = [ ]; }
     { name = "nix-darwin's PATH probe (activate lines 8-25)"; text = after "${nixProbe}${brewPath} ${su} true"; fails = [ ]; }
+    { name = "r5 \"$(...)\" inside the Homebrew PATH"; text = after "PATH=\"/opt/homebrew/bin:$(true)\" ${su} true"; fails = [ ]; }
+    { name = "r5 unquoted $(...) inside the Homebrew PATH"; text = after "PATH=/opt/homebrew/bin:$(true) ${su} true"; fails = [ ]; }
+    { name = "r5 multi-line \"$(...)\" inside the Homebrew PATH"; text = after "PATH=\"/opt/homebrew/bin$(\n  printf ':'\n  echo \"x\"\n):$PATH\" ${su} true"; fails = [ ]; }
+    { name = "r5 ; inside a quoted Homebrew PATH"; text = after "PATH=\"/opt/homebrew/bin;x\" ${su} true"; fails = [ ]; }
+    { name = "r5 quoted part later in the PATH word"; text = after "PATH=/opt/homebrew/bin:\"$PATH\":'/x y' ${su} true"; fails = [ ]; }
+    { name = "r5 \${...} and \\ escapes in the PATH word"; text = after "PATH=\"/opt/homebrew/bin:\${PATH}\\\"\":\${HOME}/b\\ c ${su} true"; fails = [ ]; }
     { name = "M1 30 times activate's size"; text = after "${activateLike (30 * 992)}${bp} ${su} true"; fails = [ ]; }
     { name = "M1 activate's size, then a 3000-line plist"; text = after "${activateLike 992}${bp} ${su} true\n${plist 3000}"; fails = [ ]; }
+    { name = "r5 70000 one-word lines (strict forces the list spines)"; text = after "${oneWord 70000}${bp} ${su} true"; fails = [ ]; }
 
     # The function itself.
     { name = "function missing"; text = "${brewPath} sudo ${sudoArgs}\n"; fails = [ r.count ]; }
@@ -104,6 +119,11 @@ let
     { name = "b21 bash -c $'\\n...'"; text = after "bash -c $'\\n${bp} sudo -u myuser true\\n'"; fails = [ r.start ]; }
     { name = "b38 bash -c $'true\\t...'"; text = after "bash -c $'true\\t${bp} sudo -u myuser true'"; fails = [ r.start ]; }
     { name = "b37 printf '...\\n...' | bash"; text = after "printf 'true\\n${bp} sudo -u myuser true\\n' | bash"; fails = [ r.start ]; }
+    { name = "r5 bash -c $'true\\x0a...'"; text = after "bash -c $'true\\x0a${bp} ${su} true'"; fails = [ r.start ]; }
+    { name = "r5 bash -c $'true\\012...'"; text = after "bash -c $'true\\012${bp} ${su} true'"; fails = [ r.start ]; }
+    { name = "r5 bash -c $'true\\u000a...'"; text = after "bash -c $'true\\u000a${bp} ${su} true'"; fails = [ r.start ]; }
+    { name = "r5 bash -c $'true\\cJ...'"; text = after "bash -c $'true\\cJ${bp} ${su} true'"; fails = [ r.start ]; }
+    { name = "r5 printf '...\\012...' | bash"; text = after "printf 'true\\012${bp} ${su} true\\n' | bash"; fails = [ r.start ]; }
     { name = "m27 \\ + newline inside $'...' keeps a gap"; text = after "bash -c $'true\\\n${bp} ${su} true'"; fails = [ r.start ]; }
     { name = "b07 \\ + newline, then #"; text = after "x=y\\\n#; env ${bp} ${su} true"; fails = [ r.start ]; }
     {
@@ -117,6 +137,16 @@ let
     { name = "env behind the prefix (review u2)"; text = after "${brewPath} env sudo true"; fails = [ r.notSudo ]; }
     { name = "brew run directly as root"; text = after "PATH=/opt/homebrew/sbin:$PATH brew bundle"; fails = [ r.notSudo ]; }
     { name = "b01 PATH=...; sudo (a plain assignment)"; text = after "${bp}; sudo -u myuser true\nlaunchctl list"; fails = [ r.notSudo ]; }
+    { name = "r5 PATH=\"...\"; sudo (a plain assignment)"; text = after "PATH=\"/opt/homebrew/bin\"; sudo -u myuser true\nlaunchctl list"; fails = [ r.notSudo ]; }
+    { name = "r5 sudo inside an unquoted \${...} is part of the PATH word"; text = after "PATH=/opt/homebrew/bin:\${x:- sudo -u myuser } brew bundle"; fails = [ r.notSudo ]; }
+    { name = "r5 sudo inside a quoted \${...} is part of the PATH word"; text = after "PATH=\"/opt/homebrew/bin:\${x:-\" sudo -u myuser \"}\" brew bundle"; fails = [ r.notSudo ]; }
+    { name = "r5 sudo after \\ + space is part of the PATH word"; text = after "PATH=/opt/homebrew/bin\\ sudo -u myuser brew bundle"; fails = [ r.notSudo ]; }
+    { name = "rv1 $'...' in the PATH word"; text = after "PATH=/opt/homebrew/bin$' sudo -u myuser ' brew bundle"; fails = [ r.notSudo ]; }
+    { name = "rv1 $'\\'...' in the PATH word"; text = after "PATH=/opt/homebrew/bin$'\\' sudo -u myuser true \\'' brew bundle"; fails = [ r.notSudo ]; }
+    { name = "rv1 $\"...\" in the PATH word"; text = after "PATH=/opt/homebrew/bin$\" sudo -u myuser \" brew bundle"; fails = [ r.notSudo ]; }
+    { name = "rv1 \"...$\" ends the quote"; text = after "PATH=\"/opt/homebrew/bin$\" brew \" sudo -u myuser true\""; fails = [ r.notSudo ]; }
+    { name = "rv1 quoted } inside \"\${...}\""; text = after "PATH=\"/opt/homebrew/bin\${x:-\"}\" sudo -u myuser true }\" brew bundle"; fails = [ r.notSudo ]; }
+    { name = "rv1 quoted } inside unquoted \${...}"; text = after "PATH=/opt/homebrew/bin\${x:-'} sudo -u myuser true '} brew bundle"; fails = [ r.notSudo ]; }
     { name = "B6 sudo with no --user"; text = after "${bp} sudo env true"; fails = [ r.user ]; }
     { name = "B6b sudo -u root"; text = after "${bp} sudo -u root env true"; fails = [ r.user ]; }
     { name = "sudo --user=0"; text = after "${bp} sudo --user=0 env true"; fails = [ r.user ]; }
@@ -133,6 +163,7 @@ let
     { name = "b04 sudo -u myuser --us=root"; text = after "${bp} sudo -u myuser --us=root env true"; fails = [ r.user ]; }
     { name = "sudo -u myuser, then -u with no user"; text = after "${bp} sudo -u myuser -u"; fails = [ r.user ]; }
     { name = "sudo -EHu myuser"; text = after "${bp} sudo -EHu myuser true"; fails = [ ]; }
+    { name = "r5 sudo -pu myuser (-p takes u as its prompt)"; text = after "${bp} sudo -pu myuser true"; fails = [ r.user ]; }
 
     # The homebrew step's PATH line is gone while homebrew is on.
     { name = "B10 brew bundle moved to a store script"; homebrew = true; text = after "/nix/store/x-brew-bundle"; fails = [ r.gone ]; }

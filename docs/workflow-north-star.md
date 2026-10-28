@@ -70,6 +70,8 @@ The [delta record](pstack-audit/batch-3-delta.md) covers every assigned entry, r
 poteto-mode is the entry point (2026-10-16).
 The only other model-invocable pstack skills are unslop, correct and show-me-your-work, which are vendored from pstack and opened up here as a local edit (listed in nix/user.nix).
 Its body routes the task to one playbook in `poteto-mode/references/`, and each playbook runs the slash-only skills it needs (how, why, teach, architect, arena, figure-it-out, technical-writing, tdd, blast-radius, codex-review, interrogate) by reading their SKILL.md.
+mattpocock/skills grilling, retro and writing-for-agents are pinned to 5beb35b (2026-10-28) with upstream's MIT LICENSE; nix/user.nix lists their local edits (slash-only grilling and writing-for-agents).
+poteto-mode's retro playbook routes retrospectives to retro, ahead of the bug-fix and investigate routes, and reads writing-for-agents by path.
 The approved batch 2 routes map catch-up requests to ketchup, requests to restate goals to in-your-own-words, and requests for questioning or interview drills to grilling.
 They precede the general review and explanation routes; ordinary plan reviews still use review.
 The leaf skills stay explicit-only in both harnesses, with Codex aliases and invocation metadata; poteto-mode reads them through its three local playbooks.
@@ -88,6 +90,7 @@ The maintenance generator remains pending for batch 5.
 `.githooks/pre-push` runs the pushed commit's checker against an exported copy of that commit before the public mirror leak gate on pushes to `main`.
 Skill validation fails closed, including when the checker or PyYAML is missing; `PUBLIC_SYNC_SKIP=1` skips only the leak gate.
 `bash tests/pre_push_test.sh` covers committed and dirty skill failures, a different checked-out branch, gate order and missing checker dependencies.
+`.githooks/pre-commit` (and `.githooks/pre-merge-commit` for clean merges) runs the same checker earlier, on the index of any commit that changes a skill tree, `nix/user.nix` or the checker, or deletes, renames or changes the type of a file, so a broken reference stops at the commit; rebase, cherry-pick and revert are left to pre-push; `bash tests/pre_commit_test.sh` covers it.
 `python3 -I tests/check_skills_test.py` and `python3 -I tests/check_plan_test.py` test it and poteto-mode's `scripts/check-plan.py`.
 the owner asked on 2026-10-14 for the rest of the pstack set, which overrides the earlier "install only after a failure mode shows up twice" rule for pstack.
 To update: clone cursor/plugins, check out the old pin's `pstack/skills` next to the new one, and save `diff -ru old/<name> files/.claude/skills/<name>` as the local patch.

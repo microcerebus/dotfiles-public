@@ -405,11 +405,19 @@ in
   # skills below; keeps its model-invocable "Must always apply." frontmatter.
   # Captain standing instruction: apply by default to all writing.
   home.file.".claude/skills/unslop".source = link "files/.claude/skills/unslop";
-  # mattpocock/skills: grilling (relentless plan interviews). Prompt-only
-  # markdown, security-read 2026-08-24. Slash-command only since 2026-10-07.
+  # mattpocock/skills (MIT, pinned at 5beb35b, refreshed and security-read
+  # 2026-10-28): grilling (relentless plan interviews), retro (session
+  # retrospectives) and writing-for-agents (its style guide). Prompt-only
+  # markdown. Upstream ships only retro slash-only. Edits from upstream:
+  # grilling and writing-for-agents get disable-model-invocation and Codex
+  # allow_implicit_invocation false, because poteto-mode routes grilling and
+  # retro and its retro playbook reads writing-for-agents by path, so neither
+  # needs an always-loaded description.
   # domain-modeling was dropped 2026-10-10: zero uses, and pstack's
   # model-the-domain principle (folded into OPINIONS.md) covers it.
   home.file.".claude/skills/grilling".source = link "files/.claude/skills/grilling";
+  home.file.".claude/skills/retro".source = link "files/.claude/skills/retro";
+  home.file.".claude/skills/writing-for-agents".source = link "files/.claude/skills/writing-for-agents";
   # Codex delegation (own authorship, inspired by Theo's Fable 5 workflow):
   # independent review and native computer-use verification via the codex CLI
   # (Homebrew cask, nix/host.nix). codex-review is slash-command only and is
@@ -448,7 +456,8 @@ in
   # model-invocable entry: its body routes by task type to one playbook in
   # references/, and the playbooks run the slash-only skills by reading their
   # SKILL.md. 13 playbooks kept or merged from upstream's 24, plus four
-  # local routes for catch-up, goal restatement, grilling and formal checks; Cursor's PR
+  # local routes for catch-up, goal restatement, grilling and formal checks,
+  # and a fifth for retro (mattpocock/skills, 2026-10-28); Cursor's PR
   # machinery (babysit, shipping, autopilot-*, orchestrate, opening-a-pr,
   # bugbot-triage, watch-pr and orch scripts) and the playbooks that are
   # skills here (session-pickup, pause-safely) were dropped. check-plan.py
@@ -506,6 +515,7 @@ in
   home.file.".agents/skills/poteto-mode".source = link "files/.claude/skills/poteto-mode";
   home.file.".agents/skills/recall".source = link "files/.claude/skills/recall";
   home.file.".agents/skills/reflect".source = link "files/.claude/skills/reflect";
+  home.file.".agents/skills/retro".source = link "files/.claude/skills/retro";
   home.file.".agents/skills/session-pickup".source = link "files/.claude/skills/session-pickup";
   home.file.".agents/skills/sharpen".source = link "files/.claude/skills/sharpen";
   home.file.".agents/skills/show-me-your-work".source = link "files/.claude/skills/show-me-your-work";
@@ -517,6 +527,7 @@ in
   home.file.".agents/skills/unslop".source = link "files/.claude/skills/unslop";
   home.file.".agents/skills/visual-reply".source = link "files/.claude/skills/visual-reply";
   home.file.".agents/skills/why".source = link "files/.claude/skills/why";
+  home.file.".agents/skills/writing-for-agents".source = link "files/.claude/skills/writing-for-agents";
   # Status line (Catppuccin Mocha): ~/.claude/settings.json invokes this via
   # `bash`, so no execute bit is required. Edit files/.claude/statusline.sh,
   # not the symlink target.
