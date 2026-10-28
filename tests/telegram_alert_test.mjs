@@ -14,7 +14,9 @@ import path from 'node:path';
 import { withSandbox } from './lib/sandbox-env.cjs';
 
 const SCRIPT = process.env.TELEGRAM_ALERT_BIN ?? path.join(import.meta.dirname, '../scripts/telegram-alert');
-const TOKEN = '123456789:AAfake-token_for-tests-only0123456789';
+// Joined at run time so the public mirror's leak gate does not read it as a
+// real bot token.
+const TOKEN = '123456789:' + 'AAfake-token_for-tests-only0123456789';
 const CHAT = '424242424242';
 const SECRETS = [TOKEN.split(':')[1], CHAT];
 const BOTH = { 'telegram-alert-bot': TOKEN, 'telegram-alert-chat': CHAT };

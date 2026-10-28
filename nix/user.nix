@@ -574,7 +574,7 @@ in
   '';
 
   # Packs: long-lived review pages too big or too long-lived for T3's
-  # html_render, served from ~/packs at https://myhost.tail608a89.ts.net/packs/
+  # html_render, served from ~/packs at https://<mac>.<tailnet>.ts.net/packs/
   # (a pack in ~/packs/<name>/ opens at /packs/<name>/). Loopback only on 4391;
   # the server itself runs `tailscale serve --set-path /packs` at start, because
   # the sandboxed Tailscale app refuses to serve a folder directly. Every pack

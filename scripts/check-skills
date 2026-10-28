@@ -6,15 +6,20 @@ directory, `description` is present, a LICENSE is present unless the skill is
 listed in NO_LICENSE, and every relative link or backticked path it mentions
 resolves. Every skill directory in files/.claude/skills must also have its
 home.file line in nix/user.nix, and every such line must point at a skill
-directory. Skills in .claude/skills are repo-local: they register only in
+directory. Every such skill also reaches Codex through its .agents/skills line
+unless it is listed in CLAUDE_ONLY, and a Codex-linked skill may name only
+skills Codex can read. Skills in .claude/skills are repo-local: they register only in
 sessions inside this repo, so they must have no home.file line and must not
-share a name with a global skill.
+share a name with a global skill. Codex reads them through the repo's
+.agents/skills/<name> links, which must point at the same-named skill unless
+it is in CLAUDE_ONLY. A real directory in .agents/skills is a repo skill only
+Codex reads, and gets the same checks as the others.
 Prints one line per skill plus the size of the description lists, and exits
 1 if anything fails.
 
-Usage: python3 -I scripts/check-skills [skills-dir [--local <dir>]] [--nix <user.nix>]
-With no skills-dir it checks both trees of this repo; with one, only that
-tree, plus --local's.
+Usage: python3 -I scripts/check-skills [skills-dir [--local <dir> [--agents <dir>]]] [--nix <user.nix>]
+With no skills-dir it checks both trees of this repo and its .agents/skills;
+with one, only that tree, plus --local's and --agents'.
 Needs PyYAML, which nix/user.nix adds to python3. Before a rebuild has applied
 that, run it under the flake's pinned Python:
   nix shell --impure --expr '(builtins.getFlake (toString ./.)).inputs.nixpkgs.legacyPackages.${builtins.currentSystem}.python3.withPackages (p: [p.pyyaml])' -c python3 -I scripts/check-skills
@@ -40,6 +45,17 @@ NO_LICENSE = {
     "verify-agent-board": "own authorship",
     "visual-reply": "own authorship",
 }
+# Skills Codex must not get from this repo's .agents/skills lines or links. A
+# new skill missing here needs a .agents/skills line in nix/user.nix (or, for a
+# repo-local one, a .agents/skills link), or an entry with its reason. An entry
+# for a skill that no longer exists fails.
+CLAUDE_ONLY = {
+    "agent-device": "Claude's driver for native apps while Codex is out of quota; Codex uses its own computer use",
+    "chrome-devtools-axi": "Claude's browser fallback while Codex is out of quota",
+    "codex-computer-use": "hands screen checks to Codex; Codex uses its built-in computer use",
+    "no-mistakes": "Codex reads a hand-installed copy in ~/.agents/skills, outside this repo, which may not "
+                   "match this one, so a Codex-linked skill must not name it",
+}
 MD_LINK = re.compile(r"\]\(([^)\s]+)\)")
 TICKED = re.compile(r"`([^`\s]+)`")
 # `<name>/SKILL.md` always names a skill. `<name>/references/...` and
@@ -48,9 +64,11 @@ TICKED = re.compile(r"`([^`\s]+)`")
 SKILL_MD = re.compile(r"^([a-z0-9-]+)/SKILL\.md$")
 SKILL_FILE = re.compile(r"^([a-z0-9-]+)/(references|scripts)/[\w./-]+$")
 LOCAL_PATH = re.compile(r"^(references|scripts)/[\w./-]+$")
-NIX_LINK = re.compile(r'home\.file\."\.claude/skills/([^"]+)"\.source\s*=\s*link\s+"files/\.claude/skills/([^"]+)"')
-
-CODEX_LINK = re.compile(r'home\.file\."\.agents/skills/([^"/]+)"\.source\s*=\s*link\s+"([^"\n]+)"')
+REPO = Path(__file__).resolve().parent.parent
+REPO_AGENTS = REPO / ".agents/skills"
+# Anchored to the start of a line, so a commented-out line links nothing.
+NIX_LINK = re.compile(r'^\s*home\.file\."\.claude/skills/([^"]+)"\.source\s*=\s*link\s+"files/\.claude/skills/([^"]+)"', re.M)
+CODEX_LINK = re.compile(r'^\s*home\.file\."\.agents/skills/([^"/]+)"\.source\s*=\s*link\s+"([^"\n]+)"', re.M)
 
 
 def frontmatter(text):
@@ -144,8 +162,36 @@ def nix_links(nix_file):
     return links
 
 
-def check_codex_links(nix_file, skills_dir):
-    """Keep Codex aliases and implicit invocation consistent with canonical skills."""
+def codex_links(nix_file):
+    """Return the names of the skills nix links into Codex's .agents/skills."""
+    return {name for name, _ in CODEX_LINK.findall(nix_file.read_text(encoding="utf-8"))}
+
+
+def codex_unreadable(skill_dir, skills_dirs, codex):
+    """Yield (file, mention, skill) for each skill a Codex-read skill names
+    that Codex has no link for. codex maps each skills tree to the names in it
+    that Codex reads."""
+    roots = {Path(os.path.abspath(d)): names for d, names in codex.items()}
+    for md in sorted(skill_dir.rglob("*.md")):
+        for mention, path in targets(md, skill_dir, skills_dirs):
+            for root, names in roots.items():
+                try:
+                    name = Path(os.path.abspath(path)).relative_to(root).parts[0]
+                except (ValueError, IndexError):
+                    continue
+                if name not in names and (root / name).is_dir():
+                    yield md.relative_to(skill_dir), mention, name
+
+
+def unreadable_problem(md, mention, target, where):
+    why = f" ({target} is CLAUDE_ONLY: {CLAUDE_ONLY[target]})" if target in CLAUDE_ONLY else ""
+    return f"{md} names {mention}, which Codex cannot read because {target} has no {where}{why}"
+
+
+def check_codex_links(nix_file, skills_dir, skills_dirs, readable):
+    """Keep Codex aliases and implicit invocation consistent with canonical skills.
+
+    readable maps each skills tree to the names in it that Codex reads."""
     problems = []
     for name, source in CODEX_LINK.findall(nix_file.read_text(encoding="utf-8")):
         if source != f"files/.claude/skills/{name}":
@@ -167,35 +213,99 @@ def check_codex_links(nix_file, skills_dir):
                 raise ValueError(f"allow_implicit_invocation must be {str(expected).lower()}")
         except (OSError, ValueError, yaml.YAMLError) as error:
             problems.append(f"Codex invocation policy {name}: {error}")
+            continue
+        for md, mention, target in codex_unreadable(skill_dir, skills_dirs, readable):
+            problems.append(f"Codex link {name}: {unreadable_problem(md, mention, target, '.agents/skills line')}")
     for problem in problems:
         print(f"FAIL {problem}")
     return len(problems)
 
 
-def check_tree(skills_dir, links, nix_name, skills_dirs, global_names=None, repo_root=None):
-    """Check one skills tree; global_names is set for a repo-local tree.
+def codex_entries(agents_dir, local_dir):
+    """Sort the entries of a repo's .agents/skills.
 
-    Returns (failed count, listing chars, skill names)."""
+    Returns (names linked to their same-named repo-local skill, real skill
+    directories, problems). Links are read, never followed outside the repo."""
+    linked, dirs, problems = set(), [], []
+    entries = sorted(agents_dir.iterdir()) if agents_dir and agents_dir.is_dir() else []
+    for entry in entries:
+        label = f"{agents_label(agents_dir)}/{entry.name}"
+        if entry.name.startswith("."):
+            continue
+        if entry.is_symlink():
+            want = os.path.relpath(local_dir / entry.name, agents_dir) if local_dir else None
+            got = os.readlink(entry)
+            if local_dir and Path(os.path.abspath(agents_dir / got)) == Path(os.path.abspath(local_dir / entry.name)) \
+                    and (local_dir / entry.name).is_dir():
+                linked.add(entry.name)
+            else:
+                problems.append(f"Codex link {label}: points at {got}, not at a repo-local skill"
+                                + (f" (want {want})" if want else ""))
+        elif entry.is_dir():
+            dirs.append(entry)
+        else:
+            problems.append(f"Codex link {label} is a file; Codex reads a skill directory or a link to one")
+    return linked, dirs, problems
+
+
+def agents_label(agents_dir):
+    return ".agents/skills" if agents_dir == REPO_AGENTS else str(agents_dir)
+
+
+def skill_dirs_in(skills_dir):
+    return sorted(p for p in skills_dir.iterdir() if p.is_dir()) if skills_dir.is_dir() else []
+
+
+def check_tree(skill_dirs, links, nix_name, skills_dirs, global_names=None, repo_root=None, codex=frozenset(),
+               agents_dir=None, codex_only=False, readable=None):
+    """Check the skills of one tree; global_names is set for a repo-local tree.
+
+    codex names the skills in this tree that Codex reads. For a repo-local
+    tree, Codex links are checked only when agents_dir is set; codex_only
+    marks the real directories in agents_dir. readable maps each skills tree
+    to the names in it that Codex reads. Returns (failed count, listing
+    chars, skill names)."""
     failed = 0
     listing = 0
-    skill_dirs = sorted(p for p in skills_dir.iterdir() if p.is_dir()) if skills_dir.is_dir() else []
     for skill_dir in skill_dirs:
         problems, meta, refs = check(skill_dir, skills_dirs, repo_root, local=global_names is not None)
+        name = skill_dir.name
         if global_names is not None:
-            if skill_dir.name in links:
+            if name in links:
                 problems.append("is repo-local, so it needs no home.file line; one would also load it in every other repo")
-            if skill_dir.name in global_names:
+            if name in global_names:
                 problems.append("has the same name as a global skill in files/.claude/skills")
-        elif skill_dir.name not in links:
+        elif name not in links:
             problems.append(f"no home.file line for it in {nix_name}")
-        elif links[skill_dir.name]:
-            problems.append(f"{nix_name} {links[skill_dir.name]}")
+        elif links[name]:
+            problems.append(f"{nix_name} {links[name]}")
+        local_codex = global_names is not None and agents_dir is not None and not codex_only
+        if global_names is None or local_codex:
+            if name in CLAUDE_ONLY:
+                if name in codex:
+                    where = f"{nix_name} links it" if global_names is None else f"{agents_label(agents_dir)}/{name} links it"
+                    problems.append(f"{where} for Codex, but CLAUDE_ONLY in scripts/check-skills keeps it "
+                                    f"from Codex ({CLAUDE_ONLY[name]}); drop one of the two")
+            elif name not in codex and global_names is None:
+                problems.append(f"no .agents/skills line for it in {nix_name}, so Codex never sees it "
+                                "(add one, or a CLAUDE_ONLY entry in scripts/check-skills with its reason)")
+            elif name not in codex and not os.path.lexists(agents_dir / name):
+                label = f"{agents_label(agents_dir)}/{name}"
+                problems.append(f"no Codex link {label}, so Codex never sees it in this repo (add it: "
+                                f"ln -s {os.path.relpath(skill_dir, agents_dir)} {label}, or a CLAUDE_ONLY "
+                                "entry in scripts/check-skills with its reason)")
+        if codex_only and name in CLAUDE_ONLY:
+            problems.append(f"is a Codex-only skill, but CLAUDE_ONLY in scripts/check-skills keeps it "
+                            f"from Codex ({CLAUDE_ONLY[name]}); drop one of the two")
+        if (local_codex and name in codex) or codex_only:
+            for md, mention, target in codex_unreadable(skill_dir, skills_dirs, readable):
+                problems.append(unreadable_problem(md, mention, target, "Codex link"))
         invocable = meta.get("disable-model-invocation") is not True
         desc = len(meta.get("description") or "")
-        if meta and invocable:
+        if meta and invocable and not codex_only:
             listing += len(str(meta.get("name", ""))) + desc
         state = "FAIL" if problems else "ok"
-        where = " (repo-local)" if global_names is not None else ""
+        where = " (repo-local, Codex only)" if codex_only else " (repo-local)" if global_names is not None else ""
         print(f"{state} {skill_dir.name}{where}: invocable={'yes' if invocable else 'no'} refs_checked={refs} desc={desc}")
         for p in problems:
             print(f"  - {p}")
@@ -204,9 +314,9 @@ def check_tree(skills_dir, links, nix_name, skills_dirs, global_names=None, repo
 
 
 def main(argv):
-    root = Path(__file__).resolve().parent.parent
+    root = REPO
     args = list(argv)
-    opts = {"--nix": root / "nix/user.nix", "--local": None}
+    opts = {"--nix": root / "nix/user.nix", "--local": None, "--agents": None}
     for flag in opts:
         if flag in args:
             i = args.index(flag)
@@ -215,20 +325,42 @@ def main(argv):
     nix_file = opts["--nix"]
     skills_dir = Path(args[0]) if args else root / "files/.claude/skills"
     local_dir = opts["--local"] or (None if args else root / ".claude/skills")
+    agents_dir = opts["--agents"] or (None if args else REPO_AGENTS)
     links = nix_links(nix_file)
     # Hints name repo files only when checking this repo's own trees.
     repo_root = None if args else root
     skills_dirs = [d for d in (local_dir, skills_dir) if d]
-    failed, listing, names = check_tree(skills_dir, links, nix_file.name, skills_dirs, repo_root=repo_root)
-    failed += check_codex_links(nix_file, skills_dir)
+    codex = codex_links(nix_file)
+    linked, codex_dirs, entry_problems = codex_entries(agents_dir, local_dir)
+    readable = {skills_dir: codex}
+    if local_dir and agents_dir:
+        readable[local_dir] = linked
+        readable[agents_dir] = linked | {d.name for d in codex_dirs}
+    failed, listing, names = check_tree(skill_dirs_in(skills_dir), links, nix_file.name, skills_dirs, repo_root=repo_root, codex=codex)
+    failed += check_codex_links(nix_file, skills_dir, skills_dirs, readable)
     for name in sorted(set(links) - names):
         print(f"FAIL {name}: {nix_file.name} links it, but {skills_dir.name}/{name} is not a directory")
         failed += 1
     print(f"model-invocable listing: {listing} chars of name plus description")
     if local_dir:
-        local_failed, local_listing, _ = check_tree(local_dir, links, nix_file.name, skills_dirs, global_names=names, repo_root=repo_root)
+        local_failed, local_listing, local_names = check_tree(
+            skill_dirs_in(local_dir), links, nix_file.name, skills_dirs, global_names=names, repo_root=repo_root,
+            codex=linked, agents_dir=agents_dir, readable=readable)
         failed += local_failed
         print(f"repo-local listing: {local_listing} more chars, in sessions inside this repo only")
+        if agents_dir:
+            codex_failed, _, codex_names = check_tree(
+                codex_dirs, links, nix_file.name, [agents_dir, skills_dir], global_names=names | local_names,
+                repo_root=repo_root, agents_dir=agents_dir, codex_only=True, readable=readable)
+            failed += codex_failed
+            for problem in entry_problems:
+                print(f"FAIL {problem}")
+            failed += len(entry_problems)
+            # Only the repo's own trees hold every CLAUDE_ONLY skill.
+            if not args:
+                for name in sorted(set(CLAUDE_ONLY) - names - local_names - codex_names):
+                    print(f"FAIL CLAUDE_ONLY in scripts/check-skills names {name}, which is not a skill here; drop the entry")
+                    failed += 1
     print(f"{failed} failed" if failed else "all skills ok")
     return 1 if failed else 0
 

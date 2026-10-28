@@ -67,7 +67,7 @@ For covered changes made without this skill, read and follow `maintain-formal-ve
 
 When covered code changes, update the fixed check in `docs/formal/autoupdate-handoff`, not this record.
 Compare the diff with every affected row of its [source map](../../../docs/formal/autoupdate-handoff/source-map.md), and review the supporting rebuild alias and configurationRevision setting named there.
-Its runner guards the hash of `scripts/dotfiles-autoupdate` against `SOURCE_SHA256`, the source anchors it names and the nixpkgs pin, not those supporting files or semantic correspondence.
+Its runner guards the hash of [scripts/dotfiles-autoupdate](../../../scripts/dotfiles-autoupdate) against `SOURCE_SHA256`, the source anchors it names and the nixpkgs pin, not those supporting files or semantic correspondence.
 Keep reads, guard checks, writes and activation separate where the shell allows interleaving.
 Revise the corresponding model actions in its `Handoff.tla` manually, document the reasoning, and update `SOURCE_SHA256` and the sync commit above only after that comparison.
 Record a commit that is already on main; a branch commit's SHA changes when the branch is rebased.
