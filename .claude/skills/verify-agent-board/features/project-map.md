@@ -3,6 +3,7 @@
 The map at `/map` shows each orchestrator lane from its files under the lanes directory: lanes in priority order, each with its coordinator's live state, milestones with a done count and a progress bar, and one row per unit with its state, owner, dependencies and its PR as GitHub sees it: state, blockers, head, preview, checks and a one-line summary.
 Units that are the owner's turn, and review-ledger blockers whose action is his, are listed first under Needs you as one line each: the ask, the wait, and links to the PR and its preview.
 A `needs-myuser` row whose branch already landed reads `stale` and is not in the list ([stale rows](./stale-rows.md)).
+Below Needs you and above the lanes, Stuck lists every open unit that has stalled, paused, hit a GitHub blocker or lost its holder, one line each: in flight over eight hours, paused, a PR GitHub blocks, or no one holding it.
 Rows the board could not read are warnings beside their lane and counted in the footer, never guessed at.
 Nothing on the page is clipped: every line wraps, on a phone and on a desktop.
 
@@ -13,13 +14,15 @@ Nothing on the page is clipped: every line wraps, on a phone and on a desktop.
 - `map-notes` prints a lane's file problems as notes, such as `lane.json: missing` and the legacy `state/units.tsv` layout.
 - `map-milestones` groups units by milestone id, with `N of M done` and a bar filled by done only; hovering the bar lists the rest by state (`1 in-flight, 2 needs-myuser, 1 done`).
   `No milestone` comes last and has no bar.
-- `map-live-first` shows needs-myuser, in-flight, paused and queued groups in that order within each milestone, keeping dependency nesting within a group.
+- `map-live-first` shows needs-myuser, in-flight, recurring, paused and queued groups in that order within each milestone, keeping dependency nesting within a group.
   The first queued row whose dependencies are all done says `next up`.
   Done rows with a timestamp in the last 24 hours stay visible with a `landed` stamp; older rows fold under an `N done` link.
   Opening that link adds `?done=<lane>/<milestone>` to the URL, so it stays open through the 15-second refresh; choosing `N done · hide` closes it.
-- `map-status` puts `nothing needs you` or `N need you`, plus in-flight, stalled, paused and queued counts under the header, then lane links.
+- `map-status` puts `nothing needs you` or `N need you`, then `N stuck`, plus in-flight, stalled, paused and queued counts under the header, then lane links.
+  `N stuck` is always the Stuck heading's count and links to the list; with nothing listed and a source unread, or no readable lanes directory, it reads `stuck unknown`; an empty lanes directory reads `0 stuck`.
   Each nonzero count links to its first row and highlights the target.
   Missing T3 state, missing lane directories and unreadable or partially skipped units files are named in the strip; an incomplete read never says `nothing needs you`.
+  A lane whose PR state GitHub did not give is named too (`<lane> PR state unknown`, or `loading` before the first answer), since Stuck depends on it; that alone does not make Needs you unknown.
 - `map-rows` shows each unit's state word, id, PR chip (`#14 blocked` from GitHub, else the ledger's `#20 approve r2`, `no PR`, or a word such as `push`; a done unit's PR is `#11 merged` or the bare `#11`), the PR's title as the headline with one sentence from its Solution section, owner and its live state, branch, `since`, and the note in full.
 - `map-pr-state` reads each open unit's PR from GitHub through `gh` (one GraphQL call per repo, refreshed in the background): `draft`, `open`, `ready`, `blocked` with what blocks it (`blocked on: 1 check failing: lint`), `merged` or `closed`.
 - `map-pr-checks` folds the checks on the PR's head under a `2/3 checks` summary (tap to open: dots, green passed, red failed, yellow running, each linked to its run); failing checks are named on the status line (`blocked on: 1 check failing: lint`) and running ones counted (`1 check running`).
@@ -28,9 +31,18 @@ Nothing on the page is clipped: every line wraps, on a phone and on a desktop.
 - `map-pr-verdict` pairs the ledger's newest verdict with the PR head: `verdict approve r1 on this head` or `on an older head bbb2222`; the ledger is read from `ledger.tsv` or `state/ledger.tsv`, and `review-scope-ledger.json` adds `review ledger: <blockers>`, `approved at this head` and the review rounds.
 - `map-needs-pr` lists a review-ledger blocker whose subject is the owner under Needs you, once per PR, as `apply · the owner picks the job batch (order 56) · since ... · #8 draft`; a blocker that only mentions him (`rebase after the owner's PR lands`) and a done unit's blocker are not listed.
 - `map-needs-links` gives every Needs you unit row a link to its PR (`#8 draft`) and, when the head has one, `preview ↗`.
+- `map-stuck` lists, under `Stuck · N` after Needs you, each open unit that is in flight over eight hours (`in flight 10 h`), paused, has a PR GitHub blocks (failing checks, conflicts or a requested review, on an open or a draft PR: `blocked on: 1 check failing: lint`), is in flight or recurring with a blank owner (`unassigned`), or names an owner thread that is not open (`no owner thread`).
+  One line per unit with every reason: state, id linked to its row in the lane, `in flight 10 h, since 06:55` for a stalled unit or else `since <date>` or `age unknown`, the PR blocker, the owner, the PR and preview links, and `· <lane>` at the end of the last line, never on a line of its own; oldest first, unknown age last.
+  The oldest five show; the rest fold under `N more stuck`, which opens in place (`?stuck=all`, so it stays open through the refresh) and then reads `N more stuck · hide`, like a milestone's done fold. The heading still counts every unit.
+  A unit already in Needs you is not listed again, and a PR blocker is dropped from a sibling unit whose PR Needs you already lists in that lane; done units never appear.
+- `map-stuck-empty` says `Nothing stuck` when every source was read and nothing qualifies, and a sentence naming what it could not read otherwise: `Could not check for stuck work: fixture-stuck has 1 unreadable row; GitHub did not answer for fixture-stuck.` (also `T3 did not answer for owner threads`, and `GitHub has not answered yet for <lane>` before the first answer).
+- `map-owner-ref` resolves an owner written as a T3 id, with or without text after it (`mcp:6fac3fc8-... (c25 queue prep)`), or as the first 8 or more hex characters of one (`mcp:6fac3fc8`); the row shows the thread, its live state and the text.
+  A reference that matches no open thread, or more than one, reads `no owner thread`, and without T3 `owner state unavailable`; either keeps the text after the id (`no owner thread · (c25 queue prep)`).
+  Only the `mcp:` and `thread:` schemes count, and a bare short id needs a hex letter or a dash, so `TODO:assign later` or `20261028 handoff` is prose and shows as written.
 - `map-warnings` renders a row the board cannot read as an `unreadable units.tsv line 3` row beside its lane with why (`unknown state "in-progress"; states are ...`), and a ledger problem as a note.
-- `map-lane-stale-day` marks a lane `no update since 15 Oct 09:12` in yellow when none of its files changed for a day, whoever runs it; `GitHub: <error>` when gh fails, so PRs keep their ledger verdict.
+- `map-lane-stale-day` marks a lane `no update since 15 Oct 09:12` in yellow when none of its files changed for a day, whoever runs it; `GitHub unavailable` when gh fails (the full error in its hover title and the board's log), so PRs keep their ledger verdict.
 - `map-stalled` turns `since` into a yellow `in flight <duration>, since <date>` after eight hours in flight.
+- `map-recurring` shows a `recurring` unit (standing work such as a nightly sweep) with its state word and `since` stamp; it never stalls, is not counted as in flight, and is listed under Stuck only for a blank or closed owner or a blocked PR.
 - `map-nesting` nests a unit under the first unit it waits for in the same lane and milestone, and writes other dependencies out as `after ...`.
 - `map-then-you` shows a `needs-myuser` unit as `then you` until everything it waits for is done, then as `you` in Needs you.
 - `map-unresolved` draws an unknown or cyclic dependency in yellow, such as `after ? nope`.
@@ -59,6 +71,15 @@ Written flows, on a fixture run:
   On a fixture run, replace the scratch lanes directory with that directory, then repeat `look.mjs` at all five viewports.
   At 1280 px and up all three lanes must occupy separate columns.
   At 900-1279 px two adjacent lanes share a column: lanes 1 and 2 on the left for this shape, because 22+8 rows beside 35 makes a shorter page than 22 beside 8+35.
+
+- `node scripts/board.mjs verify-stuck` covers `map-stuck`, `map-stuck-empty` and `map-owner-ref`.
+  It runs `scripts/flows/map-stuck.mjs` on this checkout's fixture run, swapping the scratch lanes for each scenario in `STUCK_SCENARIOS` (`scripts/fixture.mjs`): initial, resolved, recurring, empty, degraded and crowded.
+  For each it checks the Stuck rows, the fold, the Needs you count and that the strip's stuck figure matches the heading on desktop-1920, saves `map-stuck-<scenario>-<viewport>-first.png` and `-full.png` at all five viewports and at `custom-900`, the narrowest two-column map, checks that page reads leave the lanes unchanged, and records the phone-390 bounds of the strip, Needs you and Stuck.
+  The initial scenario follows the first Stuck link to its row; the resolved one lands while the desktop page is open and must show through the page's own refresh.
+  The crowded one has 15 stuck units: it opens the `10 more stuck` fold and shoots it open too (`map-stuck-crowded-open-<viewport>-*.png`).
+  With the seeded lanes back, it opens every check list as a tap would and looks at map-polish's card, whose check list holds a long name with a kept parenthetical: the name must read in order at phone-390, and the card is shot at the five viewports and 900 px and swept at every width with the lists open (`map-stuck-checks-open-<viewport>-*.png`).
+  Every page read retries across the page's own reload (`evaluateSettled` in `scripts/flows/playwright.mjs`).
+  `--dry-run` prints the plan and changes nothing; `--json` prints the results as JSON. The seeded lanes come back at the end.
 
 Run them first; use the recipe below for the other sub-features.
 
@@ -99,5 +120,8 @@ Preconditions:
   Missing, invalid and future timestamps stay in the done fold.
 - `since` accepts `HH:MM` (today in Singapore time) or an ISO timestamp; anything else is counted in the footer as `since unreadable`.
 - The two-column layout starts at 900 pixels wide; below that the map is one column, as [phone and access](./phone-and-access.md) checks.
-- PR state needs `gh` with a token that can read the lane's repo; in a live run the lane header says `GitHub: <error>` when it cannot, and the first render says `loading PR state from GitHub` until the background call answers (one self-refresh).
+- PR state needs `gh` with a token that can read the lane's repo; in a live run the lane header says `GitHub unavailable` when it cannot, and the first render says `GitHub loading` until the background call answers (one self-refresh).
+- Stuck and the strip's `stalled` count share one rule: over eight hours in flight, measured from `since`. Exactly eight hours, a missing, unreadable or future `since` never stalls.
+  Stuck shows at most `STUCK_SHOWN` (5) rows before its fold; the cap is that one constant in `files/bin/agent-board.mjs`.
+- `verify-stuck` refuses a live or lanes-copy run, and stops with an error if `lanes-seeded` is left in the scratch dir from an interrupted run; relaunch the fixture then.
 - A PR is asked for only while its unit is not done, so a done unit's chip uses any cached GitHub state, otherwise the ledger's word (`#11 merged`).

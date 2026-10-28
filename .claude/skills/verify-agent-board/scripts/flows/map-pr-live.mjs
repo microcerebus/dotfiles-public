@@ -18,7 +18,7 @@
 // Run: node .claude/skills/verify-agent-board/scripts/flows/map-pr-live.mjs   (prints PASS or FAIL per step)
 import fs from 'node:fs';
 import path from 'node:path';
-import { boardEnv, chrome } from './playwright.mjs';
+import { boardEnv, chrome, evaluateSettled, withCleanUp } from './playwright.mjs';
 import { VIEWPORTS, pageOptions } from './viewports.mjs';
 
 const env = boardEnv();
@@ -27,7 +27,7 @@ if (new URL(env.BOARD_URL).port === '4790') throw new Error('refusing the live b
 const answer = path.join(env.BOARD_SCRATCH, 'gh/prs-board.json');
 const out = (name) => path.join(env.BOARD_EVIDENCE, `project-map-pr-live-${name}`);
 
-const read = (page) => page.evaluate(() => {
+const read = (page) => evaluateSettled(page, () => {
   const row = [...document.querySelectorAll('section .u')].find((u) => u.querySelector('.id')?.lastChild.textContent === 'preview-live');
   return {
     title: document.title,
@@ -54,7 +54,7 @@ const after = (r) => r.chip === '#16 ready' && !r.meta?.includes('running') && r
 
 const original = fs.readFileSync(answer, 'utf8');
 const browser = await chrome();
-try {
+await withCleanUp(async () => {
   const pages = {};
   for (const v of VIEWPORTS) pages[v.name] = await browser.newPage(pageOptions(v));
   await Promise.all(Object.values(pages).map((page) => page.goto(`${env.BOARD_URL}/map`)));
@@ -88,9 +88,6 @@ try {
   fs.writeFileSync(out('after.html'), await pages[desktop.name].content());
   fs.writeFileSync(out('after.json'), fs.readFileSync(answer, 'utf8'));
   check('after', Object.values(seen).every(after) && seen[desktop.name].clock !== first[desktop.name].clock, { ...seen, reloads });
-} finally {
-  await browser.close();
-  fs.writeFileSync(answer, original);
-}
+}, () => fs.writeFileSync(answer, original), () => browser.close());
 console.log(`evidence: ${env.BOARD_EVIDENCE}`);
 process.exitCode = failed ? 1 : 0;

@@ -1,6 +1,6 @@
 ---
 name: verify-agent-board
-description: "Launch, drive and verify the dotfiles agent board (files/bin/agent-board.mjs) on a throwaway instance from this checkout, and capture proof. Surfaces: the thread list at /, the /map project map with its stale-row flags, the auto-update alarms, the phone layout. Use when a change touches the board or what it reads (T3 state, lane units.tsv, lane.json or ledger.tsv, dotfiles-autoupdate status), when asked to check that the board or the map still shows something, or before calling a board change done. Never drives the live board on port 4790."
+description: "Launch, drive and verify the dotfiles agent board (files/bin/agent-board.mjs) on a throwaway instance from this checkout, and capture proof. Surfaces: the thread list at /, the /map project map with its Stuck list and stale-row flags, the auto-update alarms, the phone layout. Use when a change touches the board or what it reads (T3 state, lane units.tsv, lane.json or ledger.tsv, dotfiles-autoupdate status), when asked to check that the board or the map still shows something, or before calling a board change done. Never drives the live board on port 4790."
 ---
 
 # Verify the agent board
@@ -22,7 +22,7 @@ Read [the feature map](features/README.md) before driving anything, then follow 
 | --- | --- | --- |
 | Thread list: needs you, running, idle, context bars, quiet runs | [threads](features/threads.md) | fixture |
 | Auto-update alarms above the threads, the quiet healthy card | [auto-update](features/auto-update.md) | fixture |
-| Project map: lanes, milestones, unit rows, dependencies, footer | [project-map](features/project-map.md) | fixture |
+| Project map: Needs you, Stuck, lanes, milestones, unit rows, dependencies, footer | [project-map](features/project-map.md) | fixture |
 | Stale needs-myuser rows whose branch already landed | [stale-rows](features/stale-rows.md) | fixture |
 | Phone layout, tailnet access, the read-only and Host guards | [phone-and-access](features/phone-and-access.md) | fixture or live |
 
@@ -74,10 +74,14 @@ Drivers, in this order:
    They drive a headless Google Chrome with a throwaway profile (`playwright-core`, a pinned pnpm global), so they never touch the shared agent Chrome window.
    - `flows/map-refresh.mjs`: on a fixture run, `/map` updates by itself after a `units.tsv` change ([project map](features/project-map.md)).
    - `flows/map-pr-live.mjs`: on a fixture run, a PR's checks on `/map` update by themselves when the stub gh's answer changes, at all five viewports ([project map](features/project-map.md)).
-   - `flows/look.mjs <url> <dir> <name> [<viewport>|<width>]`: loads one page of your run at each of the five viewports, or at the one named by name or width (any other width gets a custom size: under 600 a phone, 844 tall at 3x with touch, otherwise 900 tall at 1x), saves the first screen and the full page with the page text and the horizontal overflow measured, and fails unless every load answered 2xx with zero overflow.
+   - `flows/map-stuck.mjs`, run through `scripts/board.mjs verify-stuck [--json] [--dry-run]`: on a fixture run, the Stuck list for each scenario in `STUCK_SCENARIOS`, at all five viewports and at 900 px, the narrowest two-column map, and at every width from 320 to 1920 for a line starting with `·`, then the seeded map with every check list open ([project map](features/project-map.md)).
+   - `flows/look.mjs <url> <dir> <name> [<viewport>|<width>] [--open]`: loads one page of your run at each of the five viewports, or at the one named by name or width (any other width gets a custom size: under 600 a phone, 844 tall at 3x with touch, otherwise 900 tall at 1x), saves the first screen and the full page with the page text, the horizontal overflow and every rendered line that breaks a line rule (it starts with `·`, splits a parenthetical of up to 24 characters, or ends in a count whose word wraps to the next line), and fails unless every load answered 2xx with zero overflow and no such line.
+     `--open` opens every folded list, such as a PR's check list, on each load, as a tap would.
      Like every flow, it refuses the live board on port 4790.
+   - `flows/line-sweep.mjs <url> [<from>-<to>] [<step>] [--json] [--open]`: the same layout checks, no overflow and none of the three line faults, at every width from 320 to 1920 by default, on one page resized per width, with no screenshots (9 to 16 seconds a page). Run it on `/` and `/map` after any layout change.
+     `flows/line-starts.mjs` is the check both use: it reads the lines Chrome rendered, not the markup, because Chrome breaks after an inline-block even before a no-break space.
    - `flows/viewports.mjs` holds the five viewports every visual check uses by default, the screens the owner reads the board on: `desktop-1920` (1920x1440, half his ultrawide), `small-desktop-1080` (1080x1800, a portrait monitor), `ipad-portrait-744` (744x1133 at 2x, touch), `ipad-landscape-1133` (1133x744 at 2x, touch) and `phone-390` (390x844 at 3x, mobile, touch).
-     Flows open every page with its `pageOptions()` rather than writing sizes of their own; only `look.mjs` builds a custom size, for a width you name outside the five.
+     Flows open every page with its `pageOptions()` rather than writing sizes of their own; only `look.mjs` builds a custom size, for a width you name outside the five, and only `line-sweep.mjs` resizes a page.
    A journey you would run twice belongs in a flow.
    For screen-free checks against the signed-in agent Chrome, run a written flow through `agent-chrome-playwright --minutes N --what "..."` in its own background tab (it notifies the owner before and after); see the codex-computer-use skill.
 2. **Codex computer use** for interactive checks no flow covers yet, through the `codex-computer-use` skill and its screen-warning launcher, in the agent Chrome.
@@ -125,6 +129,8 @@ Finish with PASS or FAIL and one line per step saying what you saw."
 
 - Where: `~/.local/state/verify-agent-board/<run-id>/evidence/` (`$BOARD_EVIDENCE`), next to `run.json` (instance, data paths, code revision) and `board.log`.
   It survives `stop`, a reboot and the worktree's removal; report that path.
+- Under [`scripts/test-sandbox`](../../../scripts/test-sandbox), give the run a short scratch path: `mktemp -d /tmp/<name>.XXXX`.
+  The default `mktemp -d` path under /var/folders makes Chrome's singleton socket path too long, and every flow exits 21.
 - Name files `<feature>-<state>-<viewport>.png` with the viewport names from `scripts/flows/viewports.mjs`, with the matching `.txt` eval output and `.html` curl beside them.
 - Proof standards:
   - Exercise the user path: open the page by URL and the header links, as the owner does on his phone; `render()` in a test is not a drive.
@@ -135,7 +141,7 @@ Finish with PASS or FAIL and one line per step saying what you saw."
     The fixture proves rendering and the lane and git logic; only a live run proves the board against T3's real schema, so a change to the T3 query or the columns it reads needs a live run too.
   - Visual evidence covers the five viewports by default, the first screen and the full page at each (`map-pr-live.mjs` saves full pages only, because it compares one row across a refresh); a check may narrow to one viewport only when the change cannot affect the others, and says so.
   - Look at every screenshot before reporting: clipped or overlapping text, wrapping, horizontal scroll, and the theme (Catppuccin Mocha, JetBrains Mono).
-    `look.mjs` and `map-pr-live.mjs` record the horizontal overflow in pixels; anything but 0 is text cut off.
+    `look.mjs` and `map-pr-live.mjs` record the horizontal overflow in pixels; anything but 0 is text cut off. `look.mjs` also lists each line that starts with `·`, splits a short parenthetical or leaves a count without its word; any is a defect.
 - Live-mode evidence shows real thread titles and branches: keep it in the evidence dir, never commit it (every push of this repo republishes a public mirror), and share it only with the owner or the coordinator.
 
 ## Cleanup
@@ -155,7 +161,7 @@ Finish with PASS or FAIL and one line per step saying what you saw."
 ## Helpers
 
 - `scripts/board.mjs`: Node 22, no packages.
-  `launch [--fixture | --lanes-copy] [--t3-db <copy>] [--publish] [--ttl <minutes>]`, `doctor [<run-id> | --port <n>]`, `env [<run-id>]`, `stop [<run-id>]`, `runs`.
+  `launch [--fixture | --lanes-copy] [--t3-db <copy>] [--publish] [--ttl <minutes>]`, `doctor [<run-id> | --port <n>]`, `env [<run-id>]`, `stop [<run-id>]`, `runs`, `verify-stuck [--json] [--dry-run]`.
   `VERIFY_AGENT_BOARD_STATE` moves the state directory (the tests use it).
 - `scripts/flows/`: the Playwright written flows (see Drive), `viewports.mjs` with the five default viewports, and `playwright.mjs`, which finds the pinned `playwright-core` and launches headless Google Chrome.
 - `scripts/fixture.mjs`: the seeded data.

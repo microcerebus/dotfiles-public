@@ -53,6 +53,6 @@ Name only user paths, stable handles, required state, commands, and observable p
 
 - [Thread list](./threads.md) covers the needs-you, running and idle sections, context bars and quiet runs on `/`.
 - [Auto-update alarms](./auto-update.md) covers the alarm card above the threads and the quiet healthy card below them.
-- [Project map](./project-map.md) covers lanes, milestones, unit rows, dependencies and the skipped-row footer on `/map`.
+- [Project map](./project-map.md) covers the Needs you and Stuck lists, lanes, milestones, unit rows, dependencies and the skipped-row footer on `/map`.
 - [Stale rows](./stale-rows.md) covers the yellow flag on a needs-myuser row whose branch already landed.
 - [Phone and access](./phone-and-access.md) covers the phone layout, the tailnet URL, and the read-only and Host guards.

@@ -256,12 +256,18 @@ export function snapshot({ dbPath = T3_DB, logsDir = CLAUDE_PROJECTS, lanesDir =
 // lane coordinator and the verifiers (templates/orchestrator-lane/README.md has the columns). Read on every request
 // and never written. A bad file or row is reported on the page, never guessed at.
 
-// The lane rule (dotfiles standing order 7, job-tracker order 55) allows exactly these; templates/orchestrator-lane/README.md
-// documents the same list, and tests/agent_board_test.mjs fails when the two drift apart.
-export const UNIT_STATES = ['queued', 'in-flight', 'needs-myuser', 'paused', 'done'];
+// Every lane's unit-states standing order allows these; recurring is standing work that never finishes.
+// templates/orchestrator-lane/README.md documents the same list, and tests/agent_board_test.mjs fails when the two
+// drift apart.
+export const UNIT_STATES = ['queued', 'in-flight', 'recurring', 'needs-myuser', 'paused', 'done'];
 const UNIT_ID = /^[a-z0-9][a-z0-9-]*$/;
-// T3 ids as stored: mcp:<uuid>, thread:<...> or a bare uuid. Owner text that looks like neither is prose.
-const THREAD_ID = /^(?:[a-z]+:\S+|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i;
+// An owner that starts with a T3 id (mcp:<uuid>, thread:<...> or a bare uuid), or with the first 8 or more hex
+// characters of one, names a thread; any text after it is the coordinator's annotation. Other owner text is prose:
+// only the two T3 schemes count, and a bare short id needs a hex letter or a dash, so "TODO:assign" or a date such
+// as 20261028 stays as written.
+const BARE_REF = '(?=[0-9a-f-]*[a-f-])[0-9a-f]{8}[0-9a-f-]*';
+const THREAD_REF = new RegExp(`^(?:(?:mcp|thread):[^\\s,;]+|${BARE_REF})(?=[\\s,;]|$)`, 'i');
+const SHORT_REF = new RegExp(`^(?:(?:mcp|thread):[0-9a-f]{8}[0-9a-f-]*|${BARE_REF})$`, 'i');
 const SGT_MS = 8 * 3600_000; // Singapore has no daylight saving
 
 // Header names lower-cased; rows keep their 1-based file line for error messages. Blank lines are not rows.
@@ -799,29 +805,31 @@ const RUN_LABELS = { completed: 'done', cancelled: 'stopped', interrupted: 'inte
 
 function card(t, now) {
   let label;
-  let tone;
+  let color;
   if (t.state === 'needs') {
     label = `${t.ask}${t.askedAt ? ` ${ago(now - t.askedAt)}` : ''}`;
-    tone = 'peach';
+    color = 'peach';
   } else if (t.state === 'running') {
     const since = t.lastActivityAt ? ago(now - t.lastActivityAt) : '';
     label = t.quiet ? `no activity ${since}` : [t.tool ?? 'running', since].filter(Boolean).join(' ');
-    tone = t.quiet ? 'red' : 'green';
+    color = t.quiet ? 'red' : 'green';
   } else {
     label = `${RUN_LABELS[t.run] ?? 'new'}${t.lastActivityAt ? ` ${ago(now - t.lastActivityAt)} ago` : ''}`;
-    tone = t.run === 'failed' ? 'red' : 'muted';
+    color = t.run === 'failed' ? 'red' : 'muted';
   }
   const context = t.contextUsed === null ? null
     : t.contextMax ? `${tokens(t.contextUsed)} / ${tokens(t.contextMax)}` : tokens(t.contextUsed);
-  const meta = [context, modelName(t.model), t.project, t.branch].filter(Boolean).map(escape).join(' · ');
+  // The project is kept whole, so a phone never splits "job-" from "tracker".
+  const meta = dots([...[context, modelName(t.model)].filter(Boolean).map(escape), t.project && tone('kept', t.project),
+    t.branch && branchName(t.branch)].filter(Boolean));
   const share = t.contextUsed !== null && t.contextMax ? Math.min(1, t.contextUsed / t.contextMax) : null;
   // Context bands follow the pause-safely rule: past 200k pause at the next boundary, past 230k now.
   const band = t.contextUsed >= 230_000 ? 'hot' : t.contextUsed >= 200_000 ? 'warn' : '';
   const bar = share !== null && t.state !== 'idle'
     ? `<div class="ctx"><i class="${band}" style="width:${(share * 100).toFixed(1)}%"></i></div>` : '';
-  return `<div class="t ${t.state}"><div class="name">${escape(t.title)}</div>`
-    + (t.parentTitle ? `<div class="sub">↳ ${escape(t.parentTitle)}</div>` : '')
-    + `<div class="sub"><span class="state ${tone}">${escape(label)}</span>${meta ? ` · ${meta}` : ''}</div>${bar}</div>`;
+  return `<div class="t ${t.state}"><div class="name">${prose(t.title)}</div>`
+    + (t.parentTitle ? `<div class="sub">↳ ${prose(t.parentTitle)}</div>` : '')
+    + `<div class="sub"><span class="state ${color}">${prose(label)}</span>${meta ? `${DOT}${meta}` : ''}</div>${bar}</div>`;
 }
 
 // What T3 no longer gives the board, above everything it does: Needs you may be short while approvals are unavailable,
@@ -830,7 +838,7 @@ const t3Gaps = (snap) => (snap.t3.unavailable.length ? 1 : 0);
 function t3Section(snap) {
   if (!t3Gaps(snap)) return '';
   return '<h2 class="attn">T3 state</h2><div class="t needs"><div class="name">Part of T3 state is unavailable</div>'
-    + snap.t3.unavailable.map((line) => `<div class="line red">${escape(line)}</div>`).join('')
+    + snap.t3.unavailable.map((line) => `<div class="line red">${prose(line)}</div>`).join('')
     + '<div class="line">If T3 just updated, its database schema may have changed; update files/bin/agent-board.mjs.</div></div>';
 }
 
@@ -840,7 +848,7 @@ function updatesSection(u) {
   // No count in the heading: every other heading counts cards, and this section is one card.
   return `<h2 class="${u.alarms.length ? 'attn' : ''}">Auto-update</h2>`
     + `<div class="t${u.alarms.length ? ' needs' : ''}"><div class="name">dotfiles auto-update</div>`
-    + lines.map(([tone, text]) => `<div class="line ${tone}">${escape(text)}</div>`).join('') + '</div>';
+    + lines.map(([tone, text]) => `<div class="line ${tone}">${prose(text)}</div>`).join('') + '</div>';
 }
 
 const SGT = (options) => new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Singapore', ...options });
@@ -857,7 +865,33 @@ function when(at, now) {
   return `${Number(p.day)} ${MONTHS[p.month - 1]}${day(now) - day(at) > 300 ? ` ${p.year}` : ''} ${hm}`;
 }
 
-const tone = (cls, text) => `<span class="${cls}">${escape(text)}</span>`;
+// A count stays on the line of the word it counts: in free text "1 check" and "10 h" are kept whole, so a phone never
+// ends a line on a bare "1". A version's "1 is" in "27.0.1 is" is no count. Ordinary spaces, so copied text still
+// reads "1 check". The board's own short count labels are whole already: a fold link ("3 more stuck") is a kept span,
+// a status strip count a box and a milestone's "3 of 5 done" a nowrap span.
+const counted = (text) => String(text).split(/((?<![\w.])\d+ [a-z]+)/i)
+  .map((part, i) => (i % 2 ? `<span class="kept">${escape(part)}</span>` : escape(part))).join('');
+// Free text as prose: a parenthetical of up to 24 characters, such as "(opus high)", is kept whole, so a phone never
+// leaves "high)" alone on a line. A longer one wraps like the words around it. Counts outside it stay with their word.
+const prose = (text) => String(text).split(/(\([^()]{1,22}\))/)
+  .map((part, i) => (i % 2 ? `<span class="kept">${escape(part)}</span>` : counted(part))).join('');
+// Text in a colour, as prose. A kept span is one phrase already, so it needs no spans of its own.
+const tone = (cls, text) => `<span class="${cls}">${/\bkept\b/.test(cls) ? escape(text) : prose(text)}</span>`;
+// Every separator dot has a no-break space before it, so a line can break after a "·" but never before one: no
+// line on either page starts with "·".
+const DOT = '&nbsp;· ';
+// A box (an inline-block: a branch name, a strip item) is an atomic inline, and Chrome may break right after one even
+// before a no-break space. So whatever follows a box on its line goes inside it: dots() joins a line's items with DOT
+// and puts the separator after a box, or the line's tail after a last box, inside that box.
+const box = (cls, html) => ({ box: cls, html });
+const dots = (items, tail = '') => items.map((item, i) => {
+  const last = i === items.length - 1;
+  if (!item.box) return `${item}${last ? tail : DOT}`;
+  return `<span class="${item.box}">${item.html}${last ? tail : DOT.trimEnd()}</span>${last ? '' : ' '}`;
+}).join('');
+// A branch moves to the next line whole rather than breaking at a hyphen ("feat/draft-" over "fail"); one longer than
+// its line still wraps inside its box.
+const branchName = (name) => box('whole', escape(name));
 // A date with the word before it, "since 9 Oct 14:05", kept on one line: a phone never leaves "since" or "14:05" alone.
 // Ordinary spaces, so a copied date still matches a search for "9 Oct".
 const stamp = (word, at, now) => tone('kept', `${word} ${when(at, now)}`);
@@ -867,7 +901,7 @@ const stamp = (word, at, now) => tone('kept', `${word} ${when(at, now)}`);
 function pageHeader(page, now) {
   const link = (name, href) => (name === page ? `<u>${name}</u>` : `<a href="${href}">${name}</a>`);
   return `<header><h1><span>agent board ·</span> ${link('threads', '/')} · ${link('map', '/map')}</h1>`
-    + `<small><span class="clock">${SGT({ hour: '2-digit', minute: '2-digit', second: '2-digit' }).format(now)} SGT</span> · `
+    + `<small><span class="clock">${SGT({ hour: '2-digit', minute: '2-digit', second: '2-digit' }).format(now)} SGT</span>${DOT}`
     + `refreshes every ${REFRESH_S}s</small></header>`;
 }
 
@@ -918,26 +952,27 @@ const ownerActs = (text) => {
 function actLinks(u, lane) {
   if (!/^\d+$/.test(u.pr)) return [];
   const links = [prChip(u, lane)];
-  if (u.github?.preview) links.push(`<a class="link" href="${escape(u.github.preview.url)}" rel="noreferrer">preview ↗</a>`);
+  // "preview&nbsp;↗" never breaks, so the arrow cannot end up on a line of its own beside the lane tag.
+  if (u.github?.preview) links.push(`<a class="link" href="${escape(u.github.preview.url)}" rel="noreferrer">preview&nbsp;↗</a>`);
   return links;
 }
 
 // What a waiting unit's line says about the wait: its owner's input card if it has one, else how long it has waited.
 // HTML: the date phrase is kept whole.
 function unitWait(item, now) {
-  if (item.thread) return `${escape(item.thread.ask)}${item.thread.askedAt ? ` · ${stamp('asked', item.thread.askedAt, now)}` : ''}`;
+  if (item.thread) return `${prose(item.thread.ask)}${item.thread.askedAt ? `${DOT}${stamp('asked', item.thread.askedAt, now)}` : ''}`;
   return item.unit.sinceAt ? stamp('since', item.unit.sinceAt, now) : null;
 }
 
 function unitCard(item, snap) {
   const u = item.unit;
-  const meta = [...[u.lane, item.blocker ?? u.note, item.thread?.title].filter(Boolean).map(escape), unitWait(item, snap.now)].filter(Boolean);
+  const meta = [...[u.lane, item.blocker ?? u.note, item.thread?.title].filter(Boolean).map(prose), unitWait(item, snap.now)].filter(Boolean);
   const lane = snap.lanes.lanes.find((l) => l.name === u.lane);
-  return `<div class="t needs"><div class="name">${escape(u.id)}</div><div class="sub"><span class="state peach">you</span> · ${[...meta, ...actLinks(u, lane)].join(' · ')}</div></div>`;
+  return `<div class="t needs"><div class="name">${escape(u.id)}</div><div class="sub"><span class="state peach">you</span>${DOT}${dots([...meta, ...actLinks(u, lane)])}</div></div>`;
 }
 
 // The row and its state stay as written; the lane owner fixes the file (see staleReason).
-const staleLine = (u) => (u.stale ? `<div class="stale" title="${escape(u.stale.title)}">looks stale: ${escape(u.stale.text)} · lane owner&#39;s cleanup</div>` : '');
+const staleLine = (u) => (u.stale ? `<div class="stale" title="${escape(u.stale.title)}">looks stale: ${escape(u.stale.text)}${DOT}lane owner&#39;s cleanup</div>` : '');
 
 export function render(snap) {
   const section = (title, list, cls = '', limit = Infinity) => (list.length
@@ -962,7 +997,7 @@ ${alarmed ? updates : ''}${t3Section(snap)}${threads || none}${alarmed ? '' : up
 const STALL_MS = 8 * 3600_000; // review rule, 10 Oct: a unit in flight over 8 hours turns yellow, "in flight 2 d, since <date>"
 const STALE_MS = 2 * 3600_000; // a running coordinator with no lane file change for this long: "no update for 3 h"
 const LANE_STALE_MS = 24 * 3600_000; // no lane file change for a day: "no update since <date>" whoever runs it
-const SHOWN = { queued: 'grey', 'in-flight': 'green', you: 'peach', 'then you': 'peach', stale: 'yellow', paused: 'yellow', done: 'grey' };
+const SHOWN = { queued: 'grey', 'in-flight': 'green', recurring: 'sapphire', you: 'peach', 'then you': 'peach', stale: 'yellow', paused: 'yellow', done: 'grey' };
 const PR_TONE = { merged: 'grey', closed: 'grey', draft: 'overlay', open: 'subtext', ready: 'green', blocked: 'red' };
 const mapId = (kind, ...parts) => `${kind}-${parts.map(encodeURIComponent).join('/')}`;
 const jumpTo = (id) => `#${encodeURIComponent(id)}`;
@@ -972,39 +1007,65 @@ const isStalled = (u, now) => u.state === 'in-flight' && Number.isFinite(u.since
 const landedAt = (u) => u.github?.mergedAt ?? u.sinceAt;
 const isRecentDone = (u, now) => u.state === 'done' && Number.isFinite(landedAt(u))
   && landedAt(u) <= now && now - landedAt(u) < 24 * 3600_000;
-const liveGroups = (units) => ['needs-myuser', 'in-flight', 'paused', 'queued'].map((state) => units.filter((u) => u.state === state));
+const liveGroups = (units) => ['needs-myuser', 'in-flight', 'recurring', 'paused', 'queued'].map((state) => units.filter((u) => u.state === state));
 const childrenOf = (units, parent) => units.filter((u) => (units.includes(u.parent) ? u.parent : null) === parent);
 const treeOrder = (units, parent = null) => childrenOf(units, parent).flatMap((u) => [u, ...treeOrder(units, u)]);
 
 const tilde = (p) => (p.startsWith(`${os.homedir()}/`) ? `~${p.slice(os.homedir().length)}` : p);
 
-// A thread's live state as the map shows it: what it is doing now, or how long it has been quiet.
+// A thread's live state as the map shows it: what it is doing now, or how long it has been quiet. The phrase is kept
+// whole, so a narrow row never splits "Read 2 min"; an ask is prose and wraps.
 function live(t, now, brief = false) {
   if (t.state === 'needs') return tone('peach', t.ask);
   const quiet = t.lastActivityAt ? ago(now - t.lastActivityAt) : '';
   if (t.state === 'running') {
-    if (t.quiet) return tone('red', `no activity ${quiet}`);
-    return tone('green', brief || !t.tool ? `running${brief || !quiet ? '' : ` ${quiet}`}` : `${t.tool} ${quiet}`);
+    if (t.quiet) return tone('red kept', `no activity ${quiet}`);
+    return tone('green kept', brief || !t.tool ? `running${brief || !quiet ? '' : ` ${quiet}`}` : `${t.tool} ${quiet}`);
   }
-  return tone('grey', `idle${quiet ? ` ${quiet}` : ''}`);
+  return tone('grey kept', `idle${quiet ? ` ${quiet}` : ''}`);
 }
 
+// Who holds a unit. A thread reference resolves to the open thread with that id, or to the one open thread whose id
+// starts with it (scheme included, at least 8 hex characters); none, or more than one, is no owner thread. Without a
+// thread list a reference is unknown, never missing.
+function ownerOf(u, snap) {
+  if (!u.owner) return { kind: 'none' };
+  const ref = THREAD_REF.exec(u.owner)?.[0];
+  if (!ref) return { kind: 'text' };
+  const rest = u.owner.slice(ref.length).replace(/^[\s,;]+/, '');
+  const exact = snap.threads.get(ref);
+  if (exact) return { kind: 'thread', thread: exact, rest };
+  if (!snap.t3.threads) return { kind: 'unavailable', rest };
+  const matches = SHORT_REF.test(ref)
+    ? [...snap.threads.values()].filter((t) => (ref.includes(':') ? t.id : t.id.replace(/^[a-z]+:/i, '')).toLowerCase().startsWith(ref.toLowerCase()))
+    : [];
+  return matches.length === 1 ? { kind: 'thread', thread: matches[0], rest } : { kind: 'missing', rest };
+}
+
+// Work that is under way needs a holder; queued, paused and the owner's own rows may have none. Recurring work runs again
+// and again, so it never stalls by age, but it still needs someone to run it.
+const ACTIVE_STATES = ['in-flight', 'recurring'];
+const ownerFault = (u, owner) => owner.kind === 'missing' || (owner.kind === 'none' && ACTIVE_STATES.includes(u.state));
+
 function ownerLine(u, snap) {
-  if (!u.owner) return u.state === 'needs-myuser' ? [] : ['unassigned'];
-  const t = snap.threads.get(u.owner);
-  if (t) return [escape(t.title), live(t, snap.now)];
-  if (!snap.t3.threads && THREAD_ID.test(u.owner)) return [tone('yellow', 'owner state unavailable')];
-  // A settled, archived or deleted owner reads the same as a wrong id: nobody holds the unit.
-  return THREAD_ID.test(u.owner) ? [tone('peach', 'no owner thread')] : [escape(u.owner)];
+  const owner = ownerOf(u, snap);
+  if (owner.kind === 'none') return u.state === 'needs-myuser' ? [] : [ownerFault(u, owner) ? tone('peach', 'unassigned') : 'unassigned'];
+  if (owner.kind === 'text') return [prose(u.owner)];
+  // A settled, archived or deleted owner reads the same as a wrong id: nobody holds the unit. The coordinator's
+  // annotation stays, so the row still says whose it was.
+  const holder = owner.kind === 'thread' ? [prose(owner.thread.title), live(owner.thread, snap.now)]
+    : [owner.kind === 'missing' ? tone('peach', 'no owner thread') : tone('yellow', 'owner state unavailable')];
+  return [...holder, owner.rest && prose(owner.rest)].filter(Boolean);
 }
 
 function sinceLine(u, now) {
   if (u.sinceAt === undefined) return tone('yellow', `since "${u.since}" unreadable`);
-  if (!u.sinceAt || !['in-flight', 'needs-myuser'].includes(u.state)) return null;
-  // Two phrases, each kept whole: a phone may break between them but never inside "in flight 2 d".
-  if (u.state !== 'needs-myuser' && now - u.sinceAt > STALL_MS) return `<span class="yellow">${tone('kept', `in flight ${ago(now - u.sinceAt)}`)}, ${stamp('since', u.sinceAt, now)}</span>`;
-  return stamp('since', u.sinceAt, now);
+  if (!u.sinceAt || !['in-flight', 'recurring', 'needs-myuser'].includes(u.state)) return null;
+  return isStalled(u, now) ? stallLine(u, now) : stamp('since', u.sinceAt, now);
 }
+
+// Two phrases, each kept whole: a phone may break between them but never inside "in flight 2 d".
+const stallLine = (u, now) => `<span class="yellow">${tone('kept', `in flight ${ago(now - u.sinceAt)}`)}, ${stamp('since', u.sinceAt, now)}</span>`;
 
 // The chip at the row's right: the PR number, linked, with its GitHub state when the board has it, else the ledger's
 // verdict; a word such as push or rebuild names what the owner still does after the branch lands.
@@ -1016,7 +1077,8 @@ function prChip(u, lane) {
   const word = g ? tone(PR_TONE[g.state], g.state) : verdict ? escape(verdict) : u.state === 'done' ? '' : escape(lane.prError ? 'state unknown' : 'no verdict');
   const text = `<b>#${u.pr}</b>${word ? ` ${word}` : ''}`;
   const href = g?.url ?? (lane.repo ? `https://github.com/${lane.repo}/pull/${u.pr}` : null);
-  return href ? `<a href="${escape(href)}" rel="noreferrer">${text}</a>` : `<span>${text}</span>`;
+  // Kept whole, so a narrow row never leaves "#22" at a line's end and "draft" at the next one's start.
+  return href ? `<a class="kept" href="${escape(href)}" rel="noreferrer">${text}</a>` : `<span class="kept">${text}</span>`;
 }
 
 // What the ledger's newest verdict means against the PR's current head.
@@ -1029,6 +1091,9 @@ function verdictLine(u, lane) {
   return `verdict ${escape(entry.verdict)}${where}`;
 }
 
+// What GitHub says stops a unit's PR from merging: failing checks, conflicts, a review. A draft keeps its blockers.
+const prBlockers = (u) => (u.github && ['blocked', 'draft'].includes(u.github.state) ? u.github.blockers : []);
+
 // The PR block under a unit: one status line (what blocks it or what runs, the head, the preview, the ledger's
 // verdict), a review-ledger blocker that is the owner's own action, then the check list and the rest of the review budget
 // folded under a summary that counts them. Plain <details>: no script runs on this page (the CSP forbids it).
@@ -1039,41 +1104,43 @@ function prBlock(u, lane, now) {
   const lines = [];
   if (g) {
     const facts = [];
-    if (g.blockers.length && (g.state === 'blocked' || g.state === 'draft')) facts.push(tone('red', `blocked on: ${g.blockers.join('; ')}`));
+    if (prBlockers(u).length) facts.push(tone('red', `blocked on: ${g.blockers.join('; ')}`));
     else if (g.state === 'merged') facts.push(g.mergedAt ? stamp('merged', g.mergedAt, now) : 'merged');
     else if (g.checksPending) facts.push(tone('yellow', `${g.checksPending} check${g.checksPending === 1 ? '' : 's'} running`));
     if (g.behind && g.state !== 'merged') facts.push(`behind ${escape(g.base)}`);
-    facts.push(`head <code>${escape(g.head)}</code>`);
+    // Kept whole: a narrow row never leaves "head" at a line's end and the hash at the next one's start.
+    facts.push(`<span class="kept">head <code>${escape(g.head)}</code></span>`);
     if (g.preview) {
       const live = g.preview.state === 'success';
-      facts.push(`<a class="link" href="${escape(g.preview.url)}" rel="noreferrer">preview ↗</a>${live ? '' : tone('yellow', ` ${g.preview.state || 'not ready'}`)}`);
-    } else if (g.state !== 'merged') facts.push(tone('overlay', 'no preview'));
+      facts.push(`<a class="link" href="${escape(g.preview.url)}" rel="noreferrer">preview&nbsp;↗</a>${live ? '' : tone('yellow', ` ${g.preview.state || 'not ready'}`)}`);
+    } else if (g.state !== 'merged') facts.push(tone('overlay kept', 'no preview'));
     const verdict = verdictLine(u, lane);
     if (verdict) facts.push(verdict);
-    lines.push(`<div class="meta">${facts.join(' · ')}</div>`);
+    lines.push(`<div class="meta">${dots(facts)}</div>`);
   }
   const mine = r?.blockers.filter(ownerActs) ?? [];
-  if (mine.length) lines.push(`<div class="meta peach">review ledger: ${escape(mine.join('; '))}</div>`);
+  if (mine.length) lines.push(`<div class="meta peach">review ledger: ${prose(mine.join('; '))}</div>`);
   const folded = [];
   if (g?.checks.length) {
     const chips = g.checks.map((c) => {
-      const chip = `<i class="dot ${c.result}"></i>${escape(c.name)}`;
+      // .check is a flex box: one span keeps the name a single flex item, so a kept phrase stays inline in it.
+      const chip = `<i class="dot ${c.result}"></i><span>${prose(c.name)}</span>`;
       return c.url ? `<a class="check" href="${escape(c.url)}" rel="noreferrer" title="${c.result}">${chip}</a>` : `<span class="check" title="${c.result}">${chip}</span>`;
     });
     folded.push(`<div class="checks">${chips.join('')}</div>`);
   }
   const review = [];
   const rest = r?.blockers.filter((b) => !ownerActs(b)) ?? [];
-  if (rest.length) review.push(`review ledger: ${escape(rest.join('; '))}`);
+  if (rest.length) review.push(`review ledger: ${prose(rest.join('; '))}`);
   if (r?.approvedHead) {
     const current = g?.head && r.approvedHead.startsWith(g.head);
     review.push(current ? tone('green', 'approved at this head') : `approved at ${escape(r.approvedHead.slice(0, 7))}${g ? ', not the current head' : ''}`);
   }
-  if (r && r.rounds !== null) review.push(`${r.rounds} review round${r.rounds === 1 ? '' : 's'}${r.extra ? `, ${r.extra} extra allowed` : ''}`);
-  if (review.length) folded.push(`<div class="meta">${review.join(' · ')}</div>`);
+  if (r && r.rounds !== null) review.push(counted(`${r.rounds} review round${r.rounds === 1 ? '' : 's'}${r.extra ? `, ${r.extra} extra allowed` : ''}`));
+  if (review.length) folded.push(`<div class="meta">${dots(review)}</div>`);
   if (folded.length) {
     const passed = g?.checks.filter((c) => c.result === 'pass').length ?? 0;
-    const label = [g?.checks.length ? `<span class="count">${passed}/${g.checks.length} checks</span>` : '', review.length ? 'review ledger' : ''].filter(Boolean).join(' · ');
+    const label = dots([g?.checks.length ? tone('count kept', `${passed}/${g.checks.length} checks`) : '', review.length ? 'review ledger' : ''].filter(Boolean));
     lines.push(`<details class="more"><summary>${label}</summary>${folded.join('')}</details>`);
   }
   return `<div class="pr-block">${lines.join('')}</div>`;
@@ -1095,11 +1162,11 @@ function unitRow(u, lane, snap, nest = u.nest, next = false) {
   if (isRecentDone(u, snap.now)) html += `<div class="sub">${stamp('landed', landedAt(u), snap.now)}</div>`;
   if (u.state !== 'done') {
     const g = u.github;
-    if (g?.title) html += `<div class="title">${escape(g.title)}</div>`;
-    if (g?.summary && g.summary !== g.title) html += `<div class="summary">${escape(g.summary)}</div>`;
-    const sub = [...ownerLine(u, snap), u.branch && escape(u.branch), sinceLine(u, snap.now)].filter(Boolean);
-    if (sub.length) html += `<div class="sub">${sub.join(' · ')}</div>`;
-    if (u.note) html += `<div class="unit-note">${escape(u.note)}</div>`;
+    if (g?.title) html += `<div class="title">${prose(g.title)}</div>`;
+    if (g?.summary && g.summary !== g.title) html += `<div class="summary">${prose(g.summary)}</div>`;
+    const sub = [...ownerLine(u, snap), u.branch && branchName(u.branch), sinceLine(u, snap.now)].filter(Boolean);
+    if (sub.length) html += `<div class="sub">${dots(sub)}</div>`;
+    if (u.note) html += `<div class="unit-note">${prose(u.note)}</div>`;
     html += prBlock(u, lane, snap.now);
     html += staleLine(u);
     const deps = u.deps.filter((d) => d !== nest);
@@ -1111,7 +1178,7 @@ function unitRow(u, lane, snap, nest = u.nest, next = false) {
 // A row the board could not read, beside the lane where its unit would be, so a lane never silently loses rows.
 function warningRow(skipped) {
   return `<div class="u warn"><div class="row"><span class="id"><span class="state yellow">unreadable</span>units.tsv line ${skipped.line}</span>`
-    + `${skipped.id ? `<span class="pr">${escape(skipped.id)}</span>` : ''}</div><div class="sub yellow">${escape(skipped.why)}`
+    + `${skipped.id ? `<span class="pr">${escape(skipped.id)}</span>` : ''}</div><div class="sub yellow">${prose(skipped.why)}`
     + `${skipped.why.startsWith('unknown state') ? `; states are ${UNIT_STATES.join(', ')}` : ''}</div></div>`;
 }
 
@@ -1136,7 +1203,7 @@ function milestoneRows(id, units, lane, snap, params) {
   if (!open) toggled.append('done', key);
   const href = `?${toggled}${jumpTo(mapId('milestone', lane.name, id))}`;
   return live + unitTree(recent, lane, snap)
-    + `<div class="done-group"><a href="${escape(href)}" aria-expanded="${open}">${closed.length} done${open ? ' · hide' : ''}</a></div>`
+    + `<div class="done-group"><a href="${escape(href)}" aria-expanded="${open}">${tone('kept', `${closed.length} done`)}${open ? `${DOT}hide` : ''}</a></div>`
     + (open ? unitTree(closed, lane, snap) : '');
 }
 
@@ -1146,7 +1213,7 @@ function milestoneHead(id, units, lane) {
   // The bar fills with done only, so it reads as the count beside it; the hover title breaks the rest down by state.
   const counts = UNIT_STATES.map((state) => [state, units.filter((u) => u.state === state).length]).filter(([, n]) => n);
   const key = counts.map(([state, n]) => `${n} ${state}`).join(', ');
-  return `<div class="ms" id="${escape(mapId('milestone', lane.name, id))}"><b>${escape(title)}</b><span>${done} of ${units.length} done</span></div>`
+  return `<div class="ms" id="${escape(mapId('milestone', lane.name, id))}"><b>${prose(title)}</b><span>${done} of ${units.length} done</span></div>`
     + (id ? `<div class="bar" title="${escape(key)}">${done ? `<i style="width:${((done / units.length) * 100).toFixed(1)}%"></i>` : ''}</div>` : '');
 }
 
@@ -1156,20 +1223,23 @@ function laneSection(lane, snap, params) {
   const t = lane.head ? snap.threads.get(lane.head) : null;
   if (!lane.head) head.push('no coordinator');
   else if (!t) head.push(snap.t3.threads ? tone('peach', `no ${lane.headRole} thread`) : tone('yellow', `${lane.headRole} state unavailable`));
-  else head.push(`${escape(t.title)} <span class="kept">${live(t, snap.now, true)}</span>`);
+  else head.push(`${prose(t.title)} <span class="kept">${live(t, snap.now, true)}</span>`);
   // Short time phrases are kept on one line, so "ago" never wraps alone.
   if (lane.updatedAt) {
     const quiet = snap.now - lane.updatedAt;
     if (quiet > LANE_STALE_MS) head.push(tone('yellow kept', `no update since ${when(lane.updatedAt, snap.now)}`));
     else head.push(t?.state === 'running' && quiet > STALE_MS ? tone('yellow kept', `no update for ${ago(quiet)}`) : tone('kept', `updated ${ago(quiet)} ago`));
   }
-  if (lane.prs.size || lane.prError) head.push(lane.prError ? tone('yellow', `GitHub: ${lane.prError}`) : tone('kept', `PRs ${ago(snap.now - lane.prsAt)} ago`));
+  // The header names the cause only; gh's full error stays in the hover title and the board's log.
+  if (lane.prs.size || lane.prError) {
+    head.push(lane.prError ? `<span class="yellow" title="${escape(lane.prError)}">${prGap(lane)}</span>` : tone('kept', `PRs ${ago(snap.now - lane.prsAt)} ago`));
+  }
   const groups = milestoneGroups(lane);
   const ledgerNotes = lane.ledgerSkipped.length
     ? [`${lane.ledgerFile}: ${lane.ledgerSkipped.length} row${lane.ledgerSkipped.length === 1 ? '' : 's'} skipped (${lane.ledgerSkipped.slice(0, 2).map((s) => `line ${s.line}: ${s.why}`).join('; ')}${lane.ledgerSkipped.length > 2 ? '; more' : ''})`]
     : [];
-  return `<section id="${escape(mapId('lane', lane.name))}"><div class="lane"><b>${escape(lane.name)}</b><small>${head.join(' · ')}</small></div>`
-    + [...lane.notes, ...ledgerNotes].map((n) => `<div class="note">${escape(n)}</div>`).join('')
+  return `<section id="${escape(mapId('lane', lane.name))}"><div class="lane"><b>${escape(lane.name)}</b><small>${dots(head)}</small></div>`
+    + [...lane.notes, ...ledgerNotes].map((n) => `<div class="note">${prose(n)}</div>`).join('')
     + lane.skipped.map(warningRow).join('')
     + groups.map(([id, units]) => milestoneHead(id, units, lane) + milestoneRows(id, units, lane, snap, params)).join('')
     + '</section>';
@@ -1188,7 +1258,7 @@ function laneIssues(lane) {
   if (!kinds.length) return '';
   const details = kinds.flatMap(([list, , file]) => list.map((i) => `${i.why}, ${file}line ${i.line}`));
   const shown = details.slice(0, 3).join('; ') + (details.length > 3 ? `; ${details.length - 3} more` : '');
-  return ` ${escape(lane.name)}: <b>${kinds.map(([list, count]) => count(list.length)).join(', ')}</b> (${escape(shown)}).`;
+  return ` ${tone('kept', lane.name)}: <b>${counted(kinds.map(([list, count]) => count(list.length)).join(', '))}</b> (${prose(shown)}).`;
 }
 
 // Partition whole lanes in priority order into three columns, weighing a lane by its rows not done plus two for its
@@ -1221,48 +1291,133 @@ function columns(sections, lanes) {
 // One line per item at the top of the map, the to-do: the ask, the wait and the links where he acts. The unit's
 // detail stays in its lane, so the phone page does not carry every row twice.
 function needsRow(item, snap) {
-  const todo = (name, ask, tag) => `<div class="u needs todo"><span class="state peach">you</span><b class="id">${escape(name)}</b>`
-    + `${ask.length ? `<span class="ask">${ask.join(' · ')}</span>` : ''}${tag ? `<span class="tag">${escape(tag)}</span>` : ''}</div>`;
+  const todo = (name, ask, tag) => `<div class="u needs todo"><span class="state peach">you</span><b class="id">${prose(name)}</b>`
+    + `${askLine(ask, tag)}</div>`;
   if (!item.unit) {
     const t = item.thread;
-    return todo(t.title, [t.ask && escape(t.ask), t.askedAt && stamp('asked', t.askedAt, snap.now), t.branch && escape(t.branch)].filter(Boolean), t.project);
+    return todo(t.title, [t.ask && prose(t.ask), t.askedAt && stamp('asked', t.askedAt, snap.now), t.branch && branchName(t.branch)].filter(Boolean), t.project);
   }
   const u = item.unit;
   const lane = snap.lanes.lanes.find((l) => l.name === u.lane);
-  const ask = [...[item.blocker ?? u.note, item.thread?.title].filter(Boolean).map(escape), unitWait(item, snap.now)].filter(Boolean);
+  const ask = [...[item.blocker ?? u.note, item.thread?.title].filter(Boolean).map(prose), unitWait(item, snap.now)].filter(Boolean);
   return todo(u.id, [...ask, ...actLinks(u, lane)], u.lane);
 }
 
-function statusStrip(snap, needs) {
+// The ask's items with the lane tag at the end of the last line. The tag's DOT has a no-break space on both sides, so
+// "·&nbsp;lane" never breaks: a narrow row never starts a line with "·" or leaves the tag on a line of its own.
+function askLine(items, tag) {
+  const tail = tag ? `<span class="tag">${items.length ? `${DOT.trimEnd()}&nbsp;` : ''}${escape(tag)}</span>` : '';
+  return items.length || tag ? `<span class="ask">${items.length ? dots(items, tail) : tail}</span>` : '';
+}
+
+// Stuck: open units that have stalled (in flight over eight hours), paused, hit a GitHub blocker or lost their holder
+// (ownerFault), one item per unit with every reason. A unit already in Needs you is left out, and so is a PR blocker on a PR
+// Needs you already lists for that lane; a sibling's own reasons stay. Oldest state first, unknown age last.
+function stuckItems(snap, needs) {
+  const listed = new Set(needs.map((item) => item.unit).filter(Boolean));
+  const prs = new Set([...listed].filter((u) => /^\d+$/.test(u.pr)).map((u) => `${u.lane}#${u.pr}`));
+  const items = [];
+  for (const u of (snap.lanes.lanes ?? []).flatMap((lane) => lane.units)) {
+    if (u.state === 'done' || listed.has(u)) continue;
+    const blockers = prs.has(`${u.lane}#${u.pr}`) ? [] : prBlockers(u);
+    const owner = ownerOf(u, snap);
+    const why = [isStalled(u, snap.now) && 'stalled', u.state === 'paused' && 'paused', blockers.length && 'pr-blocked',
+      ownerFault(u, owner) && (owner.kind === 'missing' ? 'no-owner-thread' : 'unassigned')].filter(Boolean);
+    if (why.length) items.push({ unit: u, why, blockers });
+  }
+  const age = (u) => (sinceKnown(u, snap.now) ? u.sinceAt : Infinity);
+  return items.sort((a, b) => age(a.unit) - age(b.unit));
+}
+const sinceKnown = (u, now) => Number.isFinite(u.sinceAt) && u.sinceAt <= now;
+// A lane's GitHub gap in a few words. Until the first answer after a board start the state is loading, not down.
+const prGap = (lane) => (lane.prsAt === null ? 'GitHub loading' : 'GitHub unavailable');
+
+// What the board could not read, as HTML, so an empty Stuck list never claims more than it knows. Each lane name is
+// kept whole, so "job-tracker" never breaks at its hyphen. The lane header carries the full error.
+function stuckGaps(snap) {
+  const lanes = snap.lanes.lanes ?? [];
+  const plural = (n, word) => tone('kept', `${n} ${word}${n === 1 ? '' : 's'}`);
+  const name = (lane) => tone('kept', lane.name);
+  return [!snap.t3.threads && 'T3 did not answer for owner threads',
+    ...lanes.filter((lane) => lane.unitsError).map((lane) => (lane.skipped.length
+      ? `${name(lane)} has ${plural(lane.skipped.length, 'unreadable row')}` : `${name(lane)} has no readable units.tsv`)),
+    ...lanes.filter((lane) => lane.prError).map((lane) => (lane.prsAt === null
+      ? `GitHub has not answered yet for ${name(lane)}` : `GitHub did not answer for ${name(lane)}`))].filter(Boolean);
+}
+
+// The list shows its oldest STUCK_SHOWN rows and folds the rest under a link, as a milestone folds its done units, so a
+// long list never pushes the lanes screens down on a phone. The heading and the status strip count every row.
+export const STUCK_SHOWN = 5;
+
+// One line per stuck unit, linked to its row in the lane: its state, what holds it, how long, who has it, and the
+// PR and preview links.
+function stuckRow({ unit: u, why, blockers }, snap) {
+  const lane = snap.lanes.lanes.find((l) => l.name === u.lane);
+  const age = why.includes('stalled') ? stallLine(u, snap.now)
+    : sinceKnown(u, snap.now) ? stamp('since', u.sinceAt, snap.now) : tone('overlay', 'age unknown');
+  const facts = [age, blockers.length && tone('red', `blocked on: ${blockers.join('; ')}`), ...ownerLine(u, snap), ...actLinks(u, lane)].filter(Boolean);
+  return `<div class="u todo stuck"><span class="state ${SHOWN[u.shown]}">${u.shown}</span>`
+    + `<a class="id" href="${jumpTo(mapId('unit', u.lane, u.id))}">${escape(u.id)}</a>${askLine(facts, u.lane)}</div>`;
+}
+
+// An empty list says so only when every source was read. Above a non-empty one the status strip names each gap the
+// list depends on: T3, units.tsv and GitHub.
+function stuckSection(snap, items, params) {
+  if (!snap.lanes.lanes?.length) return '';
+  if (!items.length) {
+    const gaps = stuckGaps(snap);
+    return `<div id="stuck"><p class="more">${gaps.length ? `<span class="yellow">Could not check for stuck work: ${gaps.join('; ')}.</span>` : 'Nothing stuck'}</p></div>`;
+  }
+  const rows = (list) => list.map((item) => stuckRow(item, snap)).join('');
+  const shown = `<h2 class="yellow" id="stuck">Stuck · ${items.length}</h2>${rows(items.slice(0, STUCK_SHOWN))}`;
+  const rest = items.slice(STUCK_SHOWN);
+  if (!rest.length) return shown;
+  const open = params.get('stuck') === 'all';
+  const toggled = new URLSearchParams(params);
+  if (open) toggled.delete('stuck');
+  else toggled.set('stuck', 'all');
+  return `${shown}<div class="done-group" id="stuck-more"><a href="${escape(`?${toggled}${jumpTo('stuck-more')}`)}" aria-expanded="${open}">`
+    + `${tone('kept', `${rest.length} more stuck`)}${open ? `${DOT}hide` : ''}</a></div>${open ? rows(rest) : ''}`;
+}
+
+function statusStrip(snap, needs, stuck) {
   const lanes = snap.lanes.lanes ?? [];
   const units = lanes.flatMap((lane) => milestoneGroups(lane).flatMap(([, rows]) => liveGroups(rows).flatMap((group) => treeOrder(group))));
   const problems = [snap.t3.unavailable.length ? 'T3 state unavailable' : '',
     !snap.lanes.lanes ? 'lanes unavailable' : '',
     ...lanes.filter((lane) => lane.unitsError).map((lane) => `${lane.name} units.tsv ${lane.skipped.length ? 'incomplete' : 'unavailable'} (${lane.unitsError})`)].filter(Boolean);
+  // GitHub feeds Stuck, not Needs you, so its gaps warn without making Needs you unknown.
+  const prProblems = lanes.filter((lane) => lane.prError).map((lane) => `${lane.name} PR state ${lane.prsAt === null ? 'loading' : 'unknown'}`);
   const count = (rows, label) => rows.length
     ? `<a href="${jumpTo(mapId('unit', rows[0].lane, rows[0].id))}">${rows.length} ${label}</a>` : `<span>0 ${label}</span>`;
   const attention = needs.length ? `<a href="#needs-you">${needs.length} need you</a>`
     : problems.length ? '<span class="yellow">needs you unknown</span>' : '<span class="green">nothing needs you</span>';
-  const stats = [attention, count(units.filter((u) => u.state === 'in-flight'), 'in flight'),
+  // The same figure as the Stuck heading; with nothing listed and a source unread, the lanes directory included, it is
+  // unknown, not zero. An empty lanes directory is zero.
+  const stuckCount = stuck.length ? `<a href="#stuck">${stuck.length} stuck</a>`
+    : !snap.lanes.lanes || (lanes.length && stuckGaps(snap).length) ? '<span class="yellow">stuck unknown</span>' : '<span>0 stuck</span>';
+  const stats = [attention, stuckCount, count(units.filter((u) => u.state === 'in-flight'), 'in flight'),
     count(units.filter((u) => isStalled(u, snap.now)), 'stalled'), count(units.filter((u) => u.state === 'paused'), 'paused'),
     count(units.filter((u) => u.state === 'queued'), 'queued')];
   const links = lanes.map((lane) => `<a href="${jumpTo(mapId('lane', lane.name))}">${escape(lane.name)}</a>`);
   // Each item keeps its trailing "·" in one box, so a narrow strip wraps between items and no line starts with a "·";
   // the no-break space keeps the "·" on the item's last line when a long warning wraps inside its box.
-  const items = (list) => list.map((item, i) => `<span class="strip-item">${item}${i < list.length - 1 ? '&nbsp;·' : ''}</span>`).join(' ');
-  return `<nav class="status-strip" aria-label="Map status">${items([...stats, ...links])}${problems.length ? ` <span class="source-warning yellow">${items(problems.map(escape))}</span>` : ''}</nav>`;
+  const items = (list) => dots(list.map((item) => box('strip-item', item)));
+  return `<nav class="status-strip" aria-label="Map status">${items([...stats, ...links])}${problems.length + prProblems.length ? ` <span class="source-warning yellow">${items([...problems, ...prProblems].map(prose))}</span>` : ''}</nav>`;
 }
 
 export function renderMap(snap, params = new URLSearchParams()) {
   const needs = needsYou(snap);
   const { dir, lanes } = snap.lanes;
+  const stuck = lanes?.length ? stuckItems(snap, needs) : [];
   let body;
   if (!lanes) body = `<p class="more">No lanes at ${escape(tilde(dir))}</p>`;
   else if (!lanes.length) body = `<p class="more">No lanes in ${escape(tilde(dir))}</p>`;
   else body = columns(lanes.map((lane) => laneSection(lane, snap, params)), lanes);
   const issues = (lanes ?? []).map(laneIssues).join('');
   return page('project map', needs.length + t3Gaps(snap), `${pageHeader('map', snap.now)}
-${statusStrip(snap, needs)}${t3Section(snap)}${needs.length ? `<h2 class="attn">Needs you · ${needs.length}</h2>${needs.map((item, i) => i ? needsRow(item, snap) : `<div id="needs-you">${needsRow(item, snap)}</div>`).join('')}` : ''}
+${statusStrip(snap, needs, stuck)}${t3Section(snap)}${needs.length ? `<h2 class="attn">Needs you · ${needs.length}</h2>${needs.map((item, i) => i ? needsRow(item, snap) : `<div id="needs-you">${needsRow(item, snap)}</div>`).join('')}` : ''}
+${stuckSection(snap, stuck, params)}
 ${body}
 <footer>Read-only view of ${escape(tilde(path.dirname(dir)))} lanes and T3 state.${issues}</footer>`, true);
 }
@@ -1297,7 +1452,7 @@ h1{font-size:17px;color:var(--lavender)}h1 span{color:var(--overlay1);font-weigh
 ::selection{background:var(--surface1);color:var(--text)}a:focus-visible,.check:focus-visible{outline:2px solid var(--lavender);outline-offset:2px;border-radius:3px}
 a{color:inherit;text-decoration:none}a b{font-weight:500;color:var(--blue)}h1 u{color:var(--text);text-decoration-color:var(--lavender);text-underline-offset:4px}
 header small{font-size:12px;color:var(--overlay1)}
-.kept{white-space:nowrap}
+.kept{white-space:nowrap}.whole{display:inline-block;max-width:100%}
 h2{font-size:11.5px;letter-spacing:.6px;text-transform:uppercase;color:var(--overlay1);margin:16px 4px 7px;font-weight:500}
 h2.attn{color:var(--peach)}
 .t{background:var(--base);border:1px solid var(--surface0);border-radius:10px;padding:10px 12px;margin-bottom:8px;min-width:0}
@@ -1326,7 +1481,7 @@ h2.attn{color:var(--peach)}
 .u{background:var(--base);border:1px solid var(--surface0);border-radius:10px;padding:8px 12px;margin-bottom:7px;min-width:0}
 .u.done{opacity:.62}.u.blocked{border-color:#5a3a48}.u.warn{background:#2a2a28;border-color:#5a5340}
 .todo{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 8px;padding:6px 12px;margin-bottom:5px;font-size:12px;color:var(--subtext)}
-.todo .state{font-weight:500}.todo .id{font-size:13px;color:var(--text);overflow-wrap:anywhere}.todo .tag{margin-left:auto;color:var(--overlay1)}
+.todo .state{font-weight:500}.todo .id{font-size:13px;color:var(--text);overflow-wrap:anywhere}.todo .tag{color:var(--overlay1);white-space:nowrap}
 .ask{min-width:0;overflow-wrap:anywhere}
 .row{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:baseline;gap:2px 10px;min-width:0}
 .id{font-weight:700;font-size:13px;min-width:0;overflow-wrap:anywhere}
@@ -1353,8 +1508,7 @@ h2.attn{color:var(--peach)}
 .kids{margin-left:12px;padding-left:10px;border-left:1px solid var(--surface1)}
 .cols>div,.pair>div{min-width:0}
 .cols>div:only-child{grid-column:1/-1}
-@media (min-width:900px){.cols{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 22px;align-items:start}
-.todo .tag{margin-left:0}.todo .tag::before{content:'· '}}
+@media (min-width:900px){.cols{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 22px;align-items:start}}
 @media (min-width:1280px){.cols:has(>.pair){grid-template-columns:repeat(3,minmax(0,1fr))}.pair{display:contents}}
 footer{color:var(--overlay1);font-size:11px;margin:20px 4px 0}footer b{font-weight:500;color:var(--yellow)}`;
 

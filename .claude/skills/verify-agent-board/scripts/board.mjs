@@ -9,6 +9,7 @@
 //   board.mjs env [<run-id>]                                        shell exports: eval "$(board.mjs env)"
 //   board.mjs stop [<run-id>]                                       stop this checkout's runs; evidence stays
 //   board.mjs runs                                                  this checkout's runs, up and stopped
+//   board.mjs verify-stuck [--json] [--dry-run]                     the Stuck list journeys (flows/map-stuck.mjs) on a fixture run
 //
 // Each run lives in $VERIFY_AGENT_BOARD_STATE/<run-id>/ (default ~/.local/state/verify-agent-board): run.json,
 // board.log, evidence/ (kept) and scratch/ (fixture data or the lanes copy, removed when the run stops). A detached
@@ -111,9 +112,11 @@ async function pagesReady(run) {
     problems.push(`/ answered ${threads.status || threads.text}${/Could not render the board/.test(threads.text) ? ' (the board error page)' : ''}`);
   }
   if (map.status !== 200 || !/<title>(\(\d+\) )?project map<\/title>/.test(map.text)) problems.push(`/map answered ${map.status || map.text}`);
+  // The markers are read as the page shows them: the board wraps a short parenthetical such as "(fixture)" in a span.
+  const shown = (page) => page.text.replace(/<[^>]*>/g, '');
   if (run.mode === 'fixture' && !problems.length) {
-    if (!threads.text.includes(MARKERS.thread)) problems.push(`/ does not show the fixture thread "${MARKERS.thread}"`);
-    if (!map.text.includes(MARKERS.lane)) problems.push(`/map does not show the fixture lane "${MARKERS.lane}"`);
+    if (!shown(threads).includes(MARKERS.thread)) problems.push(`/ does not show the fixture thread "${MARKERS.thread}"`);
+    if (!shown(map).includes(MARKERS.lane)) problems.push(`/map does not show the fixture lane "${MARKERS.lane}"`);
   }
   return problems;
 }
@@ -456,6 +459,18 @@ function list() {
   }
 }
 
+// The Stuck journeys swap the run's scratch lanes, so they run only on an up fixture run of this checkout. The flow
+// itself needs Playwright; --dry-run only prints its plan.
+function verifyStuck(args) {
+  const run = pickRun([]);
+  if (run.port === LIVE_PORT) refuse(LIVE_REFUSAL);
+  if (run.mode !== 'fixture') refuse(`run ${run.runId} reads ${run.mode} data; the Stuck journeys need: board.mjs launch --fixture`);
+  if (!isUp(run)) die(`run ${run.runId} is not up; launch one with: board.mjs launch --fixture`);
+  const flow = spawnSync(process.execPath, [path.join(path.dirname(SELF), 'flows/map-stuck.mjs'), ...args.filter((a) => ['--json', '--dry-run'].includes(a))],
+    { stdio: 'inherit', env: { ...process.env, VERIFY_AGENT_BOARD_STATE: STATE } });
+  process.exit(flow.status ?? 1);
+}
+
 const [cmd, ...args] = process.argv.slice(2);
 const commands = {
   launch: () => launch(args),
@@ -463,6 +478,7 @@ const commands = {
   env: () => console.log(exportsFor(pickRun(args))),
   stop: () => stop(args),
   runs: list,
+  'verify-stuck': () => verifyStuck(args),
   _keep: () => keep(args[0]),
 };
 if (!commands[cmd]) {

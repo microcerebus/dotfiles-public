@@ -15,7 +15,7 @@
 // Run: node .claude/skills/verify-agent-board/scripts/flows/map-refresh.mjs   (prints PASS or FAIL per step)
 import fs from 'node:fs';
 import path from 'node:path';
-import { boardEnv, chrome } from './playwright.mjs';
+import { boardEnv, chrome, evaluateSettled, withCleanUp } from './playwright.mjs';
 import { pageOptions, viewport } from './viewports.mjs';
 
 const env = boardEnv();
@@ -24,7 +24,7 @@ if (new URL(env.BOARD_URL).port === '4790') throw new Error('refusing the live b
 const units = path.join(env.BOARD_SCRATCH, 'lanes/fixture-board/units.tsv');
 const out = (name) => path.join(env.BOARD_EVIDENCE, `project-map-refresh-${name}`);
 
-const read = (page) => page.evaluate(() => ({
+const read = (page) => evaluateSettled(page, () => ({
   title: document.title,
   clock: document.body.innerText.split('\n').find((l) => l.includes('refreshes every')) ?? '',
   needs: [...document.querySelectorAll('.u.needs .id')].map((i) => i.lastChild.textContent),
@@ -41,7 +41,7 @@ const check = (step, ok, seen) => {
 
 const original = fs.readFileSync(units, 'utf8');
 const browser = await chrome();
-try {
+await withCleanUp(async () => {
   const page = await browser.newPage(pageOptions(viewport('desktop-1920')));
   await page.goto(`${env.BOARD_URL}/map`);
   const before = await read(page);
@@ -65,9 +65,6 @@ try {
   fs.writeFileSync(out('after.tsv'), fs.readFileSync(units, 'utf8'));
   check('after', after.title === '(6) project map' && after.needs.includes('phone-check') && after.phoneCheck === 'you'
     && after.clock !== before.clock, { ...after, reloads });
-} finally {
-  await browser.close();
-  fs.writeFileSync(units, original);
-}
+}, () => fs.writeFileSync(units, original), () => browser.close());
 console.log(`evidence: ${env.BOARD_EVIDENCE}`);
 process.exitCode = failed ? 1 : 0;

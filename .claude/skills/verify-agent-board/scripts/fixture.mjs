@@ -33,6 +33,23 @@ export function seedMapShape(dir, now = Date.now()) {
   }
 }
 
+// The stub gh's answer for one repo: the PRs as GitHub's GraphQL returns them, in gh/prs-<name>.json.
+const check = (name, result, url = `https://ci.example/${name}`) => ({
+  __typename: 'CheckRun', name, status: result === 'PENDING' ? 'IN_PROGRESS' : 'COMPLETED', conclusion: result === 'PENDING' ? null : result, detailsUrl: url,
+});
+function ghPr(now, repo, number, title, body, { draft = false, state = 'OPEN', mergeState = 'CLEAN', mergeable = 'MERGEABLE', review = '', checks = [], preview = null, head = 'c0ffee1c0ffee1c0ffee1c0ffee1c0ffee1c0ffee1', branch = 'feat/x', mergedAt = null } = {}) {
+  return {
+    number, title, url: `https://github.com/example/${repo}/pull/${number}`, isDraft: draft, state, mergedAt, mergeable, mergeStateStatus: mergeState,
+    reviewDecision: review, headRefOid: head, headRefName: branch, baseRefName: 'main', updatedAt: new Date(now - 15 * 60_000).toISOString(), body,
+    commits: { nodes: [{ commit: {
+      statusCheckRollup: checks.length ? { state: checks.some((c) => c.conclusion === 'FAILURE') ? 'FAILURE' : checks.some((c) => !c.conclusion) ? 'PENDING' : 'SUCCESS', contexts: { nodes: checks } } : null,
+      deployments: { nodes: preview ? [{ environment: 'Preview', latestStatus: { state: 'SUCCESS', environmentUrl: preview } }] : [] },
+    } }] },
+  };
+}
+const ghAnswer = (gh, name, prs) => fs.writeFileSync(path.join(gh, `prs-${name}.json`),
+  `${JSON.stringify({ data: { repository: Object.fromEntries(prs.map((p) => [`p${p.number}`, p])) } }, null, 2)}\n`);
+
 export function seed(dir, now = Date.now()) {
   const iso = (min) => new Date(now - min * 60_000).toISOString();
   const epoch = (min) => String(Math.floor((now - min * 60_000) / 1000));
@@ -199,19 +216,8 @@ export function seed(dir, now = Date.now()) {
   fs.mkdirSync(gh, { recursive: true });
   fs.writeFileSync(path.join(gh, 'gh'), '#!/bin/sh\n# Stub gh for the agent board fixture: prints gh/prs-<name>.json for the -f name=<name> argument.\n'
     + 'for a in "$@"; do case "$a" in name=*) exec cat "$(dirname "$0")/prs-${a#name=}.json";; esac; done\necho "no repo" >&2; exit 1\n', { mode: 0o755 });
-  const check = (name, result, url = `https://ci.example/${name}`) => ({
-    __typename: 'CheckRun', name, status: result === 'PENDING' ? 'IN_PROGRESS' : 'COMPLETED', conclusion: result === 'PENDING' ? null : result, detailsUrl: url,
-  });
-  const pr = (number, title, body, { draft = false, state = 'OPEN', mergeState = 'CLEAN', mergeable = 'MERGEABLE', review = '', checks = [], preview = null, head = 'c0ffee1c0ffee1c0ffee1c0ffee1c0ffee1c0ffee1', branch = 'feat/x', mergedAt = null } = {}) => ({
-    number, title, url: `https://github.com/example/board/pull/${number}`, isDraft: draft, state, mergedAt, mergeable, mergeStateStatus: mergeState,
-    reviewDecision: review, headRefOid: head, headRefName: branch, baseRefName: 'main', updatedAt: iso(15), body,
-    commits: { nodes: [{ commit: {
-      statusCheckRollup: checks.length ? { state: checks.some((c) => c.conclusion === 'FAILURE') ? 'FAILURE' : checks.some((c) => !c.conclusion) ? 'PENDING' : 'SUCCESS', contexts: { nodes: checks } } : null,
-      deployments: { nodes: preview ? [{ environment: 'Preview', latestStatus: { state: 'SUCCESS', environmentUrl: preview } }] : [] },
-    } }] },
-  });
-  const answer = (name, prs) => fs.writeFileSync(path.join(gh, `prs-${name}.json`),
-    `${JSON.stringify({ data: { repository: Object.fromEntries(prs.map((p) => [`p${p.number}`, p])) } }, null, 2)}\n`);
+  const pr = (...args) => ghPr(now, 'board', ...args);
+  const answer = (name, prs) => ghAnswer(gh, name, prs);
   answer('board', [
     pr(12, 'feat: squash work (fixture)', '## Summary\n\nSquashed into main already; the row that names it is stale.', { state: 'MERGED', mergedAt: iso(45), head: 'd1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1', branch: 'feat/squash' }),
     pr(14, 'feat(map): polish the unit rows (fixture)', '## Context\n\nThe unit rows clip their notes on a phone, so the owner cannot read what a unit waits for.\n\n## Solution\n\nWrap every line.',
@@ -250,4 +256,78 @@ export function seed(dir, now = Date.now()) {
     },
     files: { units: path.join(lanes, 'fixture-board/units.tsv'), updater: path.join(daemon, 'status'), prs: path.join(gh, 'prs-board.json') },
   };
+}
+
+// ---- The map's Stuck journeys (flows/map-stuck.mjs) ----
+// Each scenario is a whole lanes directory for a fixture run, with the stub gh's answer for its repo, and the Stuck
+// rows (oldest first) and Needs you count /map must show for it. The owners are the seeded T3 threads: fx-settled is
+// closed, so a reference to it has no owner thread, and fx-idle-child is open but hidden from the thread list. The short
+// owner notes, "(opus high)" and "(c25 queue prep)", stay whole on a phone; child-owned's note is longer than a phone
+// line and wraps as prose.
+const STUCK_ROWS = {
+  'sign-off': ['needs-myuser', 'mcp:fx-design', '', 25, 'approve the Stuck list wording'],
+  'old-stall': ['in-flight', 'mcp:fx-coord', '21', 600, 'the lint fix keeps slipping'],
+  'paused-spike': ['paused', 'worker (opus high)', '', 180, 'waits for a design call'],
+  orphan: ['in-flight', '', '', 40, 'its worker hit a usage limit'],
+  'draft-fail': ['in-flight', 'mcp:fx-warn', '22', 20, ''],
+  'lost-ref': ['queued', 'mcp:fx-settled (c25 queue prep)', '', null, ''],
+  'child-owned': ['in-flight', 'mcp:fx-idle-child (kept by the c24 review until its coordinator picks the next unit up)', '', 30, 'held by a finished child, still open'],
+  healthy: ['in-flight', 'mcp:fx-quiet', '23', 15, ''],
+};
+const fixed = {
+  'old-stall': ['done', 'mcp:fx-coord', '21', 2, ''],
+  orphan: ['in-flight', 'mcp:fx-warn', '', 40, 'picked up again'],
+};
+const calm = {
+  ...fixed,
+  'paused-spike': ['in-flight', 'worker (opus high)', '', 60, 'design call made'],
+  'lost-ref': ['queued', 'mcp:fx-coord', '', null, ''],
+};
+export const STUCK_SCENARIOS = {
+  initial: { rows: STUCK_ROWS, checks: 'failing', stuck: ['old-stall', 'paused-spike', 'orphan', 'draft-fail', 'lost-ref'], needs: 2 },
+  resolved: { rows: { ...STUCK_ROWS, ...fixed }, checks: 'passing', stuck: ['paused-spike', 'lost-ref'], needs: 2 },
+  // Standing work: a healthy recurring unit days old is not stuck; one without an owner, one whose owner thread closed
+  // and one whose draft PR fails a check are.
+  recurring: { rows: { ...STUCK_ROWS, ...calm, 'nightly-sweep': ['recurring', 'mcp:fx-coord', '', 4320, 'runs every night'],
+    'weekly-digest': ['recurring', '', '', 2880, 'its scheduler thread was archived'], 'queue-prep': ['recurring', 'mcp:fx-settled (c25 queue prep)', '', 1440, ''],
+    'dep-bumps': ['recurring', 'mcp:fx-warn', '24', 180, ''] }, checks: 'passing', stuck: ['weekly-digest', 'queue-prep', 'dep-bumps'], needs: 2 },
+  empty: { rows: { ...STUCK_ROWS, ...calm }, checks: 'passing', stuck: [], needs: 2, line: 'Nothing stuck' },
+  // The same calm lane with one unreadable row and no answer from GitHub: the list says what it could not check.
+  degraded: { rows: { ...STUCK_ROWS, ...calm, 'Bad Row': ['queued', '', '', null, ''] }, checks: 'missing', stuck: [], needs: 2,
+    line: 'Could not check for stuck work: fixture-stuck has 1 unreadable row; GitHub did not answer for fixture-stuck.' },
+  // Three lanes of trouble, 15 stuck units: the first five show and the rest fold under "10 more stuck".
+  crowded: { rows: STUCK_ROWS, checks: 'failing', copies: 3, needs: 4,
+    stuck: ['old-stall', 'paused-spike', 'orphan', 'draft-fail', 'lost-ref'].flatMap((id) => [id, `${id}-2`, `${id}-3`]) },
+};
+
+export function seedStuck(dir, name, now = Date.now()) {
+  const scenario = STUCK_SCENARIOS[name];
+  if (!scenario) throw new Error(`no Stuck scenario ${name}; scenarios: ${Object.keys(STUCK_SCENARIOS).join(', ')}`);
+  const iso = (min) => (min === null ? '' : new Date(now - min * 60_000).toISOString());
+  const lanes = path.join(dir, 'lanes');
+  fs.rmSync(lanes, { recursive: true, force: true });
+  for (let copy = 1; copy <= (scenario.copies ?? 1); copy++) {
+    const suffix = copy === 1 ? '' : `-${copy}`;
+    const lane = path.join(lanes, `fixture-stuck${suffix}`);
+    fs.mkdirSync(lane, { recursive: true });
+    fs.writeFileSync(path.join(lane, 'lane.json'), JSON.stringify({ priority: copy, repo: `example/${scenario.checks === 'missing' ? 'missing' : 'stuck'}`,
+      github: true, coordinator_thread: 'mcp:fx-coord', milestones: [{ id: 'S1', title: 'Stuck list' }] }, null, 2));
+    // Only the first lane's sign-off takes the design thread's place; the copies' sign-offs are their own items.
+    fs.writeFileSync(path.join(lane, 'units.tsv'), TSV([['unit', 'state', 'owner', 'branch', 'pr', 'milestone', 'after', 'since', 'note'],
+      ...Object.entries(scenario.rows).map(([id, [state, owner, pr, min, note]]) => [`${id}${id === 'Bad Row' ? '' : suffix}`, state,
+        id === 'sign-off' && copy > 1 ? '' : owner, `feat/${id.replace(' ', '-').toLowerCase()}`, pr, 'S1', '', iso(min), note])]));
+  }
+  const result = scenario.checks === 'failing' ? 'FAILURE' : 'SUCCESS';
+  const gh = path.join(dir, 'gh');
+  ghAnswer(gh, 'stuck', [
+    ghPr(now, 'stuck', 21, 'fix(map): the long-running lint fix (fixture)', 'Keeps failing lint.', { mergeState: 'BLOCKED',
+      checks: [check('build', 'SUCCESS'), check('lint', result)], preview: 'https://stuck-git-old-stall.example.app', branch: 'feat/old-stall' }),
+    ghPr(now, 'stuck', 22, 'feat(map): draft with a failing typecheck (fixture)', 'Still a draft.', { draft: true,
+      checks: [check('typecheck', result)], branch: 'feat/draft-fail' }),
+    ghPr(now, 'stuck', 23, 'feat(map): healthy work in review (fixture)', 'Checks still running.', { mergeState: 'BLOCKED',
+      checks: [check('build', 'SUCCESS'), check('e2e', 'PENDING')], branch: 'feat/healthy' }),
+    ghPr(now, 'stuck', 24, 'chore(deps): this week\'s bumps (fixture)', 'Opened by the recurring dependency job.', { draft: true,
+      checks: [check('typecheck', 'FAILURE')], branch: 'feat/dep-bumps' }),
+  ]);
+  return { lanes, prs: path.join(gh, 'prs-stuck.json') };
 }

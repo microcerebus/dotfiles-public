@@ -24,7 +24,8 @@ const STATE = path.join(tmp, 'state');
 // A checkout with only the files a run needs, laid out as in the repo.
 function checkout(name) {
   const root = path.join(tmp, name);
-  for (const file of ['files/bin/agent-board.mjs', 'scripts/dotfiles-autoupdate', `${SKILL}/board.mjs`, `${SKILL}/fixture.mjs`, `${SKILL}/git-env.mjs`]) {
+  for (const file of ['files/bin/agent-board.mjs', 'scripts/dotfiles-autoupdate', `${SKILL}/board.mjs`, `${SKILL}/fixture.mjs`, `${SKILL}/git-env.mjs`,
+    ...['map-stuck', 'look', 'line-starts', 'playwright', 'viewports'].map((flow) => `${SKILL}/flows/${flow}.mjs`)]) {
     fs.mkdirSync(path.dirname(path.join(root, file)), { recursive: true });
     fs.copyFileSync(path.join(REPO, file), path.join(root, file));
   }
@@ -199,6 +200,17 @@ test('a fixture run launches, passes doctor, survives a board edit, and stops ke
   const map = await (await fetch(`${run.urls.local}/map`)).text();
   assert.equal(map.match(/class="stale"/g).length, 2, "the two stale rows, in their lane only");
 
+  // The Stuck journeys' dry run prints the plan and changes nothing in the scratch data.
+  const lanes = path.join(run.scratch, 'lanes');
+  const lanesHash = () => createHash('sha256').update(fs.readdirSync(lanes, { recursive: true }).sort()
+    .map((f) => (fs.statSync(path.join(lanes, f)).isFile() ? `${f}\0${fs.readFileSync(path.join(lanes, f), 'utf8')}` : f)).join('\0')).digest('hex');
+  const lanesBefore = lanesHash();
+  const plan = board(A, 'verify-stuck', '--dry-run', '--json');
+  assert.equal(plan.code, 0, plan.out);
+  assert.deepEqual(JSON.parse(plan.out).scenarios.map((s) => s.name), ['initial', 'resolved', 'recurring', 'empty', 'degraded', 'crowded']);
+  assert.equal(lanesHash(), lanesBefore);
+  assert.equal(fs.existsSync(path.join(run.scratch, 'lanes-seeded')), false);
+
   // One run per checkout.
   const again = board(A, 'launch');
   assert.equal(again.code, 1);
@@ -348,6 +360,100 @@ test('a lanes copy holds real files, so editing it never writes through a symlin
   }
 });
 
+test('verify-stuck and its flow refuse a lanes-copy run before they touch its scratch', async () => {
+  const { home } = await liveHome('home-stuck');
+  const launched = boardWithEnv({ HOME: home }, A, 'launch', '--lanes-copy', '--ttl', '5');
+  try {
+    assert.equal(launched.code, 0, launched.out);
+    const { scratch } = latest();
+    const lanes = path.join(scratch, 'lanes');
+    const snapshotOf = () => fs.readdirSync(lanes, { recursive: true }).sort()
+      .map((f) => (fs.statSync(path.join(lanes, f)).isFile() ? `${f}\0${fs.readFileSync(path.join(lanes, f), 'utf8')}` : f)).join('\0');
+    const before = snapshotOf();
+    for (const args of [[], ['--json'], ['--dry-run', '--json']]) {
+      const refused = boardWithEnv({ HOME: home }, A, 'verify-stuck', ...args);
+      assert.notEqual(refused.code, 0, refused.out);
+      assert.match(refused.out, /reads lanes-copy data; the Stuck journeys need: board\.mjs launch --fixture/);
+    }
+    // The flow keeps its own guard for a run started without board.mjs.
+    const flow = spawnSync(process.execPath, [path.join(A, SKILL, 'flows/map-stuck.mjs'), '--json'],
+      { env: { ...process.env, HOME: home, VERIFY_AGENT_BOARD_STATE: STATE }, encoding: 'utf8', timeout: 60_000 });
+    assert.notEqual(flow.status, 0);
+    assert.match(flow.stderr, /needs a fixture run, not lanes-copy/);
+    assert.equal(snapshotOf(), before, 'the lanes copy changed');
+    assert.deepEqual(fs.readdirSync(scratch).filter((f) => f.startsWith('lanes')), ['lanes']);
+  } finally {
+    board(A, 'stop');
+  }
+});
+
+test('a flow runs every cleanup step in order even when one fails, and a failed body keeps its own error', async () => {
+  const { withCleanUp } = await import(pathToFileURL(path.join(REPO, SKILL, 'flows/playwright.mjs')));
+  const ran = [];
+  const step = (name, fail) => async () => { ran.push(name); if (fail) throw new Error(`${name} failed`); };
+  assert.equal(await withCleanUp(async () => 'value', step('restore')), 'value');
+  ran.length = 0;
+  await assert.rejects(withCleanUp(step('body'), step('restore'), step('close', true), step('tidy')), /^Error: close failed$/);
+  assert.deepEqual(ran, ['body', 'restore', 'close', 'tidy']);
+  ran.length = 0;
+  await assert.rejects(withCleanUp(step('body', true), step('restore')), (error) => error.message === 'body failed' && !(error instanceof AggregateError));
+  assert.deepEqual(ran, ['body', 'restore']);
+  // A body that fails and a browser that will not close: the body's error comes first, the close failure beside it.
+  ran.length = 0;
+  await assert.rejects(withCleanUp(step('body', true), step('restore'), step('close', true)), (error) => error instanceof AggregateError
+    && error.message === 'body failed (then: close failed)' && error.errors.map((e) => e.message).join() === 'body failed,close failed');
+  assert.deepEqual(ran, ['body', 'restore', 'close']);
+  // Every flow cleans up through it, and map-stuck restores the lanes before the browser closes.
+  const flows = path.join(REPO, SKILL, 'flows');
+  for (const flow of fs.readdirSync(flows).filter((f) => /\bchrome\(\)/.test(fs.readFileSync(path.join(flows, f), 'utf8')) && f !== 'playwright.mjs')) {
+    const code = fs.readFileSync(path.join(flows, flow), 'utf8');
+    assert.doesNotMatch(code, /\bfinally\b/, `${flow} cleans up in a finally, where a cleanup error replaces the body's`);
+    assert.match(code, /\}, [^\n]*\(\) => browser\.close\(\)\);\n/, `${flow} closes its browser last through withCleanUp`);
+  }
+  assert.match(fs.readFileSync(path.join(flows, 'map-stuck.mjs'), 'utf8'), /\n\}, restoreLanes, [^\n]*\(\) => browser\.close\(\)\);\n/);
+});
+
+test('a page read that a reload interrupts is asked again on the new page; any other error stands', async (t) => {
+  const { evaluateSettled } = await import(pathToFileURL(path.join(REPO, SKILL, 'flows/playwright.mjs')));
+  const calls = [];
+  const fake = (errors) => ({
+    evaluate: async () => { calls.push('evaluate'); const e = errors.shift(); if (e) throw new Error(e); return 'read'; },
+    waitForLoadState: async (state) => { calls.push(`wait ${state}`); },
+  });
+  assert.equal(await evaluateSettled(fake(['page.evaluate: Execution context was destroyed, most likely because of a navigation']), () => 0), 'read');
+  assert.deepEqual(calls, ['evaluate', 'wait load', 'evaluate']);
+  await assert.rejects(evaluateSettled(fake(['page.evaluate: ReferenceError: x is not defined']), () => 0), /ReferenceError/);
+  await assert.rejects(evaluateSettled(fake(Array(3).fill('Execution context was destroyed')), () => 0), /destroyed/);
+  // Every flow reads the self-refreshing board through it.
+  for (const flow of fs.readdirSync(path.join(REPO, SKILL, 'flows')).filter((f) => f !== 'playwright.mjs')) {
+    assert.doesNotMatch(fs.readFileSync(path.join(REPO, SKILL, 'flows', flow), 'utf8'), /\.evaluate\(/, flow);
+  }
+
+  // The real race in headless Chrome: a page that reloads once while a read is still running.
+  const listed = spawnSync('pnpm', ['ls', '-g', '--depth', '0', '--json'], { encoding: 'utf8' }).stdout ?? '';
+  if (!listed.includes('"playwright-core"')) return t.skip('playwright-core is not installed');
+  const server = http.createServer((request, response) => {
+    response.writeHead(200, { 'content-type': 'text/html' });
+    response.end(request.url === '/first' ? '<title>first</title><script>addEventListener("load", () => setTimeout(() => location.replace("/second"), 400))</script>' : '<title>second</title>');
+  });
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  const { chrome } = await import(pathToFileURL(path.join(REPO, SKILL, 'flows/playwright.mjs')));
+  const browser = await chrome();
+  try {
+    const slowRead = () => new Promise((resolve) => setTimeout(() => resolve(document.title), 1500));
+    const bare = await browser.newPage();
+    await bare.goto(`http://127.0.0.1:${server.address().port}/first`);
+    await assert.rejects(bare.evaluate(slowRead), /Execution context was destroyed/, 'the race reproduces with a bare evaluate');
+    const settled = await browser.newPage();
+    await settled.goto(`http://127.0.0.1:${server.address().port}/first`);
+    assert.equal(await evaluateSettled(settled, slowRead), 'second');
+  } finally {
+    await browser.close();
+    server.close();
+  }
+});
+
 test('a lanes copy leaves out a directory link that loops back and anything not a file or directory', async () => {
   const { home, lanes } = await liveHome('home-loop');
   fs.symlinkSync('..', path.join(lanes, 'fixture-board/up'));
@@ -438,6 +544,71 @@ test('look saves full pages at the device scale, and at CSS pixels only past wha
   }
 });
 
+test('look and line-sweep fail on a rendered line that starts with "·", a split short parenthetical or a count left without its word, which the markup alone cannot show', async (t) => {
+  const listed = spawnSync('pnpm', ['ls', '-g', '--depth', '0', '--json'], { encoding: 'utf8' }).stdout ?? '';
+  if (!listed.includes('"playwright-core"')) return t.skip('playwright-core is not installed');
+  // /box is the board's old markup: a no-break space before the dot, and Chrome still breaks after the inline-block.
+  // /carried puts the dot inside the box, as the board does now. /block starts a paragraph with "·"; /columns has a
+  // second column and a wrapped line, neither starting with "·". /paren wraps "(opus high)" after "(opus"; /kept keeps it
+  // whole, as the board does; /prose wraps a parenthetical too long to keep. /count ends a line on "1" with "check" on the
+  // next; /counted keeps "1 check" whole, as the board does; /heading ends a heading on "15" above a paragraph.
+  const pages = {
+    box: '<div style="width:200px"><span style="display:inline-block;width:198px">feat/x</span>&nbsp;· since 17:50</div>',
+    carried: '<div style="width:200px"><span style="display:inline-block;max-width:100%">feat/x&nbsp;·</span> since 17:50</div>',
+    block: '<p>one</p><p>· two</p>',
+    columns: '<div style="display:flex;gap:20px"><div style="width:60px">one two three</div><div>four&nbsp;· five</div></div>',
+    paren: '<div style="width:13ch;font-family:monospace">worker (opus high)</div>',
+    kept: '<div style="width:12ch;font-family:monospace">worker <span style="white-space:nowrap">(opus high)</span></div>',
+    prose: '<div style="width:12ch;font-family:monospace">worker (held until the design review lands)</div>',
+    count: '<div style="width:14ch;font-family:monospace">blocked on: 1 check failing</div>',
+    counted: '<div style="width:14ch;font-family:monospace">blocked on: <span style="white-space:nowrap">1 check</span> failing</div>',
+    heading: '<h2>Stuck · 15</h2><p>stalled since 17:50</p>',
+  };
+  const server = http.createServer((request, response) => {
+    response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+    response.end(`<meta name="viewport" content="width=device-width"><title>lines</title><body style="font:16px sans-serif">${pages[request.url.slice(1)]}</body>`);
+  });
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  const run = async (script, ...args) => {
+    const child = spawn(process.execPath, [path.join(REPO, SKILL, 'flows', script), ...args], { stdio: ['ignore', 'pipe', 'pipe'] });
+    let out = '';
+    child.stdout.on('data', (d) => { out += d; });
+    const [code] = await once(child, 'exit');
+    return { code, out };
+  };
+  const url = (page) => `http://127.0.0.1:${server.address().port}/${page}`;
+  try {
+    const starts = {};
+    for (const page of Object.keys(pages)) {
+      const { code, out } = await run('look.mjs', url(page), path.join(tmp, 'look-lines'), page, 'phone-390');
+      const seen = JSON.parse(fs.readFileSync(path.join(tmp, 'look-lines', `${page}-phone-390.json`), 'utf8'));
+      starts[page] = { code, lines: [...seen.dotStarts, ...seen.splitParens, ...seen.bareCounts].map((l) => l.text) };
+      assert.match(out, /"·" line starts \d/);
+    }
+    assert.deepEqual(starts, { box: { code: 1, lines: ['· since 17:50'] }, carried: { code: 0, lines: [] },
+      block: { code: 1, lines: ['· two'] }, columns: { code: 0, lines: [] }, paren: { code: 1, lines: ['(opus / high)'] },
+      kept: { code: 0, lines: [] }, prose: { code: 0, lines: [] }, count: { code: 1, lines: ['1 / check'] },
+      counted: { code: 0, lines: [] }, heading: { code: 0, lines: [] } });
+    const bare = await run('line-sweep.mjs', url('count'), '320-321', '1', '--json');
+    assert.deepEqual([bare.code, JSON.parse(bare.out).failures.map((f) => [f.width, f.bareCounts.map((l) => l.text)])],
+      [1, [[320, ['1 / check']], [321, ['1 / check']]]]);
+    const split = await run('line-sweep.mjs', url('paren'), '320-321', '1', '--json');
+    assert.deepEqual([split.code, JSON.parse(split.out).failures.map((f) => [f.width, f.splitParens.map((l) => l.text)])],
+      [1, [[320, ['(opus / high)']], [321, ['(opus / high)']]]]);
+    const swept = await run('line-sweep.mjs', url('box'), '320-324', '2', '--json');
+    assert.equal(swept.code, 1);
+    const report = JSON.parse(swept.out);
+    assert.deepEqual([report.widths, report.failures.map((f) => [f.width, f.dotStarts.map((l) => l.text)])],
+      [3, [[320, ['· since 17:50']], [322, ['· since 17:50']], [324, ['· since 17:50']]]]);
+    const clean = await run('line-sweep.mjs', url('carried'), '320-330');
+    assert.equal(clean.code, 0, clean.out);
+    assert.match(clean.out, /PASS 200 .*: 11 widths from 320 to 330, 0 failing/);
+  } finally {
+    server.close();
+  }
+});
+
 test('the uneven map fixture has three lanes with the counts that exposed the wide-layout bug', async () => {
   const { seedMapShape } = await import(pathToFileURL(path.join(REPO, SKILL, 'fixture.mjs')));
   const { parseUnits } = await import(pathToFileURL(path.join(REPO, 'files/bin/agent-board.mjs')));
@@ -451,6 +622,42 @@ test('the uneven map fixture has three lanes with the counts that exposed the wi
       units.filter((u) => u.state !== 'done').length];
   }).sort((a, b) => a[0] - b[0]);
   assert.deepEqual(counts, [[1, 51, 22], [2, 17, 8], [3, 106, 35]]);
+});
+
+test('each Stuck scenario renders the Stuck rows and Needs you count the flow expects', async () => {
+  const { STUCK_SCENARIOS, seed, seedStuck } = await import(pathToFileURL(path.join(REPO, SKILL, 'fixture.mjs')));
+  const { STUCK_SHOWN, parsePrs, renderMap, snapshot } = await import(pathToFileURL(path.join(REPO, 'files/bin/agent-board.mjs')));
+  const now = Date.now();
+  const dir = path.join(tmp, 'stuck');
+  const { env } = seed(dir, now);
+  // The stub gh's answer, read as the board's own fetch would parse it; a repo without one is a GitHub error.
+  const prs = (repo) => {
+    const file = path.join(dir, 'gh', `prs-${repo.split('/')[1]}.json`);
+    return fs.existsSync(file) ? { ...parsePrs(fs.readFileSync(file, 'utf8')), at: now } : { prs: new Map(), error: 'no repo', at: now };
+  };
+  const render = (params) => renderMap(snapshot({ dbPath: env.AGENT_BOARD_T3_DB, logsDir: env.AGENT_BOARD_CLAUDE_PROJECTS,
+    lanesDir: path.join(dir, 'lanes'), now, autoupdate: null, prs }), params);
+  const stuckOf = (html) => html.slice(html.indexOf('id="stuck"'), html.indexOf('<div class="cols">'));
+  const ids = (part) => [...part.matchAll(/<a class="id" href="[^"]+">([^<]+)<\/a>/g)].map((m) => m[1]);
+  assert.ok(STUCK_SCENARIOS.crowded.stuck.length >= 15, 'crowded holds enough to fold');
+  for (const [name, expected] of Object.entries(STUCK_SCENARIOS)) {
+    seedStuck(dir, name, now);
+    const html = render();
+    const part = stuckOf(html);
+    // A closed list shows the oldest STUCK_SHOWN; opened, every row in the same order.
+    assert.deepEqual(ids(part), expected.stuck.slice(0, STUCK_SHOWN), name);
+    assert.deepEqual(ids(stuckOf(render(new URLSearchParams('stuck=all')))), expected.stuck, name);
+    const more = expected.stuck.length - STUCK_SHOWN;
+    assert.equal(/>(\d+ more stuck)</.exec(part)?.[1] ?? null, more > 0 ? `${more} more stuck` : null, name);
+    assert.match(html, new RegExp(`Needs you · ${expected.needs}<`), name);
+    // The line is what a reader sees, so it is matched with the markup gone.
+    if (expected.line) assert.ok(part.replace(/<[^>]*>/g, '').includes(expected.line), `${name}: ${part}`);
+    // The strip's stuck figure is the heading's: a count, or unknown when the list could not check.
+    const strip = /<nav class="status-strip"[^]*?<(?:a href="#stuck"|span(?: class="yellow")?)>(\d+ stuck|stuck unknown)</.exec(html)?.[1];
+    const heading = /id="stuck">Stuck · (\d+)</.exec(part)?.[1];
+    assert.equal(strip, heading ? `${heading} stuck` : part.includes('Could not check') ? 'stuck unknown' : '0 stuck', name);
+    if (heading) assert.equal(Number(heading), expected.stuck.length, name);
+  }
 });
 
 test('the skill drives with Playwright written flows first and names chrome-devtools-axi only as the fallback', () => {
@@ -487,7 +694,8 @@ test('visual checks default to the five viewports the owner reads the board on, 
   for (const flow of fs.readdirSync(flows).filter((f) => f !== 'viewports.mjs')) {
     const code = fs.readFileSync(path.join(flows, flow), 'utf8');
     assert.doesNotMatch(code, /\.new(?:Page|Context)\((?!pageOptions\()/, `${flow} opens a page without pageOptions(), so it sizes the page itself`);
-    assert.doesNotMatch(code, /setViewportSize|\bresize\b/, `${flow} resizes a page instead of opening it at a viewport`);
+    // line-sweep exists to try every width on one page.
+    if (flow !== 'line-sweep.mjs') assert.doesNotMatch(code, /setViewportSize|\bresize\b/, `${flow} resizes a page instead of opening it at a viewport`);
   }
   const skill = fs.readFileSync(path.join(REPO, '.claude/skills/verify-agent-board/SKILL.md'), 'utf8');
   for (const v of VIEWPORTS) assert.ok(skill.includes(`\`${v.name}\``), `SKILL.md names ${v.name}`);
