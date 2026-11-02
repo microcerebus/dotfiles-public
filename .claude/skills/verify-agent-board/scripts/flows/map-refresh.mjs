@@ -4,11 +4,11 @@
 //
 //   1. Open $BOARD_URL/map at the owner's desktop viewport (desktop-1920 in viewports.mjs). Read the title, the clock
 //      and Needs you.
-//      Expect `(5) project map`, and phone-check waiting as `then you` behind map-polish.
+//      Expect `(7) project map`, and phone-check waiting as `then you` behind map-polish.
 //   2. Screenshot project-map-refresh-before-desktop-1920.png, reads in project-map-refresh-before.txt.
 //   3. In the scratch lane file, mark map-polish done (in-flight -> done). Nothing reloads the page.
 //   4. Wait for the page's own 15-second refresh until the change shows, at most three reloads.
-//      Expect `(6) project map`, phone-check under Needs you as `you`, and a later clock.
+//      Expect `(8) project map`, phone-check under Needs you as `you`, and a later clock.
 //   5. Screenshot project-map-refresh-after-desktop-1920.png, reads in .txt, the page HTML in .html, the changed file in .tsv.
 //   6. Put the scratch file back.
 //
@@ -47,7 +47,7 @@ await withCleanUp(async () => {
   const before = await read(page);
   save('before', before);
   await page.screenshot({ path: out('before-desktop-1920.png'), fullPage: true });
-  check('before', before.title === '(5) project map' && before.phoneCheck === 'then you' && !before.needs.includes('phone-check'), before);
+  check('before', before.title === '(7) project map' && before.phoneCheck === 'then you' && !before.needs.includes('phone-check'), before);
 
   if (!/^map-polish\tin-flight\t/m.test(original)) throw new Error(`${units} has no in-flight map-polish row; relaunch the fixture`);
   fs.writeFileSync(units, original.replace(/^map-polish\tin-flight\t/m, 'map-polish\tdone\t'));
@@ -63,7 +63,7 @@ await withCleanUp(async () => {
   await page.screenshot({ path: out('after-desktop-1920.png'), fullPage: true });
   fs.writeFileSync(out('after.html'), await page.content());
   fs.writeFileSync(out('after.tsv'), fs.readFileSync(units, 'utf8'));
-  check('after', after.title === '(6) project map' && after.needs.includes('phone-check') && after.phoneCheck === 'you'
+  check('after', after.title === '(8) project map' && after.needs.includes('phone-check') && after.phoneCheck === 'you'
     && after.clock !== before.clock, { ...after, reloads });
 }, () => fs.writeFileSync(units, original), () => browser.close());
 console.log(`evidence: ${env.BOARD_EVIDENCE}`);

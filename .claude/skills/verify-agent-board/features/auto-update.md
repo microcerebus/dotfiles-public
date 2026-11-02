@@ -9,7 +9,7 @@ With an alarm, the card goes first under a peach `Auto-update` heading, its alar
 - `updates-title-count` adds one to the page title's count while any alarm shows.
 - `updates-lines` shows info lines plain and healthy lines muted, in the order alarm, info, ok.
 - `updates-healthy-last` moves the card below the threads, with a grey heading, once no alarm is left.
-- `updates-thread-page-only` keeps the card off `/map`.
+- `updates-thread-page-only` keeps the card off `/map`, which shows one `Auto-update` row in Needs you with the alarm count and a link to `/`.
 - `updates-live-match` shows the same alarms as the updater's own reader on the live system.
 
 ## How to get to it (user POV)
@@ -27,10 +27,10 @@ Preconditions:
 - A fixture run: doctor reports `pages: / and /map render the fixture data`.
 - The fixture's switch status at `$BOARD_SCRATCH/daemon/status` has one `fail` line, and its sync status is healthy.
 
-- **Open the page.** Run `chrome-devtools-axi open "$BOARD_URL/"` and `chrome-devtools-axi emulate --viewport "1920x1440x1"`. The title is `(6) agent board`.
+- **Open the page.** Run `chrome-devtools-axi open "$BOARD_URL/"` and `chrome-devtools-axi emulate --viewport "1920x1440x1"`. The title is `(7) agent board`.
 - **Read the card.** Run `chrome-devtools-axi eval "document.querySelector('h2').outerHTML + '\n' + [...document.querySelectorAll('.line')].map((l) => (l.className.replace('line', '').trim() || 'plain') + ' | ' + l.textContent).join('\n')"`. The first heading is `<h2 class="attn">Auto-update</h2>`, then `red | switch: switch to 1a2b3c4d5e6f exited 1 (fixture); see /var/log/dotfiles-autoupdate.log`, `plain | switch: macOS 27.0.1 is available (fixture)`, `muted | sync: last good run 2 h ago` and `muted | switch: last good run 25 h ago`.
 - **Capture the alarm.** Run `chrome-devtools-axi screenshot "$BOARD_EVIDENCE/auto-update-alarm-desktop-1920.png"`. The card is first, with a peach heading and a red line.
-- **Clear the alarm.** Remove the fail line and let the page reload. Run `perl -ni -e 'print unless /^fail\t/' "$BOARD_SCRATCH/daemon/status"`, `chrome-devtools-axi wait 16000`, then `chrome-devtools-axi eval "document.title + '\n' + [...document.querySelectorAll('h2')].map((h) => h.textContent + (h.className ? ' (' + h.className + ')' : '')).join('\n')"`. `(5) agent board`, then `Needs you · 5 (attn)`, `Running · 5`, `Idle · 14`, `Auto-update` last with no class.
+- **Clear the alarm.** Remove the fail line and let the page reload. Run `perl -ni -e 'print unless /^fail\t/' "$BOARD_SCRATCH/daemon/status"`, `chrome-devtools-axi wait 16000`, then `chrome-devtools-axi eval "document.title + '\n' + [...document.querySelectorAll('h2')].map((h) => h.textContent + (h.className ? ' (' + h.className + ')' : '')).join('\n')"`. `(6) agent board`, then `Needs you · 5 (attn)`, `Running · 5`, `Idle · 14`, `Auto-update` last with no class.
 - **Capture healthy.** Run `chrome-devtools-axi screenshot "$BOARD_EVIDENCE/auto-update-healthy-desktop-1920.png" --full-page`. The card is at the bottom, above the footer, with only grey and plain lines.
 - **Map has no card.** Run `curl -s "$BOARD_URL/map" | grep -c 'Auto-update'`. It prints `0`.
 - **Undo.** Run `printf 'fail\tswitch to 1a2b3c4d5e6f exited 1 (fixture)\n' >> "$BOARD_SCRATCH/daemon/status"`, or relaunch.

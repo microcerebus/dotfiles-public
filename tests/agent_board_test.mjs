@@ -447,14 +447,16 @@ test('map proposal 2: status strip links to visible rows and reports unavailable
   const db = new DatabaseSync(empty.dbPath);
   db.exec('DELETE FROM orchestration_v2_projection_runtime_requests');
   db.close();
-  assert.match(renderMap(snapshot({ ...empty, lanesDir, autoupdate: null, now: NOW })), /nothing needs you/);
+  fs.writeFileSync(path.join(path.dirname(lanesDir), 'needs-myuser.tsv'), ASK_HEADER);
+  assert.match(renderMap(snapshot({ ...empty, lanesDir, autoupdate: null, now: NOW })), /no asks on file/);
   const unavailable = renderMap(snapshot({ ...empty, dbPath: path.join(lanesDir, 'missing.db'), lanesDir, autoupdate: null, now: NOW }));
   assert.match(unavailable, /status-strip[^]*?T3 state unavailable/);
-  assert.doesNotMatch(unavailable, /nothing needs you/);
+  assert.doesNotMatch(unavailable, /no asks on file/);
   const missing = renderMap(snapshot({ ...empty, lanesDir: path.join(lanesDir, 'missing'), autoupdate: null, now: NOW }));
   assert.match(missing, /status-strip[^]*?lanes unavailable/);
-  assert.doesNotMatch(missing, /nothing needs you/);
+  assert.doesNotMatch(missing, /no asks on file/);
 });
+const ASK_HEADER = 'asked_at\tlane\task\timpact_if_it_waits\tclosed_at\n';
 // The rendered row for one unit, from its opening div to the next row.
 const unitRowOf = (html, id) => html.slice(html.lastIndexOf('<div class="u', html.indexOf(`</span>${id}</span>`)), html.indexOf(`</span>${id}</span>`) + 600);
 
@@ -607,7 +609,7 @@ test('map: unit rows show state, PR verdict, owner and its live state, and nest 
   assert.match(unitRowOf(html, 'ship'), /<span class="state peach">then you<\/span>ship<\/span><span class="pr">rebuild<\/span><\/div><div class="unit-note">run rebuild at the Mac<\/div><div class="after">after <b>ui<\/b><\/div><\/div>/);
   const review = unitRowOf(html, 'review-me');
   assert.match(review, /<b>#71<\/b> no verdict/);
-  assert.match(review, /<span class="peach">no owner thread<\/span>&nbsp;· <span class="yellow"><span class="kept">in flight 10 h<\/span>, <span class="kept">since 02:00<\/span><\/span>/);
+  assert.match(review, /<span class="peach"[^>]*>no owner thread<\/span>&nbsp;· <span class="yellow"><span class="kept">in flight 10 h<\/span>, <span class="kept">since 02:00<\/span><\/span>/);
   assert.match(review, /<div class="after">after <b>ship<\/b> \(then you\)<\/div>/);
   assert.match(unitRowOf(html, 'old'), /^<div class="u done" id="unit-alpha\/old"><div class="row"><span class="id"><span class="state grey">done<\/span>old<\/span><span class="pr"><a [^>]+><b>#51<\/b> merged<\/a><\/span><\/div><\/div>/);
   assert.match(unitRowOf(html, 'sign'), /^<div class="u needs" id="unit-alpha\/sign">/);
@@ -639,8 +641,8 @@ test('map: Needs you merges input cards with units that are the owner\'s turn, o
 
 test('map: the lane header shows its coordinator live and flags two quiet hours while it runs', () => {
   const html = mapHtml();
-  assert.match(html, /<b>alpha<\/b><small>priority 1&nbsp;· Coordinator 13 <span class="kept"><span class="green kept">running<\/span><\/span>&nbsp;· <span class="yellow kept">no update for 3 h<\/span><\/small>/);
-  assert.match(html, /<b>epsilon<\/b><small>priority 3&nbsp;· Practice thread <span class="kept"><span class="grey kept">idle 30 min<\/span><\/span>&nbsp;· <span class="kept">updated 10 min ago<\/span><\/small>/);
+  assert.match(html, /<b>alpha<\/b><small>priority 1&nbsp;· Coordinator 13&nbsp;· <span class="kept"><span class="green kept">running<\/span><\/span>&nbsp;· <span class="yellow kept">no update for 3 h<\/span><\/small>/);
+  assert.match(html, /<b>epsilon<\/b><small>priority 3&nbsp;· Practice thread&nbsp;· <span class="kept"><span class="grey kept">idle 30 min<\/span><\/span>&nbsp;· <span class="kept">updated 10 min ago<\/span><\/small>/);
 });
 
 test('the thread page links the map and lists lane units that wait on the owner', () => {
@@ -785,7 +787,7 @@ test('map: an owner given as a bare uuid resolves to its thread; an unknown one 
   fs.writeFileSync(path.join(f.lanesDir, 'zeta/units.tsv'), TSV([['unit', 'state', 'owner'], ['u1', 'paused', id], ['u2', 'paused', id.replace('1111', '0000')]]));
   const html = renderMap(snapshot({ ...f, now: NOW }));
   assert.match(unitRowOf(html, 'u1'), /<div class="sub">Uuid owner&nbsp;· <span class="grey kept">idle 2 min<\/span><\/div>/);
-  assert.match(unitRowOf(html, 'u2'), /<div class="sub"><span class="peach">no owner thread<\/span><\/div>/);
+  assert.match(unitRowOf(html, 'u2'), /<div class="sub"><span class="peach"[^>]*>no owner thread<\/span><\/div>/);
 });
 
 test('a parenthetical of up to 24 characters is kept whole on both pages; a longer one wraps as prose', () => {
@@ -806,7 +808,7 @@ test('a parenthetical of up to 24 characters is kept whole on both pages; a long
   const html = renderMap(snapshot({ ...f, now: NOW }));
   const re = (s) => s.replace(/[()]/g, '\\$&');
   assert.match(unitRowOf(html, 'u1'), /<div class="sub">worker <span class="kept">\(opus high\)<\/span><\/div><div class="unit-note">waits on &lt;b&gt; <span class="kept">\(a &amp; b\)<\/span><\/div>/);
-  assert.match(unitRowOf(html, 'u2'), /<span class="peach">no owner thread<\/span>&nbsp;· <span class="kept">\(c25 queue prep\)<\/span><\/div>/);
+  assert.match(unitRowOf(html, 'u2'), /<span class="peach"[^>]*>no owner thread<\/span>&nbsp;· <span class="kept">\(c25 queue prep\)<\/span><\/div>/);
   assert.match(unitRowOf(html, 'u3'), new RegExp(`<div class="sub">worker <span class="kept">${re(edge)}</span></div>`));
   assert.match(unitRowOf(html, 'u4'), new RegExp(`<div class="sub">worker ${re(over)}</div><div class="unit-note">${re(long)} <span class="kept">\\(short\\)</span></div>`));
   assert.match(html, /zeta units\.tsv incomplete <span class="kept">\(1 row skipped\)<\/span>/);
@@ -1391,8 +1393,8 @@ test('map: nothing is clipped: no line is kept to one row with an ellipsis, on t
 function stuckFixture(rows, { prs = noPrs, threads = [], lanes = {} } = {}) {
   const f = fixture();
   const db = new DatabaseSync(f.dbPath);
-  for (const [id, title] of threads) {
-    db.prepare('INSERT INTO orchestration_v2_projection_threads VALUES (?, ?, ?, NULL, ?, NULL, NULL, ?)').run(id, 'p1', title, iso(2), '{}');
+  for (const [id, title, payload = {}] of threads) {
+    db.prepare('INSERT INTO orchestration_v2_projection_threads VALUES (?, ?, ?, NULL, ?, NULL, NULL, ?)').run(id, 'p1', title, iso(2), JSON.stringify(payload));
   }
   db.close();
   const dir = path.join(path.dirname(f.dbPath), 'lanes');
@@ -1494,11 +1496,11 @@ test('map Stuck: blank owners on work in flight and thread references that resol
   const rows = stuckRows(html);
   assert.deepEqual(Object.keys(rows), ['blank', 'ambiguous', 'unmatched', 'too-short', 'gone', 'gone-queued']);
   assert.match(rows.blank, /<span class="peach">unassigned<\/span>/);
-  for (const name of ['ambiguous', 'unmatched', 'too-short', 'gone', 'gone-queued']) assert.match(rows[name], /<span class="peach">no owner thread<\/span>/, name);
+  for (const name of ['ambiguous', 'unmatched', 'too-short', 'gone', 'gone-queued']) assert.match(rows[name], /<span class="peach"[^>]*>no owner thread<\/span>/, name);
   // A reference that resolves to nothing keeps the coordinator's annotation, on the Stuck line and the lane row alike.
   for (const [name, note] of [['ambiguous', '(two threads)'], ['unmatched', '(c25 queue prep)'], ['too-short', '(c25)']]) {
     assert.match(rows[name], new RegExp(`no owner thread</span>&nbsp;· <span class="kept">${note.replace(/[()]/g, '\\$&')}</span>`), name);
-    assert.match(unitRowOf(html, name), new RegExp(`<div class="sub"><span class="peach">no owner thread</span>&nbsp;· <span class="kept">${note.replace(/[()]/g, '\\$&')}</span>`), name);
+    assert.match(unitRowOf(html, name), new RegExp(`<div class="sub"><span class="peach"[^>]*>no owner thread</span>&nbsp;· <span class="kept">${note.replace(/[()]/g, '\\$&')}</span>`), name);
   }
   for (const [name, owner] of [['other-scheme', 'owner:worker <span class="kept">\\(opus\\)</span>'], ['todo', 'TODO:assign later'], ['date', '<span class="kept">20261028 handoff</span>'], ['digits', '12345678']]) {
     assert.match(unitRowOf(html, name), new RegExp(`<div class="sub">${owner}&nbsp;· `), name);
@@ -1534,7 +1536,7 @@ test('map Stuck: one row per unit with every reason; marked done, it leaves the 
   const knot = (state) => [unit('knot', state, { owner: 'mcp:gone', pr: '1', since: iso(state === 'done' ? 2000 : 600) }), unit('fine', 'in-flight')];
   const rows = stuckRows(stuckHtml(stuckFixture(knot('in-flight'), { prs: pr })));
   assert.deepEqual(Object.keys(rows), ['knot']);
-  assert.match(rows.knot, /in flight 10 h<\/span>, <span class="kept">since 01:30<\/span><\/span>&nbsp;· <span class="red">blocked on: <span class="kept">1 check<\/span> failing: lint<\/span>&nbsp;· <span class="peach">no owner thread<\/span>&nbsp;· <a class="kept" href/);
+  assert.match(rows.knot, /in flight 10 h<\/span>, <span class="kept">since 01:30<\/span><\/span>&nbsp;· <span class="red">blocked on: <span class="kept">1 check<\/span> failing: lint<\/span>&nbsp;· <span class="peach"[^>]*>no owner thread<\/span>&nbsp;· <a class="kept" href/);
   const f = stuckFixture(knot('done'), { prs: pr });
   const html = stuckHtml(f);
   assert.match(stuckPart(html), /^id="stuck"><p class="more">Nothing stuck<\/p><\/div>/);
@@ -1750,4 +1752,307 @@ test('map recurring: a recurring unit whose PR asks the owner stays in Needs you
   const html = stuckHtml(f);
   assert.match(html, /<b class="id">batch<\/b><span class="ask">the owner picks the batch/);
   assert.deepEqual(Object.keys(stuckRows(html)), []);
+});
+
+// ---- Owners that outlive their thread: bug 1 and proposal 6 of the map pass ----
+
+const SETTLED = { settledAt: iso(600) };
+const RETIRED_ID = '5dc650f9-57e4-4d98-85c8-fdbf8291a630';
+const ownerLanes = (rows, head = 'mcp:head', others = []) => {
+  const f = stuckFixture(rows, { threads: [
+    ['mcp:head', 'Work coordinator 62'],
+    ['mcp:old-head', "the owner's work coordinator 47", SETTLED],
+    [`mcp:${RETIRED_ID}`, 'Work: coordinator (14) (context full, moved)', SETTLED],
+    ['thread:delegated-task:live', 'Live worker', { lineage: { parentThreadId: 'mcp:head' } }],
+    ['thread:delegated-task:ended', 'Ended worker on coordinator 3 cleanup', { ...SETTLED, lineage: { parentThreadId: 'mcp:head' } }],
+    ['mcp:old-worker', 'Resume prep', SETTLED],
+    ...others,
+  ] });
+  fs.writeFileSync(path.join(f.lanesDir, 'work/lane.json'), JSON.stringify({ priority: 1, repo: 'o/jobs', github: true, coordinator_thread: head }));
+  return f;
+};
+
+test('map owners: a row held by a retired coordinator passes to the lane\'s current one, in every way lanes write it', () => {
+  const html = stuckHtml(ownerLanes([
+    unit('by-id', 'in-flight', { owner: 'mcp:old-head' }),
+    unit('by-id-queued', 'queued', { owner: 'mcp:old-head' }),
+    unit('bracket-title', 'paused', { owner: `mcp:${RETIRED_ID}` }),
+    unit('bare', 'queued', { owner: RETIRED_ID }),
+    unit('labelled', 'queued', { owner: `coordinator 41 mcp:${RETIRED_ID}` }),
+    unit('name-only', 'queued', { owner: 'coordinator 36' }),
+    unit('joined', 'queued', { owner: 'coordinator23' }),
+    unit('annotated', 'queued', { owner: 'mcp:old-head (gate queue held)' }),
+  ]));
+  for (const id of ['by-id', 'by-id-queued', 'bracket-title', 'bare', 'labelled', 'name-only', 'joined', 'annotated']) {
+    assert.match(unitRowOf(html.slice(html.indexOf('<section ')), id), /<div class="sub">Work coordinator 62&nbsp;· <span class="grey kept">idle 2 min<\/span>/, id);
+  }
+  assert.match(unitRowOf(html, 'annotated'), /idle 2 min<\/span>&nbsp;· <span class="kept">\(gate queue held\)<\/span>/);
+  assert.doesNotMatch(html, /no owner thread/);
+  // Only the paused row is stuck, for being paused: passing a row on never hides why it cannot move.
+  assert.deepEqual(Object.keys(stuckRows(html)), ['bracket-title']);
+});
+
+test('map owners: a delegated worker keeps its thread, and a row with no holder still says so', () => {
+  const html = stuckHtml(ownerLanes([
+    unit('live-worker', 'in-flight', { owner: 'thread:delegated-task:live' }),
+    unit('live-labelled', 'in-flight', { owner: 'worker 4 thread:delegated-task:live' }),
+    unit('ended-worker', 'in-flight', { owner: 'thread:delegated-task:ended' }),
+    unit('old-worker', 'in-flight', { owner: 'mcp:old-worker' }),
+    unit('unknown', 'queued', { owner: 'mcp:not-in-t3' }),
+    unit('labelled-gone', 'in-flight', { owner: 'worker 4 mcp:not-in-t3 (hit a limit)' }),
+    unit('blank', 'in-flight', { owner: '' }),
+    unit('scheduled', 'recurring', { owner: 'scheduled 08:00 thread' }),
+    unit('prose', 'in-flight', { owner: 'someone under coordinator 9' }),
+  ]));
+  const row = (id) => unitRowOf(html.slice(html.indexOf('<section ')), id);
+  for (const id of ['live-worker', 'live-labelled']) assert.match(row(id), /<div class="sub">Live worker&nbsp;· <span class="grey kept">idle 2 min<\/span><\/div>|<div class="sub">Live worker&nbsp;· <span class="grey kept">idle 2 min<\/span>&nbsp;·/, id);
+  for (const id of ['ended-worker', 'old-worker', 'unknown', 'labelled-gone']) assert.match(row(id), /<span class="peach"[^>]*>no owner thread<\/span>/, id);
+  assert.match(row('labelled-gone'), /no owner thread<\/span>&nbsp;· worker <span class="kept">4<\/span>|no owner thread<\/span>&nbsp;· worker 4/);
+  assert.match(row('labelled-gone'), /<span class="kept">\(hit a limit\)<\/span>/);
+  assert.match(row('blank'), /<span class="peach">unassigned<\/span>/);
+  assert.match(row('scheduled'), /scheduled/);
+  assert.match(row('prose'), /<div class="sub">someone under <span class="kept">coordinator 9<\/span>|<div class="sub">someone under coordinator 9/);
+  assert.deepEqual(Object.keys(stuckRows(html)).sort(), ['blank', 'ended-worker', 'labelled-gone', 'old-worker', 'unknown']);
+});
+
+test('map owners: a coordinator label never outvotes the reference beside it', () => {
+  const html = stuckHtml(ownerLanes([
+    unit('label-unknown', 'in-flight', { owner: 'coordinator 12 mcp:not-in-t3' }),
+    unit('label-ended-worker', 'in-flight', { owner: 'coordinator 41 thread:delegated-task:ended' }),
+    unit('label-worker-word', 'in-flight', { owner: 'coordinator 41 worker mcp:old-worker' }),
+    unit('label-retired', 'queued', { owner: `coordinator 41 mcp:${RETIRED_ID}` }),
+    unit('label-live', 'in-flight', { owner: 'coordinator 41 thread:delegated-task:live' }),
+    unit('ordinal', 'queued', { owner: 'coordinator 41st attempt' }),
+  ]), new URLSearchParams('stuck=all'));
+  const row = (id) => unitRowOf(html.slice(html.indexOf('<section ')), id).split(/(?=<div class="u" id=)/)[0];
+  for (const id of ['label-unknown', 'label-ended-worker', 'label-worker-word']) {
+    assert.match(row(id), /<div class="sub"><span class="peach"[^>]*>no owner thread<\/span>/, id);
+  }
+  assert.match(row('label-retired'), /<div class="sub">Work coordinator 62&nbsp;· /);
+  assert.match(row('label-live'), /<div class="sub">Live worker&nbsp;· /);
+  // "41st" is no coordinator's number, so the words stay as written.
+  assert.match(row('ordinal'), /<div class="sub">coordinator <span class="kept">41st<\/span> attempt|<div class="sub">coordinator 41st attempt/);
+  assert.deepEqual(Object.keys(stuckRows(html)).sort(), ['label-ended-worker', 'label-unknown', 'label-worker-word']);
+});
+
+test('map owners: another lane\'s retired coordinator follows its own lane, never this one\'s head', () => {
+  const f = ownerLanes([
+    unit('foreign', 'queued', { owner: 'mcp:other-old' }),
+    unit('foreign-older', 'queued', { owner: 'mcp:other-older' }),
+    unit('foreign-labelled', 'queued', { owner: 'coordinator 2 mcp:other-old' }),
+    unit('two-words', 'queued', { owner: 'mcp:jobs-old' }),
+    unit('headless', 'queued', { owner: 'mcp:silent-old' }),
+    unit('no-such-lane', 'queued', { owner: 'mcp:gone-old' }),
+    unit('not-a-lane', 'queued', { owner: 'mcp:brief-old' }),
+    unit('unnamed', 'queued', { owner: 'mcp:plain-old' }),
+  ], 'mcp:head', [
+    ['mcp:other-head', 'the owner\'s other coordinator 5'],
+    ['mcp:other-old', 'the owner\'s other coordinator 2', SETTLED],
+    ['mcp:other-older', 'Other: coordinator 1', SETTLED],
+    ['mcp:jobs-head', 'Job tracker coordinator 9'],
+    ['mcp:jobs-old', 'Job tracker: coordinator (8) (moved)', SETTLED],
+    ['mcp:silent-old', 'the owner\'s silent coordinator 3', SETTLED],
+    ['mcp:gone-old', 'the owner\'s disbanded coordinator 3', SETTLED],
+    ['mcp:brief-old', 'Review brief for coordinator 41', SETTLED],
+    ['mcp:plain-old', 'Coordinator 7', SETTLED],
+  ]);
+  for (const [lane, head] of [['other', 'mcp:other-head'], ['job-tracker', 'mcp:jobs-head'], ['silent', 'mcp:silent-old']]) {
+    fs.mkdirSync(path.join(f.lanesDir, lane));
+    fs.writeFileSync(path.join(f.lanesDir, lane, 'lane.json'), JSON.stringify({ priority: 2, coordinator_thread: head }));
+  }
+  const html = stuckHtml(f, new URLSearchParams('stuck=all'));
+  const row = (id) => unitRowOf(html.slice(html.indexOf('<section ')), id).split(/(?=<div class="u" id=)/)[0];
+  for (const id of ['foreign', 'foreign-older', 'foreign-labelled']) assert.match(row(id), /<div class="sub">the owner&#39;s other coordinator 5&nbsp;· /, id);
+  assert.match(row('two-words'), /<div class="sub">Job tracker coordinator 9&nbsp;· /);
+  // Its lane has no open head, or the title names no lane on this board: nobody holds it, and it stays in Stuck.
+  for (const id of ['headless', 'no-such-lane', 'not-a-lane']) {
+    assert.match(row(id), /<span class="peach"[^>]*>no owner thread<\/span>/, id);
+    assert.doesNotMatch(row(id), /Work coordinator 62/, id);
+  }
+  assert.deepEqual(Object.keys(stuckRows(html)).sort(), ['headless', 'no-such-lane', 'not-a-lane']);
+  // A title that claims no lane leaves the row where it is written.
+  assert.match(row('unnamed'), /<div class="sub">Work coordinator 62&nbsp;· /);
+});
+
+test('map owners: a coordinator superseded but still open in T3 hands its row to the head of the lane it names', () => {
+  const others = [
+    ['mcp:open-old', "the owner's work coordinator 60"],
+    ['mcp:other-head', "the owner's other coordinator 5"],
+    ['mcp:other-open-old', "the owner's other coordinator 4"],
+    ['mcp:not-a-lane', 'Review brief for coordinator 41'],
+    ['mcp:child', "the owner's work coordinator 61 prep", { lineage: { parentThreadId: 'mcp:head' } }],
+  ];
+  const f = ownerLanes([
+    unit('superseded', 'in-flight', { owner: 'mcp:open-old' }),
+    unit('superseded-note', 'queued', { owner: 'mcp:open-old (gate queue held)' }),
+    unit('current', 'in-flight', { owner: 'mcp:head' }),
+    unit('foreign', 'queued', { owner: 'mcp:other-open-old' }),
+    unit('foreign-head', 'queued', { owner: 'mcp:other-head' }),
+    unit('titled-brief', 'in-flight', { owner: 'mcp:not-a-lane' }),
+    unit('child', 'in-flight', { owner: 'mcp:child' }),
+  ], 'mcp:head', others);
+  fs.mkdirSync(path.join(f.lanesDir, 'other'));
+  fs.writeFileSync(path.join(f.lanesDir, 'other/lane.json'), JSON.stringify({ priority: 2, coordinator_thread: 'mcp:other-head' }));
+  const html = stuckHtml(f);
+  const row = (id) => unitRowOf(html.slice(html.indexOf('<section ')), id).split(/(?=<div class="u" id=)/)[0];
+  for (const id of ['superseded', 'superseded-note', 'current']) assert.match(row(id), /<div class="sub">Work coordinator 62&nbsp;· /, id);
+  assert.match(row('superseded-note'), /<span class="kept">\(gate queue held\)<\/span>/);
+  for (const id of ['foreign', 'foreign-head']) assert.match(row(id), /<div class="sub">the owner&#39;s other coordinator 5&nbsp;· /, id);
+  // Not a lane's coordinator: a title naming no lane on the board, or a thread another thread started, keeps its row.
+  assert.match(row('titled-brief'), /<div class="sub">Review brief for /);
+  assert.match(row('child'), /<div class="sub">the owner&#39;s work coordinator <span class="kept">61 prep<\/span>/);
+
+  // With no open head on the lane, the open coordinator is still the best holder there is.
+  const headless = ownerLanes([unit('kept', 'in-flight', { owner: 'mcp:open-old' })], 'mcp:old-head', others);
+  assert.match(unitRowOf(stuckHtml(headless).slice(stuckHtml(headless).indexOf('<section ')), 'kept'), /<div class="sub">the owner&#39;s work coordinator /);
+});
+
+test('map owners: with no open coordinator on the lane, a retired one\'s row has no holder', () => {
+  const closed = stuckHtml(ownerLanes([unit('by-id', 'queued', { owner: 'mcp:old-head' }), unit('name-only', 'queued', { owner: 'coordinator 36' })], 'mcp:old-head'));
+  const none = stuckHtml(ownerLanes([unit('by-id', 'queued', { owner: 'mcp:old-head' })], ''));
+  for (const html of [closed, none]) assert.match(stuckRows(html)['by-id'], /no owner thread/);
+  assert.match(stuckRows(closed)['name-only'], /no owner thread/);
+  assert.match(closed, /no coordinator thread/);
+});
+
+test('map owners: without a thread list a retired reference is unknown, not missing', () => {
+  const f = ownerLanes([unit('labelled', 'queued', { owner: `coordinator 41 mcp:${RETIRED_ID}` }), unit('name-only', 'queued', { owner: 'coordinator 36' })]);
+  const html = renderMap(snapshot({ ...f, dbPath: path.join(f.lanesDir, 'missing.db'), now: NOW }));
+  assert.doesNotMatch(html, /no owner thread/);
+  assert.match(unitRowOf(html.slice(html.indexOf('<section ')), 'labelled'), /owner state unavailable/);
+});
+
+test('map proposal 6: no thread id reaches the page text, whatever form the owner takes; a gone one stays in the hover title', () => {
+  const html = stuckHtml(ownerLanes([
+    unit('by-id', 'queued', { owner: 'mcp:old-head' }),
+    unit('labelled', 'queued', { owner: `coordinator 41 mcp:${RETIRED_ID}` }),
+    unit('labelled-gone', 'in-flight', { owner: 'worker 4 mcp:aaaa1111-0000-4222-8333-444455556666' }),
+    unit('bare-gone', 'in-flight', { owner: 'bbbb2222-0000-4222-8333-444455556666' }),
+    unit('thread-gone', 'in-flight', { owner: 'thread:delegated-task:command%3Amcp%3Accc' }),
+  ]), new URLSearchParams('stuck=all'));
+  const text = html.slice(html.indexOf('</style>')).replace(/<[^>]+>/g, '');
+  assert.doesNotMatch(text, /mcp:|thread:|[0-9a-f]{8}-[0-9a-f]{4}-/);
+  assert.match(unitRowOf(html.slice(html.indexOf('<section ')), 'labelled-gone'), /<span class="peach" title="mcp:aaaa1111-0000-4222-8333-444455556666">no owner thread<\/span>/);
+});
+
+test('both pages: no thread id prints anywhere in the text, whichever field carries it; a lookalike stays', () => {
+  const rows = [
+    unit('second-id', 'in-flight', { owner: 'mcp:aaaa, mcp:bbbb' }),
+    unit('label-second', 'in-flight', { owner: 'coordinator 41 mcp:aaaa was mcp:bbbb' }),
+    unit('label-short', 'queued', { owner: 'coordinator 41 abcdef12' }),
+    unit('text-short', 'in-flight', { owner: 'worker abcdef12 on it' }),
+    unit('uuid-count', 'in-flight', { owner: 'mcp:head was aaaa1111-0000-4222-8333-444455556666 worker' }),
+    unit('in-a-note', 'queued', { owner: 'coordinator 36', note: 'see thread:delegated-task:xyz and abc12345-ff' }),
+    unit('lookalikes', 'queued', { owner: 'coordinator 36', note: 'landed 20261028 at a08d94e, fix-abcdef12 and feat/abc12345' }),
+  ];
+  const f = askFixture(['2026-10-10T09:00+08:00\twork\tAnswer mcp:cccc about abcdef34\tBlocks thread:dddd (mcp:eeee)\t'], rows);
+  const db = new DatabaseSync(f.dbPath);
+  db.prepare('INSERT INTO orchestration_v2_projection_threads VALUES (?, ?, ?, NULL, ?, NULL, NULL, ?)').run('mcp:titled', 'p1', 'Run abcdef56 for mcp:ffff', iso(1), '{}');
+  db.close();
+  const pages = { map: renderMap(snapshot({ ...f, now: NOW }), new URLSearchParams('stuck=all')), threads: render(snapshot({ ...f, autoupdate: updater(HEALTHY), now: NOW })) };
+  for (const [name, html] of Object.entries(pages)) {
+    const text = html.slice(html.indexOf('</style>')).replace(/<[^>]+>/g, '');
+    assert.doesNotMatch(text, /mcp:|thread:\S|[0-9a-f]{8}-[0-9a-f]{4}-|(?<![\w:/.-])(?=[0-9a-f-]*[a-f])[0-9a-f]{8,}/i, name);
+    assert.match(text, /Answer \[id\] about \[id\]/, name);
+  }
+  assert.match(pages.threads.replace(/<[^>]+>/g, ''), /Run \[id\] for \[id\]/);
+  const text = pages.map.replace(/<[^>]+>/g, '');
+  assert.match(text, /landed 20261028 at a08d94e, fix-abcdef12 and feat\/abc12345/);
+  assert.match(pages.map, /title="mcp:aaaa,?"|title="mcp:aaaa"/, 'the first id stays in the hover title');
+});
+
+test('map: the lane head\'s title and live state are separate items, so a number in the title never ends a line beside them', () => {
+  const html = stuckHtml(ownerLanes([unit('one', 'queued', { owner: 'coordinator 36' })]));
+  assert.match(html, /<small>[^]*?Work coordinator 62&nbsp;· <span class="kept"><span class="grey kept">idle 2 min<\/span><\/span>/);
+});
+
+test('map: auto-update alarms count as Needs you, once, as one row linking to the thread page', () => {
+  const f = ownerLanes([unit('one', 'queued', { owner: 'coordinator 36' })]);
+  const autoupdate = updater('alarm: daily: brew upgrade failed for x; run autoupdate-now in a terminal\nalarm: switch: no successful run for 5 d\ninfo: daily: Safari is available\n');
+  const html = renderMap(snapshot({ ...f, autoupdate, now: NOW }));
+  assert.match(html, /<title>\(2\) project map<\/title>/); // the waiting thread the base fixture seeds, plus the alarms
+  assert.match(html, /<h2 class="attn">Needs you · 2<\/h2>/);
+  assert.match(html, /<b class="id">Auto-update<\/b><span class="ask"><span class="kept">2 alarms<\/span>&nbsp;· <a class="link" href="\/">threads page<\/a><\/span>/);
+  assert.match(html, /status-strip[^]*?<a href="#needs-you">2 need you<\/a>/);
+  // The card with the full lines stays on the thread page.
+  assert.doesNotMatch(html, /brew upgrade failed/);
+  const one = renderMap(snapshot({ ...f, autoupdate: updater('alarm: switch: no successful run for 5 d\n'), now: NOW }));
+  assert.match(one, /<span class="kept">1 alarm<\/span>/);
+  assert.match(renderMap(snapshot({ ...f, autoupdate: updater(HEALTHY), now: NOW })), /<h2 class="attn">Needs you · 1<\/h2>/);
+});
+
+// A lanes fixture with no T3 asks or runs, and needs-myuser.tsv holding these lines; null leaves the file missing.
+function askFixture(lines, rows = [unit('calm', 'queued', { owner: 'coordinator 36' })]) {
+  const f = ownerLanes(rows);
+  const db = new DatabaseSync(f.dbPath);
+  db.exec('DELETE FROM orchestration_v2_projection_runtime_requests');
+  db.exec("UPDATE orchestration_v2_projection_runs SET status = 'completed'");
+  db.close();
+  const file = path.join(path.dirname(f.lanesDir), 'needs-myuser.tsv');
+  if (lines !== null) fs.writeFileSync(file, ASK_HEADER + lines.join('\n') + (lines.length ? '\n' : ''));
+  return { ...f, file };
+}
+const ASK_OPEN = '2026-10-10T09:00+08:00\twork\tPick the demo colour\tThe demo slips a day\t';
+const ASK_OLDER = '2026-10-09T09:00+08:00\twork\tRead the sample <draft>\t\t';
+const ASK_CLOSED = '2026-10-08T09:00+08:00\twork\tName the sample cat\tNothing\t2026-10-09T09:00+08:00';
+const stripOf = (html) => /<nav class="status-strip".*?<\/nav>/s.exec(html)[0];
+
+test('map strip: one ask reads "1 needs you"; none reads "no asks on file", never a claim about everything', () => {
+  const f = askFixture([], [unit('ask', 'needs-myuser', { owner: '', note: 'say yes' })]);
+  assert.match(renderMap(snapshot({ ...f, now: NOW })), /<a href="#needs-you">1 needs you<\/a>/);
+  const calm = renderMap(snapshot({ ...askFixture([]), now: NOW }));
+  assert.match(calm, /<span class="green">no asks on file<\/span>/);
+  assert.doesNotMatch(calm, /nothing needs you/);
+});
+
+test('map asks: open rows of the asks file count and list in Needs you, oldest first; closed rows do not', () => {
+  const html = renderMap(snapshot({ ...askFixture([ASK_OPEN, ASK_OLDER, ASK_CLOSED]), now: NOW }));
+  assert.match(html, /<title>\(2\) project map<\/title>/);
+  assert.match(html, /<h2 class="attn">Needs you · 2<\/h2>/);
+  assert.match(stripOf(html), /<a href="#needs-you">2 need you<\/a>/);
+  assert.doesNotMatch(html, /Name the sample cat/);
+  assert.ok(html.indexOf('Read the sample') < html.indexOf('Pick the demo colour'));
+  assert.match(html, /<div class="u needs todo"><span class="state peach">you<\/span><b class="id">Pick the demo colour<\/b><span class="ask">The demo slips a day&nbsp;· <span class="kept">asked [^<]+<\/span><span class="tag">&nbsp;·&nbsp;work<\/span><\/span><\/div>/);
+  assert.match(html, /Read the sample &lt;draft&gt;/);
+});
+
+test('threads page: the same asks count and list, so the two pages agree', () => {
+  const f = askFixture([ASK_OPEN, ASK_CLOSED]);
+  const html = render(snapshot({ ...f, autoupdate: updater(HEALTHY), now: NOW }));
+  assert.match(html, /<title>\(1\) agent board<\/title>/);
+  assert.match(html, /<div class="name">Pick the demo colour<\/div><div class="sub"><span class="state peach">you<\/span>&nbsp;· work&nbsp;· The demo slips a day&nbsp;· <span class="kept">asked /);
+  assert.doesNotMatch(html, /Name the sample cat|asks unknown/);
+  assert.match(render(snapshot({ ...askFixture(null), autoupdate: updater(HEALTHY), now: NOW })), /asks unknown/);
+});
+
+test('threads page: an ask\'s text, lane and impact are escaped, each one', () => {
+  const html = render(snapshot({ ...askFixture(['2026-10-10T09:00+08:00\t<i>lane</i>\tRead <b>this</b> & "that"\t<img src=x onerror=alert(1)>\t']), autoupdate: updater(HEALTHY), now: NOW }));
+  assert.match(html, /<div class="name">Read &lt;b&gt;this&lt;\/b&gt; &amp; &quot;that&quot;<\/div>/);
+  assert.match(html, /&lt;i&gt;lane&lt;\/i&gt;/);
+  assert.match(html, /&lt;img src=x/);
+  assert.doesNotMatch(html.slice(html.indexOf('</style>')), /<b>this|<i>lane|<img /);
+});
+
+test('map asks: a file the board cannot read is "asks unknown", whatever else needs him', () => {
+  const unknown = (f) => stripOf(renderMap(snapshot({ ...f, now: NOW })));
+  const missing = askFixture(null);
+  assert.match(unknown(missing), /<span class="yellow kept" title="needs-myuser.tsv: ENOENT">asks unknown<\/span>/);
+  const directory = askFixture(null);
+  fs.mkdirSync(directory.file);
+  assert.match(unknown(directory), /asks unknown/);
+  const badHeader = askFixture(null);
+  fs.writeFileSync(badHeader.file, 'when\tlane\task\n2026-10-10T09:00+08:00\twork\tPick\n');
+  assert.match(unknown(badHeader), /title="needs-myuser.tsv: no asked_at, impact_if_it_waits, closed_at column">asks unknown/);
+  const busy = askFixture(null, [unit('ask', 'needs-myuser', { owner: '', note: 'say yes' })]);
+  assert.match(unknown(busy), /1 needs you<\/a>[^]*asks unknown/);
+  for (const f of [missing, directory, badHeader, busy]) assert.doesNotMatch(renderMap(snapshot({ ...f, now: NOW })), /no asks on file/);
+});
+
+test('map asks: an unreadable row keeps the good ones and marks the list incomplete', () => {
+  const html = renderMap(snapshot({ ...askFixture([ASK_OPEN, 'a row with no tabs', '2026-10-10T09:00+08:00\twork\t\tNo ask written\t']), now: NOW }));
+  assert.match(html, /Pick the demo colour/);
+  assert.match(stripOf(html), /1 needs you<\/a>[^]*title="needs-myuser.tsv: 2 unreadable rows">asks incomplete/);
+  const none = renderMap(snapshot({ ...askFixture(['a row with no tabs']), now: NOW }));
+  assert.match(stripOf(none), /asks incomplete/);
+  assert.doesNotMatch(none, /no asks on file/);
 });

@@ -5,64 +5,82 @@ Moved out of `files/AGENTS.md` on 2026-10-14 so it is read on demand instead of 
 
 ## Default routing
 
-New threads, conversations, workers, reviewers, coordinators and orchestrators use Codex by default.
-This follows the 20 October authorization to use Codex usage as much as possible.
+New threads, conversations, workers, reviewers, coordinators and orchestrators use Claude Opus 5.5 by default, inside and outside the lanes, with no end date and including while Codex has quota.
+This follows the owner's word of 3 November 2026: "also let's stick to opus by default" at 01:13 SGT for the lanes, then "Stick to opus outside the lanes: yes" at 02:23 SGT.
+It replaces the 20 October Codex-first default.
 Running threads keep their model; these defaults do not authorize changing an active thread mid-task.
 
 | Work | Provider and model | Reasoning | Fast |
 |------|--------------------|-----------|------|
-| Judgment, coordination, orchestration, architecture, debugging, reviews and substantial changes | Codex `gpt-6-astra` | High | Off |
-| Routine implementation with explicit acceptance checks | Codex `gpt-6.1-sol` | High | Off |
-| Mechanical scanning, formatting and collection | Codex `gpt-6.1-sol` | Low | Off |
+| Review, verification, judging, open-ended architecture, difficult root-cause debugging and work with material unresolved uncertainty | Claude Opus 5.5 | Extra High (`xhigh`) | Off |
+| Coordination, orchestration, exploration and clearly scoped implementation with explicit acceptance checks | Claude Opus 5.5 | High | Off |
+| Mechanical scanning, formatting and collection | Claude Opus 5.5 | Low | Off |
 
+`xhigh` is the hard cap and `max` is banned.
+Keep Fast off unless explicitly requested.
 Use T3's live `orchestrator_capabilities` catalog to confirm model availability.
-Delegate directly to the Codex provider; a Claude wrapper is not required.
+Use native subagents for same-provider work that finishes in the parent's turn, and T3 `delegate_task` for another provider, a writer in its own worktree or background work.
 Use separate worktrees for concurrent implementation and fresh contexts for independent reviews.
-Keep reasoning at High or below on Codex and Fast off unless explicitly requested.
 A longer task needs more steps, not a higher effort setting.
-If routine work exposes harder judgment or misses acceptance checks, move the next committed unit to Astra High.
-If Astra alone is unavailable, try Sol High before falling back to Claude.
+If routine work exposes harder judgment or misses acceptance checks, move the next committed unit to Extra High.
 A timeout gets one retry after inspecting partial results; it is not evidence of a quota limit.
 Never enable paid API access to bypass an exhausted allowance.
 
-Claude is the fallback when Codex is usage-limited or cannot do the job.
-Record the concrete capability gap when using Claude without a quota limit.
 Keep the same acceptance checks, independent review and evidence requirements on either provider.
 Do not change app settings, scheduled tasks or live threads merely to make their stored selections match this document.
+
+### Codex on a Claude limit
+
+A confirmed Claude usage limit moves current threads to Codex without asking, and new delegations start on Codex while Claude is limited.
+This is the owner's order of 29 October 2026, 02:37 SGT: "you might run out of claude usage. switch to gpt if that happens automatically without me prompting you and cascade that to every other thread please".
+The mechanics are under [T3 Code fallback routing](#t3-code-fallback-routing).
+
+| Work | Provider and model | Reasoning | Fast |
+|------|--------------------|-----------|------|
+| Judgment, coordination, orchestration, architecture, exploration, debugging, reviews and substantial changes | Codex `gpt-6-astra` | High | Off |
+| Routine implementation with explicit acceptance checks | Codex `gpt-6.1-sol` | High | Off |
+| Mechanical scanning, formatting and collection | Codex `gpt-6.1-sol` | Low | Off |
+
+Keep reasoning at High or below on Codex and Fast off unless explicitly requested.
+If Astra alone is unavailable, use Sol High.
+Delegate directly to the Codex provider; a Claude wrapper is not required.
+
+Codex is also used without a Claude limit in two cases.
+Screen checks go through `codex-computer-use`, because that is a capability route and not a default model; the browser rules below are unchanged.
+A task that names Codex, such as a `codex-review` second opinion, or that Opus cannot do, runs there; record the task exception or the concrete capability gap.
 
 ## Approved specialist routing
 
 The eight audit recommendations were accepted on 20 October.
-They replace the older provider-specific defaults for new work.
+Their provider choices now follow the Opus default; the rest of each recommendation stands.
 
 - User-facing work is judged by the artifact and its acceptance checks, not a provider taste score.
-- Design and design reviews use Astra High with the same design tools and visual checks; Fable is a capability fallback.
-- Writing uses Codex and unslop; Opus is a fallback when Codex cannot meet the writing bar.
+- Design and design reviews use Opus at the role's effort with the same design tools and visual checks; Fable is a capability fallback.
+- Writing uses Opus and unslop.
 - The reader trial takes no new assignments; retain its measurements for the planned review.
-- Skill roles use Sol Low for mechanical collection, Sol High for routine implementation and Astra High for judgment.
-  Delegate directly without a Claude wrapper and respect lane concurrency limits.
-- Reviews use fresh Codex contexts by default.
-  Use Claude for an explicit task-level exception, demonstrated capability gap or confirmed Codex quota limit.
+- Skill roles use Opus Low for mechanical collection, Opus High for routine implementation and exploration, and Opus Extra High for review, judging and open-ended design.
+  Respect lane concurrency limits.
+- Reviews use fresh Opus Extra High contexts by default.
+  Use Codex for an explicit task-level exception, demonstrated capability gap or confirmed Claude usage limit.
   Independent contexts do not constitute cross-family evidence.
-- The exact OPINIONS provider paragraph in `pstack-audit/preference-wording-draft.md` was finalized and applied in this worktree.
-  VOICE and the adjacent tried-and-dropped list are unchanged.
+- The OPINIONS provider paragraph still states the 20 October Codex default.
+  the owner's 3 November word overrides it until he finalizes the update, and VOICE and OPINIONS changes stay held for him.
   Do not edit either live preference file as part of this routing unit.
 - The fallback watcher stays disabled until restoration and queued-message recovery have been redesigned and verified.
-  No automatic provider switching is enabled by these instructions.
+  It switches nothing; agents make the moves under [T3 Code fallback routing](#t3-code-fallback-routing).
 
 The shared skill adapter is `files/.claude/skills/arena/references/model-families.md`.
 It maps the roles to available native, T3 or CLI delegation without assuming a Claude parent.
 
-## Claude fallback reasoning effort
+## Claude reasoning effort
 
 Use **High** for routine coordination and clearly scoped implementation with explicit acceptance checks.
 Use **Extra High** (`xhigh`) for open-ended architecture, difficult root-cause debugging, and work with material unresolved uncertainty.
 Opus review, verification and judge stages use Extra High.
 For non-Opus judgment stages, retain the model-specific setting; use High when no more specific rule applies.
-A skill's explicit per-stage effort applies only after the approved routing selects that provider; it does not create a Claude exception.
+A skill's explicit per-stage effort stays under the `xhigh` cap and does not create a provider exception.
 Escalate a High task when its output misses the acceptance bar or exposes harder judgment; a long task alone is not a reason to increase effort.
-Keep mechanical collection at Low on its assigned reader or Codex model, and keep Fast off unless requested.
-These effort rules apply only after the default routing selects a Claude fallback.
+Keep mechanical collection at Low, and keep Fast off unless requested.
 Independent review, reproduction, evidence and merge gates stay required at either effort.
 
 This guideline follows the [17 October matched replay](claude-process/opus-effort-replay-2026-10-17.md), which found equal aggregate blind scores with less elapsed time and fewer provider output tokens at High.
@@ -75,16 +93,16 @@ Do not interrupt uncommitted work or change existing threads merely to match a n
 ## T3 Code fallback routing
 
 Commit work in progress before a provider or model switch, and never delete a dirty worktree.
-On a confirmed Codex usage limit, continue on Claude Opus 5.5 without asking, using the role-specific fallback effort above.
-If Codex cannot perform the task, explain the capability gap and use Claude for that task.
+On a confirmed Codex usage limit, a thread on Codex continues on Claude Opus 5.5 without asking, using the role-specific effort above.
+If Codex cannot perform a task it was given, explain the capability gap and use Claude for that task.
 Preserve the workspace, task and completed work, and inspect partial results before retrying an interrupted action.
 Use T3's catalog and `t3_thread_configure` with the intended provider, model, reasoning effort and standard service tier when a switch is needed.
 If a provider limit prevents the agent from running at all, T3 or the human must switch the thread before it can continue.
 
-On a Claude usage limit, return to an available Codex model from the default table without asking.
+On a Claude usage limit, move to an available Codex model from the [Claude limit table](#codex-on-a-claude-limit) without asking, with Fast off, preserving work and held messages.
 Do not cycle through models sharing an exhausted provider allowance.
 If both providers are limited, report the limit instead of retrying in a loop or enabling paid API access.
-New tasks use Codex once it is available; do not interrupt an active fallback task merely to switch providers.
+New tasks use Opus once Claude is available again; do not interrupt an active fallback task merely to switch providers.
 Clear the browser fallback state as soon as Codex is available, independently of which provider finishes an active task.
 
 ### Codex quota fallback for browser work
@@ -163,7 +181,7 @@ All mutation and token tests use local fixtures; none acquire real credentials o
 
 ## Reader trial record (Thu 15 Oct to Thu 22 Oct 2026, 16:00 SGT)
 
-The trial is closed to new assignments under the approved Sol Low default.
+The trial is closed to new assignments; mechanical collection uses the Opus Low default.
 Retain the measurements for its planned review.
 The following records the earlier trial instructions; do not launch readers from it.
 

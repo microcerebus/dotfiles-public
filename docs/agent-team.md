@@ -15,18 +15,18 @@ So each product repo gets a verification skill and a Feature Map before it gets 
 | Role | Team analogy | Lives in | Owns | Never does | Model |
 | --- | --- | --- | --- | --- | --- |
 | the owner | Product owner | Phone, T3 | Goals, irreversible calls, taste | Babysitting runs | - |
-| Orchestrator | Engineering manager | One pinned T3 thread, fresh each day | `board.md`, routing between lanes, the morning brief | Lane work, code | Codex `gpt-6-astra` High |
-| Heartbeat | On-call | A fresh scheduled thread every hour | Usage, context and stall checks, `log.md` | Long work, messages without a reason | Codex `gpt-6.1-sol` Low for collection; Astra High for judgment |
-| Lane coordinator | Tech lead | One T3 thread per lane, rotated at 200k tokens | Briefs, the lane's units, ledger and decisions | Writing code | Codex `gpt-6-astra` High |
-| Worker | Engineer | One thread and one worktree per unit | One PR, proven with the verification skill | Merging its own PR, touching other units | Codex `gpt-6.1-sol` High for routine implementation; Astra High for substantial changes |
-| Verifier | Reviewer and QA | A fresh thread per review round, read-only | One verdict row in the ledger | Fixing what it reviews | Codex `gpt-6-astra` High in a fresh context |
-| Retro | Staff engineer | A fresh scheduled thread each day | Proposals that turn repeated mistakes into rules, checks or skills | Applying them live | Codex `gpt-6-astra` High |
+| Orchestrator | Engineering manager | One T3 thread, replaced at each handoff, not daily | `board.md`, routing between lanes, the morning brief (not running; all 3 tasks are disabled) | Lane work, code | Claude Opus 5.5 High |
+| Heartbeat | On-call | Not running; both hourly T3 heartbeat tasks are disabled | Context and stall checks, `log.md` | Long work, messages without a reason | Claude Opus 5.5 Low for collection; High for judgment |
+| Lane coordinator | Tech lead | One T3 thread per lane, rotated at 200k tokens | Briefs, the lane's units, ledger and decisions | Writing code | Claude Opus 5.5 High |
+| Worker | Engineer | One thread and one worktree per unit | One PR, proven with the verification skill | Merging its own PR, touching other units | Claude Opus 5.5 High for routine implementation; Extra High for open-ended or uncertain changes |
+| Verifier | Reviewer and QA | A fresh thread per review round, read-only | One verdict row in the ledger | Fixing what it reviews | Claude Opus 5.5 Extra High in a fresh context |
+| Retro | Staff engineer | Not running; no enabled task | Proposals that turn repeated mistakes into rules, checks or skills | Applying them live | Claude Opus 5.5 High |
 
 Subagents inside any role do mechanical reading (logs, CI output, transcripts) at low effort and return summaries.
 
 Use the role and uncertainty rules in [model routing](model-routing.md#default-routing) when selecting effort.
-New work follows the Codex-first defaults in `model-routing.md`, with Fast off.
-Running threads keep their model; Claude fallback and approved specialist routing are described in that guide.
+New work follows the Opus defaults in `model-routing.md`, with Fast off.
+Running threads keep their model; the Codex fallback on a Claude limit and approved specialist routing are described in that guide.
 The automation table below records defaults for new launches.
 Apply role-specific effort at launch or a committed task boundary; this documentation does not reconfigure existing schedules or running threads.
 
@@ -47,7 +47,7 @@ Apply role-specific effort at launch or a committed task boundary; this document
   CI green is an input to a verdict, not a verdict.
   A new head SHA voids the row, except after a clean update to main: the verdict carries over when `git range-diff` shows the PR's own commits unchanged and CI passes on the new head.
   After a conflicted update, only the conflict resolution gets a quick fresh review.
-- **Review scales with risk**: Codex Astra High reviews in a fresh context.
+- **Review scales with risk**: Opus Extra High reviews in a fresh context.
   Risk determines review scope and verification depth; provider exceptions follow `model-routing.md`.
   At most two review rounds per PR, then the coordinator decides.
   A PR open for 8 hours of active work goes on the board as a stall.
@@ -74,10 +74,13 @@ Rule of thumb from pstack: when an agent does the same thing by hand twice, have
   Ordinary plan reviews keep the review route.
   Batch 2's routes are pushed and applied; see docs/pstack-audit/audit.md#rollout-status.
 - **Decision log**: every lane appends to `decisions.tsv` (show-me-your-work); the coordinator reads it instead of transcripts.
-- **Daily retro**: a scheduled fresh thread runs `recall` over the last day, then `correct` (repeated mistakes into checks) and pstack `reflect` (skill improvements).
-  It writes proposals to a dotfiles worktree branch and a short list on the board; the owner approves before anything goes live.
-- **Daily verification upkeep**: `maintain-verification-skill` per product repo.
-- **Morning brief**: what landed, what is blocked, everything that needs the owner in one list.
+- **Retro**: not running; no enabled task or launchd job runs it.
+  The design is a fresh scheduled thread each day that runs `recall` over the last day, then `correct` (repeated mistakes into checks) and pstack `reflect` (skill improvements).
+  It would write proposals to a dotfiles worktree branch and a short list on the board; the owner approves before anything goes live.
+- **Verification upkeep**: not running; no enabled task or launchd job runs it.
+  The design is a daily `maintain-verification-skill` run per product repo.
+- **Morning brief**: not running; all 3 morning brief tasks are disabled, and the last one ran on 12 October 2026.
+  The design is what landed, what is blocked, everything that needs the owner in one list.
 - **Weekly**: the VOICE and OPINIONS review and a skill audit (zero-use skills get deleted).
 
 ## Onboarding and handoff
@@ -99,19 +102,26 @@ Rule of thumb from pstack: when an agent does the same thing by hand twice, have
   It puts the threads waiting on him first, then running threads with their context use, flagging any run with no log write for 10 minutes.
   It is read-only and has no hooks; it was chosen over agenttrail on 2026-10-11 (`docs/agent-observability/proposal.html`).
   Agents prove a change to it with the repo-local `verify-agent-board` skill, which runs a second board from their worktree on a spare port and never touches the live one.
-- System: the heartbeat checks the 5-hour and weekly usage windows and pauses lanes at 85% of the window or 40% of the week.
+- System: no enabled heartbeat checks the usage windows or pauses lanes at a usage threshold.
+  The T3 scheduled task "Claude-limit watchdog tick" runs every 5 minutes on Codex `gpt-6-astra`.
+  Each tick lists threads whose latest run failed on a Claude usage limit: the orchestrators and coordinators named in `lane.json`, and any other thread that failed in the last 12 hours.
+  The watchdog moves each listed thread to the Codex model for its role in [model routing](model-routing.md#codex-on-a-claude-limit), with Fast off, and sends it one continue message.
+  This carries out the owner's order of 29 October 2026, 02:37 SGT (dotfiles standing order 9): on a confirmed Claude usage limit, lane threads move to Codex without asking.
+  The T3 scheduled task "Codex-limit watchdog tick" runs every 30 minutes on Claude Opus 5.5, lists the same kinds of threads when their latest run failed on a Codex usage limit, moves them to Claude Opus 5.5 with Fast off, and sends each one continue message.
+  Both watchdogs' briefs and their detector script live in the orchestrator's scratch folder, not in this repo.
 
 ## Automation
 
-All recurring work runs as T3 scheduled tasks that open a fresh thread, so the orchestrator's context stays small.
+Recurring work runs as T3 scheduled tasks that open a fresh thread, so the orchestrator's context stays small.
+The exceptions are the orchestrator's 30-minute maintenance task, the two watchdogs and the monthly Mac security audit, which are bound to their own threads.
 
 | Job | When | Model |
 | --- | --- | --- |
-| Heartbeat | Hourly | Codex `gpt-6.1-sol` Low for collection; Astra High for judgment |
-| Morning brief | 09:45 SGT | Codex `gpt-6-astra` High |
-| Retro | Daily, early morning | Codex `gpt-6-astra` High |
-| Verification upkeep | Daily per product repo | Codex `gpt-6-astra` High |
-| Orchestrator rotation | Daily, before the morning brief | Codex `gpt-6-astra` High |
+| Heartbeat | Not running; both hourly T3 heartbeat tasks are disabled | Claude Opus 5.5 Low for collection; High for judgment |
+| Morning brief | Not running; all 3 tasks are disabled | Claude Opus 5.5 High |
+| Retro | Not running; no enabled task | Claude Opus 5.5 High |
+| Verification upkeep | Not running; no enabled task | Claude Opus 5.5 Extra High |
+| Orchestrator rotation | Not running; no enabled task. A new orchestrator thread takes over at each handoff, and only its own 30-minute maintenance task stays enabled | Claude Opus 5.5 High |
 
 ## Lane layout
 

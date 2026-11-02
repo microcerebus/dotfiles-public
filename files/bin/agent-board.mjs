@@ -108,8 +108,9 @@ function lacking(db, reads) {
   return gone.length ? gone.join('; ') : null;
 }
 
-// rows: the open threads, or null when there is no thread list. unavailable: one line per part of the page T3 no longer
-// gives the board, with why.
+// rows: the open threads, or null when there is no thread list. closed: the rest, by id, title and parent, so an owner
+// pointing at a retired thread can be told from a wrong id. unavailable: one line per part of the page T3 no longer gives
+// the board, with why.
 export function readThreads(dbPath) {
   let db;
   try {
@@ -132,7 +133,11 @@ export function readThreads(dbPath) {
       ${parts.map((p) => p.join ?? '').join('\n  ')}
       WHERE t.deleted_at IS NULL AND t.archived_at IS NULL AND json_extract(t.payload_json, '$.settledAt') IS NULL
       ORDER BY t.updated_at DESC`).all();
-    return { rows, unavailable };
+    const closed = db.prepare(`
+      SELECT thread_id AS id, title, json_extract(payload_json, '$.lineage.parentThreadId') AS parentId
+      FROM orchestration_v2_projection_threads
+      WHERE deleted_at IS NOT NULL OR archived_at IS NOT NULL OR json_extract(payload_json, '$.settledAt') IS NOT NULL`).all();
+    return { rows, closed, unavailable };
   } catch (error) {
     return { rows: null, unavailable: [`T3 threads unavailable: ${error.message}`] };
   } finally {
@@ -202,9 +207,10 @@ export function readUpdates(script = AUTOUPDATE) {
   return updates;
 }
 
-// autoupdate: null skips the updater, which only the thread page shows. prs: where PR state comes from (the gh cache).
-export function snapshot({ dbPath = T3_DB, logsDir = CLAUDE_PROJECTS, lanesDir = LANES, now = Date.now(), autoupdate = AUTOUPDATE, prs = cachedPrs } = {}) {
-  const { rows: read, unavailable } = readThreads(dbPath);
+// autoupdate: null skips the updater. prs: where PR state comes from (the gh cache). asksFile: the owner's open asks, beside
+// the lanes directory.
+export function snapshot({ dbPath = T3_DB, logsDir = CLAUDE_PROJECTS, lanesDir = LANES, now = Date.now(), autoupdate = AUTOUPDATE, prs = cachedPrs, asksFile = path.join(path.dirname(lanesDir), ASKS_FILE) } = {}) {
+  const { rows: read, closed, unavailable } = readThreads(dbPath);
   const rows = read ?? [];
   const logs = indexLogs(logsDir);
   const titles = new Map(rows.map((r) => [r.id, r.title]));
@@ -247,7 +253,9 @@ export function snapshot({ dbPath = T3_DB, logsDir = CLAUDE_PROJECTS, lanesDir =
     idle: shown.filter((t) => t.state === 'idle'),
     // Unit owners and lane coordinators may be any open thread, including the idle children hidden above.
     threads: new Map(threads.map((t) => [t.id, t])),
+    closed: new Map((closed ?? []).map((t) => [t.id, t])),
     lanes: readLanes(lanesDir, now, prs),
+    asks: readAsks(asksFile),
   };
 }
 
@@ -267,6 +275,14 @@ const UNIT_ID = /^[a-z0-9][a-z0-9-]*$/;
 // as 20261028 stays as written.
 const BARE_REF = '(?=[0-9a-f-]*[a-f-])[0-9a-f]{8}[0-9a-f-]*';
 const THREAD_REF = new RegExp(`^(?:(?:mcp|thread):[^\\s,;]+|${BARE_REF})(?=[\\s,;]|$)`, 'i');
+// A full reference anywhere in the text: a scheme id or a whole uuid, on its own word.
+const FULL_REF = new RegExp('(?<![\\w:/.-])(?:(?:mcp|thread):[^\\s,;]+|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?=[\\s,;]|$)', 'i');
+// A numbered coordinator, the way lanes write and title them: "coordinator 41", "coordinator23", "coordinator (14)".
+const COORDINATOR_LABEL = /^(?:workflow )?coordinator[\s(]*\d+(?!\w)\)?/i;
+const COORDINATOR_TITLE = /\bcoordinator[\s(]*\d/i;
+// The lane a coordinator's title names, the ways lanes have titled them: "the owner's dotfiles coordinator 62",
+// "Job tracker: coordinator (14)". Empty when it names none.
+const titledLane = (title) => /^(.*?)\bcoordinator[\s(]*\d/i.exec(title)?.[1].replace(/^myuser['’]s\s+/i, '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') ?? '';
 const SHORT_REF = new RegExp(`^(?:(?:mcp|thread):[0-9a-f]{8}[0-9a-f-]*|${BARE_REF})$`, 'i');
 const SGT_MS = 8 * 3600_000; // Singapore has no daylight saving
 
@@ -454,6 +470,32 @@ function readLane(dir, name, now) {
     lane.reviews = parsed.reviews;
   }
   return lane;
+}
+
+// the owner's open asks, one row each in needs-myuser.tsv beside the lanes directory: asked_at, lane, ask, impact_if_it_waits,
+// closed_at. Only an orchestrator writes it, and a row is open while closed_at is empty. rows: null when the file cannot
+// be read, so a page says "asks unknown" and never "no asks on file". skipped: rows it could not make sense of, which
+// make the list incomplete, so they get the same care.
+const ASKS_FILE = 'needs-myuser.tsv';
+const ASK_COLUMNS = ['asked_at', 'lane', 'ask', 'impact_if_it_waits', 'closed_at'];
+export function readAsks(file) {
+  let text;
+  try {
+    text = fs.readFileSync(file, 'utf8');
+  } catch (error) {
+    return { rows: null, skipped: 0, error: `${ASKS_FILE}: ${error.code ?? error.message}` };
+  }
+  const { header, rows } = readTsv(text);
+  const missing = ASK_COLUMNS.filter((name) => !header.includes(name));
+  if (missing.length) return { rows: null, skipped: 0, error: `${ASKS_FILE}: no ${missing.join(', ')} column` };
+  const asks = [];
+  let skipped = 0;
+  for (const { fields } of rows) {
+    const get = (name) => fields[header.indexOf(name)];
+    if (fields.length !== header.length || !get('ask')) skipped++;
+    else if (!get('closed_at')) asks.push({ at: Date.parse(get('asked_at')) || null, lane: get('lane'), ask: get('ask'), impact: get('impact_if_it_waits') });
+  }
+  return { rows: asks, skipped, error: skipped ? `${ASKS_FILE}: ${skipped} unreadable ${skipped === 1 ? 'row' : 'rows'}` : null };
 }
 
 // Lanes in priority order, a lane without a readable lane.json last. Each unit's after list is resolved across lanes
@@ -869,11 +911,16 @@ function when(at, now) {
 // ends a line on a bare "1". A version's "1 is" in "27.0.1 is" is no count. Ordinary spaces, so copied text still
 // reads "1 check". The board's own short count labels are whole already: a fold link ("3 more stuck") is a kept span,
 // a status strip count a box and a milestone's "3 of 5 done" a nowrap span.
+// A thread id means nothing to a reader, so no text on either page carries one, whichever field or file it came from:
+// a scheme id, or eight or more hex characters with a letter among them, on its own word. It reads [id]; the hover
+// title keeps a row's lost reference. A date, a shorter commit, or an id inside a longer name such as a branch stays.
+const THREAD_ID = /(?<![\w:/.-])(?:(?:mcp|thread):[^\s,;<)]+|(?=[0-9a-f-]*[a-f])[0-9a-f]{8}[0-9a-f-]*)(?![\w-])/gi;
+const maskIds = (text) => String(text).replace(THREAD_ID, '[id]');
 const counted = (text) => String(text).split(/((?<![\w.])\d+ [a-z]+)/i)
   .map((part, i) => (i % 2 ? `<span class="kept">${escape(part)}</span>` : escape(part))).join('');
 // Free text as prose: a parenthetical of up to 24 characters, such as "(opus high)", is kept whole, so a phone never
 // leaves "high)" alone on a line. A longer one wraps like the words around it. Counts outside it stay with their word.
-const prose = (text) => String(text).split(/(\([^()]{1,22}\))/)
+const prose = (text) => maskIds(text).split(/(\([^()]{1,22}\))/)
   .map((part, i) => (i % 2 ? `<span class="kept">${escape(part)}</span>` : counted(part))).join('');
 // Text in a colour, as prose. A kept span is one phrase already, so it needs no spans of its own.
 const tone = (cls, text) => `<span class="${cls}">${/\bkept\b/.test(cls) ? escape(text) : prose(text)}</span>`;
@@ -905,15 +952,17 @@ function pageHeader(page, now) {
     + `refreshes every ${REFRESH_S}s</small></header>`;
 }
 
+// Every page leaves through here, so the last step masks ids in all text between tags; attributes and links keep theirs.
+// prose masks first, because its kept spans can split an id across two runs of text.
 function page(title, attention, body, wide = false) {
   return `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1"><meta http-equiv="refresh" content="${REFRESH_S}">
 <title>${attention ? `(${attention}) ` : ''}${title}</title><style>${STYLE}</style></head><body><main${wide ? ' class="wide"' : ''}>
-${body}</main></body></html>`;
+${body.replace(/[^<>]+(?=<|$)/g, maskIds)}</main></body></html>`;
 }
 
-// Needs you, on both pages: pending T3 input cards and approvals, plus every lane unit that is the owner's turn. A unit
-// whose owner thread is itself waiting on him takes that thread's place, so nothing is listed twice. Oldest first.
+// Needs you, on both pages: pending T3 input cards and approvals, his open asks, plus every lane unit that is the owner's
+// turn. A unit whose owner thread is itself waiting on him takes that thread's place, so nothing is listed twice. Oldest first.
 // Only his actions are listed: a done unit asks for nothing, a stale row is the lane owner's cleanup, and a review
 // ledger blocker counts only when he is its subject (ownerActs), once per PR however many units share the PR.
 function needsYou(snap) {
@@ -936,6 +985,7 @@ function needsYou(snap) {
     }),
     ...snap.needs.filter((t) => !owned.has(t.id)).map((t) => ({ thread: t, at: t.askedAt })),
     ...blocked,
+    ...(snap.asks.rows ?? []).map((ask) => ({ ask, at: ask.at })),
   ];
   return items.sort((a, b) => (a.at ?? Infinity) - (b.at ?? Infinity));
 }
@@ -964,6 +1014,14 @@ function unitWait(item, now) {
   return item.unit.sinceAt ? stamp('since', item.unit.sinceAt, now) : null;
 }
 
+// What the asks file could not tell the page, in a few words; the reason stays in the hover title and the board's log.
+const asksGap = ({ asks }) => (asks.error ? `<span class="yellow kept" title="${escape(asks.error)}">${asks.rows ? 'asks incomplete' : 'asks unknown'}</span>` : '');
+const askMeta = ({ ask }, now) => [ask.impact && prose(ask.impact), ask.at && stamp('asked', ask.at, now)].filter(Boolean);
+
+function askCard(item, snap) {
+  return `<div class="t needs"><div class="name">${prose(item.ask.ask)}</div><div class="sub"><span class="state peach">you</span>${DOT}${dots([...item.ask.lane ? [prose(item.ask.lane)] : [], ...askMeta(item, snap.now)])}</div></div>`;
+}
+
 function unitCard(item, snap) {
   const u = item.unit;
   const meta = [...[u.lane, item.blocker ?? u.note, item.thread?.title].filter(Boolean).map(prose), unitWait(item, snap.now)].filter(Boolean);
@@ -980,8 +1038,10 @@ export function render(snap) {
       + (list.length > limit ? `<p class="more">+${list.length - limit} more</p>` : '')
     : '');
   const needs = needsYou(snap);
+  const gap = asksGap(snap);
   const threads = (needs.length ? `<h2 class="attn">Needs you · ${needs.length}</h2>`
-      + needs.map((item) => (item.unit ? unitCard(item, snap) : card(item.thread, snap.now))).join('') : '')
+      + needs.map((item) => (item.ask ? askCard(item, snap) : item.unit ? unitCard(item, snap) : card(item.thread, snap.now))).join('') : '')
+    + (gap ? `<p class="more">${gap}</p>` : '')
     + section('Running', snap.running) + section('Idle', snap.idle, '', IDLE_SHOWN);
   const alarmed = snap.updates.alarms.length > 0;
   const updates = updatesSection(snap.updates);
@@ -1025,21 +1085,51 @@ function live(t, now, brief = false) {
   return tone('grey kept', `idle${quiet ? ` ${quiet}` : ''}`);
 }
 
-// Who holds a unit. A thread reference resolves to the open thread with that id, or to the one open thread whose id
-// starts with it (scheme included, at least 8 hex characters); none, or more than one, is no owner thread. Without a
-// thread list a reference is unknown, never missing.
+// The thread a reference names in a list: the one with that id, or the one whose id starts with it (scheme included, at
+// least 8 hex characters). None, or more than one, is null.
+function findThread(ref, threads) {
+  const exact = threads.get(ref);
+  if (exact || !SHORT_REF.test(ref)) return exact ?? null;
+  const matches = [...threads.values()].filter((t) => (ref.includes(':') ? t.id : t.id.replace(/^[a-z]+:/i, '')).toLowerCase().startsWith(ref.toLowerCase()));
+  return matches.length === 1 ? matches[0] : null;
+}
+
+// An owner's text around its thread reference. label: what comes before it ("coordinator 41 mcp:..."). A reference may
+// sit anywhere in the text only when it is a full one; a short id counts only at the start.
+function parseOwner(owner) {
+  const found = THREAD_REF.exec(owner) ?? FULL_REF.exec(owner);
+  if (found) return { label: owner.slice(0, found.index).trim(), ref: found[0], rest: owner.slice(found.index + found[0].length).replace(/^[\s,;]+/, '') };
+  const named = COORDINATOR_LABEL.exec(owner);
+  return { label: named?.[0] ?? '', ref: null, rest: named ? owner.slice(named[0].length).trim() : '' };
+}
+
+// Who holds a unit. A reference to an open thread is that thread. A coordinator hands over its rows when it hands over
+// its lane, so a retired one's row is held by its lane's open head from lane.json: the owner is only a coordinator's
+// name, or points at a closed thread titled as one that no thread started. A label beside a reference never outvotes
+// it. That lane is the one the title names, which may not be the lane the row sits in; a title that names none leaves
+// the row's own. A retired worker, an unknown id, a
+// title naming a lane the board does not have, or a lane with no open head is no owner thread. Without a thread list a
+// reference is unknown, never missing.
+const headOf = (name, snap) => {
+  const lane = snap.lanes.lanes?.find((l) => l.name === name);
+  return lane?.head ? snap.threads.get(lane.head) : undefined;
+};
+
 function ownerOf(u, snap) {
   if (!u.owner) return { kind: 'none' };
-  const ref = THREAD_REF.exec(u.owner)?.[0];
-  if (!ref) return { kind: 'text' };
-  const rest = u.owner.slice(ref.length).replace(/^[\s,;]+/, '');
-  const exact = snap.threads.get(ref);
-  if (exact) return { kind: 'thread', thread: exact, rest };
-  if (!snap.t3.threads) return { kind: 'unavailable', rest };
-  const matches = SHORT_REF.test(ref)
-    ? [...snap.threads.values()].filter((t) => (ref.includes(':') ? t.id : t.id.replace(/^[a-z]+:/i, '')).toLowerCase().startsWith(ref.toLowerCase()))
-    : [];
-  return matches.length === 1 ? { kind: 'thread', thread: matches[0], rest } : { kind: 'missing', rest };
+  const { label, ref, rest } = parseOwner(u.owner);
+  const named = COORDINATOR_LABEL.test(label);
+  if (!ref && !named) return { kind: 'text' };
+  const open = ref && findThread(ref, snap.threads);
+  // A superseded coordinator can stay open in T3, so an open one holds a row only if its lane has no newer open head.
+  if (open) return { kind: 'thread', thread: (!open.parentTitle && COORDINATOR_TITLE.test(open.title) && headOf(titledLane(open.title) || u.lane, snap)) || open, rest };
+  const left = [label, rest].filter(Boolean).join(' ');
+  if (!snap.t3.threads) return { kind: 'unavailable', rest: left };
+  const closed = ref && findThread(ref, snap.closed);
+  const coordinator = closed && !closed.parentId && COORDINATOR_TITLE.test(closed.title ?? '');
+  const laneName = coordinator ? titledLane(closed.title) || u.lane : named && !ref ? u.lane : null;
+  const head = laneName && headOf(laneName, snap);
+  return head ? { kind: 'thread', thread: head, rest } : { kind: 'missing', ref, rest: left };
 }
 
 // Work that is under way needs a holder; queued, paused and the owner's own rows may have none. Recurring work runs again
@@ -1051,10 +1141,10 @@ function ownerLine(u, snap) {
   const owner = ownerOf(u, snap);
   if (owner.kind === 'none') return u.state === 'needs-myuser' ? [] : [ownerFault(u, owner) ? tone('peach', 'unassigned') : 'unassigned'];
   if (owner.kind === 'text') return [prose(u.owner)];
-  // A settled, archived or deleted owner reads the same as a wrong id: nobody holds the unit. The coordinator's
-  // annotation stays, so the row still says whose it was.
+  // A settled, archived or deleted worker reads the same as a wrong id: nobody holds the unit. The coordinator's
+  // annotation stays, so the row still says whose it was, and the reference stays out of the text, in the hover title.
   const holder = owner.kind === 'thread' ? [prose(owner.thread.title), live(owner.thread, snap.now)]
-    : [owner.kind === 'missing' ? tone('peach', 'no owner thread') : tone('yellow', 'owner state unavailable')];
+    : [owner.kind === 'missing' ? `<span class="peach"${owner.ref ? ` title="${escape(owner.ref)}"` : ''}>no owner thread</span>` : tone('yellow', 'owner state unavailable')];
   return [...holder, owner.rest && prose(owner.rest)].filter(Boolean);
 }
 
@@ -1223,7 +1313,7 @@ function laneSection(lane, snap, params) {
   const t = lane.head ? snap.threads.get(lane.head) : null;
   if (!lane.head) head.push('no coordinator');
   else if (!t) head.push(snap.t3.threads ? tone('peach', `no ${lane.headRole} thread`) : tone('yellow', `${lane.headRole} state unavailable`));
-  else head.push(`${prose(t.title)} <span class="kept">${live(t, snap.now, true)}</span>`);
+  else head.push(prose(t.title), `<span class="kept">${live(t, snap.now, true)}</span>`);
   // Short time phrases are kept on one line, so "ago" never wraps alone.
   if (lane.updatedAt) {
     const quiet = snap.now - lane.updatedAt;
@@ -1293,6 +1383,8 @@ function columns(sections, lanes) {
 function needsRow(item, snap) {
   const todo = (name, ask, tag) => `<div class="u needs todo"><span class="state peach">you</span><b class="id">${prose(name)}</b>`
     + `${askLine(ask, tag)}</div>`;
+  if (item.alarms) return todo('Auto-update', [tone('kept', `${item.alarms} ${item.alarms === 1 ? 'alarm' : 'alarms'}`), '<a class="link" href="/">threads page</a>']);
+  if (item.ask) return todo(item.ask.ask, askMeta(item, snap.now), item.ask.lane);
   if (!item.unit) {
     const t = item.thread;
     return todo(t.title, [t.ask && prose(t.ask), t.askedAt && stamp('asked', t.askedAt, snap.now), t.branch && branchName(t.branch)].filter(Boolean), t.project);
@@ -1390,15 +1482,17 @@ function statusStrip(snap, needs, stuck) {
   const prProblems = lanes.filter((lane) => lane.prError).map((lane) => `${lane.name} PR state ${lane.prsAt === null ? 'loading' : 'unknown'}`);
   const count = (rows, label) => rows.length
     ? `<a href="${jumpTo(mapId('unit', rows[0].lane, rows[0].id))}">${rows.length} ${label}</a>` : `<span>0 ${label}</span>`;
-  const attention = needs.length ? `<a href="#needs-you">${needs.length} need you</a>`
-    : problems.length ? '<span class="yellow">needs you unknown</span>' : '<span class="green">nothing needs you</span>';
+  // It claims only what it read: T3, the lane files and the asks file. An ask written nowhere else is not on the board.
+  const gap = asksGap(snap);
+  const attention = needs.length ? `<a href="#needs-you">${needs.length} ${needs.length === 1 ? 'needs' : 'need'} you</a>`
+    : problems.length ? '<span class="yellow">needs you unknown</span>' : gap ? '' : '<span class="green">no asks on file</span>';
   // The same figure as the Stuck heading; with nothing listed and a source unread, the lanes directory included, it is
   // unknown, not zero. An empty lanes directory is zero.
   const stuckCount = stuck.length ? `<a href="#stuck">${stuck.length} stuck</a>`
     : !snap.lanes.lanes || (lanes.length && stuckGaps(snap).length) ? '<span class="yellow">stuck unknown</span>' : '<span>0 stuck</span>';
-  const stats = [attention, stuckCount, count(units.filter((u) => u.state === 'in-flight'), 'in flight'),
+  const stats = [attention, gap, stuckCount, count(units.filter((u) => u.state === 'in-flight'), 'in flight'),
     count(units.filter((u) => isStalled(u, snap.now)), 'stalled'), count(units.filter((u) => u.state === 'paused'), 'paused'),
-    count(units.filter((u) => u.state === 'queued'), 'queued')];
+    count(units.filter((u) => u.state === 'queued'), 'queued')].filter(Boolean);
   const links = lanes.map((lane) => `<a href="${jumpTo(mapId('lane', lane.name))}">${escape(lane.name)}</a>`);
   // Each item keeps its trailing "·" in one box, so a narrow strip wraps between items and no line starts with a "·";
   // the no-break space keeps the "·" on the item's last line when a long warning wraps inside its box.
@@ -1407,7 +1501,9 @@ function statusStrip(snap, needs, stuck) {
 }
 
 export function renderMap(snap, params = new URLSearchParams()) {
-  const needs = needsYou(snap);
+  // The map's to-do carries the updater's alarms as one row; the card with the full lines stays on the thread page.
+  const alarms = snap.updates?.alarms.length ?? 0;
+  const needs = [...needsYou(snap), ...(alarms ? [{ alarms }] : [])];
   const { dir, lanes } = snap.lanes;
   const stuck = lanes?.length ? stuckItems(snap, needs) : [];
   let body;
@@ -1543,7 +1639,8 @@ function handle(req, res) {
     let status = 200;
     let html;
     try {
-      const snap = route === 'map' ? snapshot({ autoupdate: null }) : snapshot();
+      const snap = snapshot();
+      logChange('asks', snap.asks.error ?? '', 'needs-myuser.tsv readable again');
       logChange('t3', snap.t3.unavailable.join('; '), 'T3 state readable again');
       html = route === 'map' ? renderMap(snap, new URL(req.url, 'http://board').searchParams) : render(snap);
       logChange('page', '', 'pages render again');

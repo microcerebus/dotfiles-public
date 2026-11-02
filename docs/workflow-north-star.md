@@ -96,7 +96,7 @@ the owner asked on 2026-10-14 for the rest of the pstack set, which overrides th
 To update: clone cursor/plugins, check out the old pin's `pstack/skills` next to the new one, and save `diff -ru old/<name> files/.claude/skills/<name>` as the local patch.
 Copy the new upstream dir over, re-apply the patch, and fix rejected hunks by hand.
 Security-read every changed upstream file (they instruct agents; flag any script, network call, or hook), keep each dir's MIT LICENSE, and record the new commit and date in nix/user.nix.
-Rewrite Cursor-only instructions through `docs/model-routing.md` and `arena/references/model-families.md`, preserving Codex-first roles, worktree ownership and explicit-only metadata.
+Rewrite Cursor-only instructions through `docs/model-routing.md` and `arena/references/model-families.md`, preserving the Opus-default roles, worktree ownership and explicit-only metadata.
 Use T3 rendering for HTML visuals and keep principle guidance in OPINIONS or the relevant routed playbook.
 A refresh never authorizes editing held preference files or replacing the shared adapter with the upstream Claude-only model mapping.
 unslop follows upstream since 0.15.24 but keeps its model-invocable "Must always apply." frontmatter.

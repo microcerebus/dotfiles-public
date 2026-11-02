@@ -32,7 +32,7 @@ Skip Phase A only when the work is genuinely greenfield with no surrounding syst
 
 Run the **arena** skill with the design-sketch task and the Phase A grounding artifacts. Pass `references/runner-prompt.md` as each runner's prompt.
 
-Pick independent Astra High runners per [`../arena/references/model-families.md`](../arena/references/model-families.md), as arena does.
+Pick independent Opus Extra High runners per [`../arena/references/model-families.md`](../arena/references/model-families.md), as arena does.
 Give each the same grounding and its own output path; a different family requires an explicit task exception or fallback.
 
 Design it twice. Require at least two structurally distinct candidates before synthesis, even when the first looks sufficient. This is the **exhaust-the-design-space** principle made concrete. Whole-shape alternatives, not point fixes inside one shape.

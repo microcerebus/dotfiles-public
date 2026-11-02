@@ -340,7 +340,7 @@ sync_public() { # sync_public <1 to log the result>
 # version. pnpm 12's `--latest` moves exact pins too, and a '!pkg' filter
 # turns the whole update into a no-op, so update the rest by name, then
 # re-assert the pins (which also installs a missing one).
-pins="chrome-devtools-axi@0.1.39 agent-device@0.21.23 playwright-core@1.64.1"
+pins="chrome-devtools-axi@0.1.39 agent-device@0.21.36 playwright-core@1.64.1"
 # Retired globals are removed when present instead of floating: lavish-axi
 # went on 20 Oct 2026, and its upstream CLI opens the default browser.
 retired="lavish-axi"

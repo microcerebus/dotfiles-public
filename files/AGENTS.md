@@ -52,22 +52,24 @@ These are common instructions for my agents across all scenarios.
 
 - Read `~/dotfiles/docs/model-routing.md` before choosing a model for a subagent, workflow stage, review or design work, and when Claude or Codex reports a usage limit.
   It holds the role defaults, fallback mechanics and approved specialist routing.
-- New threads, workers, reviewers, coordinators and orchestrators default to Codex: `gpt-6-astra` High for judgment, `gpt-6.1-sol` High for routine implementation, and `gpt-6.1-sol` Low for mechanical collection.
+- New threads, workers, reviewers, coordinators and orchestrators default to Claude Opus 5.5, inside and outside the lanes, including while Codex has quota.
   Keep Fast off; running threads keep their model.
-- Claude is the fallback when Codex is usage-limited or cannot do the job.
-  Record a concrete capability gap before choosing Claude without a quota limit.
-- Use artifact acceptance checks for user-facing work, Astra High for design and Codex plus unslop for writing.
+- Codex is the fallback on a confirmed Claude usage limit: move current threads and start new delegations there without asking, with Fast off, using `gpt-6-astra` High for judgment, `gpt-6.1-sol` High for routine implementation and `gpt-6.1-sol` Low for mechanical collection.
+  Record a task exception or concrete capability gap before choosing Codex without a limit.
+  The Codex computer-use route for screen checks is a capability, not a default model, and stays as written under General Guidelines.
+  `codex-review` stays the Codex second opinion for a task that asks for one.
+- Use artifact acceptance checks for user-facing work, Opus for design and Opus plus unslop for writing.
   The reader trial takes no new assignments; keep its measurements.
-  Reviews use fresh Codex contexts; another provider requires an explicit task exception or capability/quota fallback.
-- If routine work misses acceptance checks or exposes harder judgment, move the next committed unit to Astra High.
+  Reviews use fresh Opus Extra High contexts; another provider requires an explicit task exception or capability/quota fallback.
+- If routine work misses acceptance checks or exposes harder judgment, move the next committed unit to Extra High.
 - When either provider reports a usage limit, follow the fallback mechanics in that guide without asking again.
 
 ## Reasoning effort
 
-- Use High for Codex judgment and routine implementation, and Low for mechanical collection.
-  Keep Codex at High or below and Fast off unless explicitly requested.
-- For Claude fallback work, use the role-specific High or Extra High setting in `~/dotfiles/docs/model-routing.md`.
+- On Opus, use High for coordination and clearly scoped implementation, Extra High for review, verification, judging, open-ended architecture and difficult debugging, and Low for mechanical collection; `~/dotfiles/docs/model-routing.md` holds the detail.
   The hard cap is xhigh; max is banned.
+- On Codex, use High for judgment and routine implementation and Low for mechanical collection, and stay at High or below.
+- Keep Fast off unless explicitly requested.
   Do not reach for ultracode casually either.
 - Effort applies per stage: a long task needs more steps, not higher effort.
 - Skill-specific effort settings do not create provider exceptions; follow the approved routing guide.

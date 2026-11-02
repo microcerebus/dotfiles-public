@@ -9,7 +9,7 @@ disable-model-invocation: true
 Explore the codebase to answer "how does X work?" questions. Produce architectural explanations at the level of a senior engineer onboarding onto a subsystem, enough to build a working mental model, not so much that it reads like annotated source code.
 
 Use `../arena/references/model-families.md` for delegation.
-Mechanical file collection uses Sol Low; explorers that interpret architecture and explainers use Astra High.
+Mechanical file collection uses Opus Low; explorers that interpret architecture and explainers use Opus High.
 Keep every run read-only and Fast off.
 
 ## 1. Assess complexity

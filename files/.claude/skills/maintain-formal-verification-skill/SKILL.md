@@ -44,7 +44,7 @@ If an update needs another tool or version, stop and report the options to the t
 ## Pass
 
 1. **Find the checks.**
-   A verify skill has no fixed name; find it by what it does, usually under `.agents/skills/verify-*/`.
+   A verify skill has no fixed name; find it by what it does, usually under `.claude/skills/verify-*/` or `.agents/skills/verify-*/`.
    Read each one you find, or the one the user named.
    For each check, collect the property, the covered code, the bounds and assumptions, the run command, the drift command, the sync commit and where its recorded result lives.
    If no verify skill exists, stop and point at `create-formal-verification-skill`.

@@ -63,7 +63,7 @@ Correct the log, not the story. The audit never edits or removes a row, even an 
 
 ## Independent review of the trail
 
-Before handing back, ask a fresh read-only Astra High reviewer to check the audit trail and the run's transcript.
+Before handing back, ask a fresh read-only Opus Extra High reviewer to check the audit trail and the run's transcript.
 Follow `../arena/references/model-families.md` for delegation, concurrency and fallback.
 Self-review does not replace this independent pass; another family is optional only under the guide's task-exception or fallback conditions.
 The reviewer flags weak evidence, skipped checks and risky choices, without redoing or editing the work.

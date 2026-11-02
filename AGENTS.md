@@ -6,7 +6,7 @@ that stops being true.
 
 Workflow north star: `docs/workflow-north-star.md` (target operating model and
 tool-adoption backlog; check it before adding workflow tooling).
-Model defaults: `docs/model-routing.md` (Codex-first for new work, Claude fallback, and approved specialist routing).
+Model defaults: `docs/model-routing.md` (Claude Opus 5.5 for new work, Codex fallback on a Claude limit, and approved specialist routing).
 
 ## Safety contract (non-negotiable)
 
@@ -83,8 +83,8 @@ Model defaults: `docs/model-routing.md` (Codex-first for new work, Claude fallba
 
 ## Delegation
 
-- Follow `docs/model-routing.md`: Codex Astra High for judgment and reviews, Sol High for routine implementation, and Sol Low for mechanical collection; Fast off.
-  Claude is the fallback when Codex is limited or cannot do the job.
+- Follow `docs/model-routing.md`: Claude Opus 5.5 at Extra High for reviews and open-ended judgment, High for coordination and routine implementation, and Low for mechanical collection; Fast off.
+  Codex is the fallback on a confirmed Claude limit.
   Delegated agents may not touch `setup/`, `tests/`, secrets-adjacent files, or `AGENTS.md`.
 
 ## How to test
@@ -119,18 +119,17 @@ Model defaults: `docs/model-routing.md` (Codex-first for new work, Claude fallba
   full-screen TUIs - nvim/lazygit layouts break, mouse escape sequences leak
   as text (microsoft/inshellisense#411). It is installed for opt-in sessions
   only; fzf-tab is the always-on completion layer (2026-07-05).
-- `homebrew.onActivation.cleanup = "zap"` uninstalls (and zaps prefs of) any
-  brew formula/cask not declared in `nix/host.nix` - a plain `brew install`
-  lasts only until the next switch, which runs within about an hour of any
-  push to main (the owner kept zap for that, 2026-10-16). Declare everything; adopt
-  already-present apps with `brew install --cask --adopt <cask>`.
-  A `rollback` runs the old generation's brew bundle with --zap, so casks added since then are zapped (prefs and data deleted); the next switch reinstalls the app but not its data (2026-07-06).
-- Removing a cask from `nix/host.nix` runs its *zap* stanza, which can trash
-  data shared with other installs (claude-code's zap deletes `~/.claude.json*`
-  and the native `~/.local/share/claude`). Before dropping a cask, read its
-  zap list (`https://formulae.brew.sh/api/cask/<token>.json`); if it touches
-  anything still in use, have the human `brew uninstall --cask <token>`
-  (no zap) before the next activation (2026-10-07).
+- Activation never removes a brew package by flag, command or cleanup variable (`homebrew.onActivation.cleanup = "none"`); `checks.aarch64-darwin.activation-brew-removal` fails a removal it can read in the generated activate, and `HOMEBREW_BUNDLE_INSTALL_CLEANUP` or `HOMEBREW_BUNDLE_FORCE_INSTALL_CLEANUP` set through extraEnv, an env attrset or a managed brew.env.
+  It cannot see a wrapper script, a flag held in a variable or Home Manager's own activation; brew's 30-day periodic cleanup can still autoremove orphaned dependency formulae after an install.
+  The hourly switch runs as root with no terminal: on 2026-10-29 its zap uninstalled tools the owner had installed for a project hours before, then dotnet-sdk's uninstall needed his sudo password and aborted the switch before Home Manager; the next push failed the same way at 02:10.
+  the owner's 2026-10-16 "keep zap" was reversed on 2026-11-03.
+  `rebuild` then runs `brew bundle cleanup --file=/etc/homebrew/Brewfile`: it lists every undeclared formula, cask, tap and Mac App Store app and asks once for all of them.
+  A yes uninstalls without zap, so cask data stays; a no keeps everything and `brew upgrade` still runs.
+  A plain `brew install` therefore lasts until a rebuild where he says yes. Declare what you keep (nxnative's xcodegen, glslang and dotnet-sdk are, since 2026-10-29); adopt already-present apps with `brew install --cask --adopt <cask>`.
+- A `rollback` to a generation built before this fix still runs that generation's brew bundle with --zap --force-cleanup; `grep -l -- --zap /nix/var/nix/profiles/system-*-link/activate` lists those generations.
+  In a terminal sudo can prompt, so that zap succeeds: every cask and formula its Brewfile does not declare is removed and the casks are zapped (for dotnet-sdk: `~/.dotnet` and `~/.nuget` to the Trash, `/etc/paths.d/dotnet*` deleted); the next switch reinstalls the app but not its data (2026-07-06).
+  A zap can trash data shared with other installs (claude-code's zap deletes `~/.claude.json*` and the native `~/.local/share/claude`), and the zap list is never shown before it runs.
+  Before relying on such a rollback, read the zap lists of the casks it would remove (`https://formulae.brew.sh/api/cask/<token>.json`); if one touches anything still in use, have the human `brew uninstall --cask <token>` (no zap) first (2026-10-07).
 - nix-darwin activation runs `brew bundle` *before* Home Manager, and a
   bundle failure aborts the rest. From 2026-08-25 to 2026-10-07 every rebuild
   silently left Home Manager unapplied (stale `~/.zshrc`, links, packages)
@@ -138,6 +137,8 @@ Model defaults: `docs/model-routing.md` (Codex-first for new work, Claude fallba
   `brew upgrade` after the switch. Check HM actually applied with
   `readlink ~/.zshrc` (store path should change after a rebuild that touches
   `nix/user.nix`) (2026-10-07).
+  Installs still run there: a newly declared cask that ships a .pkg (or a declared one that went missing) needs sudo to install, so the unattended hourly switch fails on it before Home Manager; install it with `rebuild` in a terminal first (2026-10-29).
+  Formulae install there without sudo (brew bundle runs as the user), but a failed download still aborts the switch.
 - The axi tools are pnpm globals in `$PNPM_HOME/bin` (~/Library/pnpm/bin).
   The managed `scripts/axi-session-start` hook summarizes gh-axi and tasks-axi, and routes screen-free browser work to written Playwright scripts in background agent Chrome tabs, with codex-computer-use reserved for interactive checks.
   `scripts/agent-chrome-playwright` owns screen-free background tabs; `scripts/codex-computer-use` owns interactive runs, the screen warning and the idle-time check.

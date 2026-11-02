@@ -116,7 +116,7 @@ in
   home.sessionVariables.CHROME_DEVTOOLS_AXI_MCP_PATH = chromeDevtoolsMcpEntry;
   # agent-device: drive macOS apps through accessibility actions in the
   # background (no pointer takeover or Automation Mode), and skip its npm
-  # update check so the pin in nix/host.nix stays the only upgrade path.
+  # update check so the pin in scripts/dotfiles-autoupdate stays the only upgrade path.
   home.sessionVariables.AGENT_DEVICE_MACOS_APP_BACKEND = "native";
   home.sessionVariables.AGENT_DEVICE_NO_UPDATE_NOTIFIER = "1";
 
@@ -406,7 +406,7 @@ in
   home.file.".claude/skills/no-mistakes".source = link "files/.claude/skills/no-mistakes";
   home.file.".claude/skills/chrome-devtools-axi".source = link "files/.claude/skills/chrome-devtools-axi";
   # agent-device (own authorship): native macOS apps and iOS Simulators via the
-  # pinned callstack/agent-device CLI (pnpm global, pinned in nix/host.nix).
+  # pinned callstack/agent-device CLI (pnpm global, pinned in scripts/dotfiles-autoupdate).
   home.file.".claude/skills/agent-device".source = link "files/.claude/skills/agent-device";
   # unslop (cursor/plugins, pstack/skills/unslop): strips AI writing tells from
   # everything user-facing; prompt-only markdown. Refreshed with the pstack
@@ -429,7 +429,7 @@ in
   # Codex delegation (own authorship, inspired by Theo's Fable 5 workflow):
   # independent review and native computer-use verification via the codex CLI
   # (Homebrew cask, nix/host.nix). codex-review is slash-command only and is
-  # an independent reviewer for show-me-your-work. codex-implement was
+  # the Codex second opinion when a task asks for one. codex-implement was
   # dropped 2026-10-10: unused, and T3's delegate_task now hands bounded work
   # to Codex directly (AGENTS.md, T3 Code fallback routing).
   home.file.".claude/skills/codex-review".source = link "files/.claude/skills/codex-review";
@@ -452,13 +452,13 @@ in
   # Security-read: prompt-only markdown plus one append-only TSV
   # helper (show-me-your-work/scripts/log.sh), no network, no hooks. Edits
   # from upstream: Cursor paths (.cursor/skills -> .claude/skills, transcript
-  # location), Cursor Task/model lines -> Codex-first roles in model-routing.md,
+  # location), Cursor Task/model lines -> Opus-default roles in model-routing.md,
   # independent reviewers, correct and show-me-your-work (and
   # unslop above) model-invocable; why reads git/gh, ~/orchestrator lane
   # records and recall instead of Slack/Linear/Notion MCPs; reflect uses
   # recall and tasks-axi; ketchup renders with T3 html_render and leads with
   # "Needs the owner"; arena, architect, interrogate and swarm share
-  # arena/references/model-families.md (fresh Codex contexts with explicit
+  # arena/references/model-families.md (fresh Opus contexts with explicit
   # capability/quota fallback or task-level provider exceptions). The rest stay slash-command only, as
   # upstream ships them. poteto-mode (added 2026-10-16, same pin) is the one
   # model-invocable entry: its body routes by task type to one playbook in

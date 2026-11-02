@@ -635,8 +635,11 @@ test('each Stuck scenario renders the Stuck rows and Needs you count the flow ex
     const file = path.join(dir, 'gh', `prs-${repo.split('/')[1]}.json`);
     return fs.existsSync(file) ? { ...parsePrs(fs.readFileSync(file, 'utf8')), at: now } : { prs: new Map(), error: 'no repo', at: now };
   };
+  // The fixture's updater status shows one alarm, which Needs you counts; the real reader needs the flow's whole env.
+  const alarm = path.join(dir, 'alarm-updater');
+  fs.writeFileSync(alarm, "echo 'alarm: switch: fixture'\n");
   const render = (params) => renderMap(snapshot({ dbPath: env.AGENT_BOARD_T3_DB, logsDir: env.AGENT_BOARD_CLAUDE_PROJECTS,
-    lanesDir: path.join(dir, 'lanes'), now, autoupdate: null, prs }), params);
+    lanesDir: path.join(dir, 'lanes'), now, autoupdate: alarm, prs }), params);
   const stuckOf = (html) => html.slice(html.indexOf('id="stuck"'), html.indexOf('<div class="cols">'));
   const ids = (part) => [...part.matchAll(/<a class="id" href="[^"]+">([^<]+)<\/a>/g)].map((m) => m[1]);
   assert.ok(STUCK_SCENARIOS.crowded.stuck.length >= 15, 'crowded holds enough to fold');

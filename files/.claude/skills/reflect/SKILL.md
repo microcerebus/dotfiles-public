@@ -22,21 +22,21 @@ It prints this session's path under `~/.claude/projects/<cwd-slug>/`, or the Cod
 
 ## 2. Spawn three independent reviewers
 
-Use `../arena/references/model-families.md` for three independent Astra High reviewers.
+Use `../arena/references/model-families.md` for three independent Opus Extra High reviewers.
 Each may read git, forge records and the cited lane files, but must not edit them.
 Run within the lane concurrency limit, sequentially when necessary, and keep Fast off.
 
 | Lens | `model` | Prompt template |
 |---|---|---|
-| Judgment | `gpt-6-astra` | `references/judgment-reviewer.md` |
-| Tooling | `gpt-6-astra` | `references/tooling-reviewer.md` |
-| Divergent | `gpt-6-astra` | `references/divergent-reviewer.md` |
+| Judgment | `claude-opus-5-5` | `references/judgment-reviewer.md` |
+| Tooling | `claude-opus-5-5` | `references/tooling-reviewer.md` |
+| Divergent | `claude-opus-5-5` | `references/divergent-reviewer.md` |
 
 Pass each template verbatim, substituting the transcript path or digest where marked. Reviewers return findings through the selected delegation tool.
 
 ## 3. Synthesize
 
-One fresh Astra High synthesizer spot-verifies citations with git, forge records and the files the reviewers cite. Pass `references/synthesizer.md` verbatim, with each reviewer's full output inlined where marked. It returns an Accepted / Rejected / Backlog list.
+One fresh Opus Extra High synthesizer spot-verifies citations with git, forge records and the files the reviewers cite. Pass `references/synthesizer.md` verbatim, with each reviewer's full output inlined where marked. It returns an Accepted / Rejected / Backlog list.
 
 ## 4. Structural enforcement check
 

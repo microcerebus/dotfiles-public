@@ -6,8 +6,8 @@ disable-model-invocation: true
 
 # codex-review
 
-Route independent second-pass code review through the [shared model adapter](../arena/references/model-families.md).
-Default to Astra High with Fast off and a fresh read-only context.
+Independent reviews default to Opus under the [shared model adapter](../arena/references/model-families.md); this skill is the Codex second opinion, for a task that asks for one or a confirmed Claude limit.
+Use Astra High with Fast off and a fresh read-only context.
 Use native or T3 delegation when available; the CLI is the fallback transport.
 Codex is an outside reviewer: it sees the repo read-only and reports back; you stay the editor of record.
 

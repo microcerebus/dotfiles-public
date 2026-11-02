@@ -50,7 +50,7 @@ Skills without that flag (unslop, recall, show-me-your-work, chrome-devtools-axi
 ## Rules for every playbook
 
 - Start a todo list whose first items are the playbook's steps. A step you skip stays in the list as `skip: <reason>`.
-- Pick each subagent's model from `~/dotfiles/docs/model-routing.md`: Astra High for judgment, Sol High for routine implementation and Sol Low for mechanical collection, with Fast off.
+- Pick each subagent's model from `~/dotfiles/docs/model-routing.md`: Opus Extra High for review and open-ended judgment, Opus High for routine implementation and Opus Low for mechanical collection, with Fast off.
   Follow `../arena/references/model-families.md` for delegation and fallback.
   A worker that writes code gets its own worktree; respect lane concurrency limits.
   Read each result and inspect the artifact before accepting it.

@@ -9,7 +9,7 @@ disable-model-invocation: true
 Investigate the motivation and intent behind code. The companion `how` skill answers what the code does and how it works. `why` answers what forces led to its shape.
 
 Use `../arena/references/model-families.md` for delegation.
-Mechanical source collection uses Sol Low; investigators interpreting evidence and the synthesizer use Astra High.
+Mechanical source collection uses Opus Low; investigators interpreting evidence and the synthesizer use Opus Extra High.
 Each run may read git, forge records and recall output, but must not write files, commit, comment or send messages.
 Keep Fast off.
 
@@ -65,7 +65,7 @@ If your scope assessment suggests a single-commit trivial target where the PR de
 
 ## Step 4. Synthesize
 
-Spawn one fresh Astra High synthesizer under the shared delegation rules.
+Spawn one fresh Opus Extra High synthesizer under the shared delegation rules.
 It gets:
 1. The investigator findings, including any null results and any categories skipped with justification
 2. The code anchor

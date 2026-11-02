@@ -58,7 +58,8 @@ If the model was wrong, record the correction and rerun.
 ## Leave a rerunnable project skill
 
 Keep models, configurations and output in the repository's existing verification or evidence directory.
-Use `.agents/skills/verify-<area>/SKILL.md` for a new project skill unless that repository declares another canonical location.
+Use `.claude/skills/verify-<area>/SKILL.md` for a new project skill unless that repository declares another canonical location.
+Link it for Codex with a relative symlink at `.agents/skills/verify-<area>` pointing to `../../.claude/skills/verify-<area>`.
 Include frontmatter, when to run it, one exact command, source coverage, the last source commit checked, bounds, expected output, and what failure means.
 Add a drift command whose empty output means no covered source changed since that commit, including uncommitted edits.
 Record how to compare changed source with the model before advancing that commit.

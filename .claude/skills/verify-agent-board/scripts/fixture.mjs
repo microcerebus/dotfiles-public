@@ -231,6 +231,11 @@ export function seed(dir, now = Date.now()) {
     pr(8, 'feat(apply): prototype the form helper (fixture)', 'Merges after the leads screen.', { draft: true, mergeState: 'BEHIND', checks: [check('verify', 'SUCCESS'), check('typecheck', 'FAILURE')], head: 'ccc3333ccc3333ccc3333ccc3333ccc3333ccc33333', branch: 'feat/apply' }),
   ]);
 
+  // ---- the owner's asks, beside the lanes: one open, one closed. Invented, as every row here is ----
+  fs.writeFileSync(path.join(dir, 'needs-myuser.tsv'), 'asked_at\tlane\task\timpact_if_it_waits\tclosed_at\n'
+    + `${new Date(now - 90 * 60_000).toISOString()}\tfixture-board\tPick the demo colour (fixture)\tThe demo slips a day\t\n`
+    + `${new Date(now - 900 * 60_000).toISOString()}\tfixture-board\tName the sample cat (fixture)\tNothing\t${new Date(now - 800 * 60_000).toISOString()}\n`);
+
   // ---- dotfiles-autoupdate state: a healthy sync and a failed switch (the alarm) ----
   const home = path.join(dir, 'home');
   const daemon = path.join(dir, 'daemon');
@@ -284,19 +289,19 @@ const calm = {
   'lost-ref': ['queued', 'mcp:fx-coord', '', null, ''],
 };
 export const STUCK_SCENARIOS = {
-  initial: { rows: STUCK_ROWS, checks: 'failing', stuck: ['old-stall', 'paused-spike', 'orphan', 'draft-fail', 'lost-ref'], needs: 2 },
-  resolved: { rows: { ...STUCK_ROWS, ...fixed }, checks: 'passing', stuck: ['paused-spike', 'lost-ref'], needs: 2 },
+  initial: { rows: STUCK_ROWS, checks: 'failing', stuck: ['old-stall', 'paused-spike', 'orphan', 'draft-fail', 'lost-ref'], needs: 4 },
+  resolved: { rows: { ...STUCK_ROWS, ...fixed }, checks: 'passing', stuck: ['paused-spike', 'lost-ref'], needs: 4 },
   // Standing work: a healthy recurring unit days old is not stuck; one without an owner, one whose owner thread closed
   // and one whose draft PR fails a check are.
   recurring: { rows: { ...STUCK_ROWS, ...calm, 'nightly-sweep': ['recurring', 'mcp:fx-coord', '', 4320, 'runs every night'],
     'weekly-digest': ['recurring', '', '', 2880, 'its scheduler thread was archived'], 'queue-prep': ['recurring', 'mcp:fx-settled (c25 queue prep)', '', 1440, ''],
-    'dep-bumps': ['recurring', 'mcp:fx-warn', '24', 180, ''] }, checks: 'passing', stuck: ['weekly-digest', 'queue-prep', 'dep-bumps'], needs: 2 },
-  empty: { rows: { ...STUCK_ROWS, ...calm }, checks: 'passing', stuck: [], needs: 2, line: 'Nothing stuck' },
+    'dep-bumps': ['recurring', 'mcp:fx-warn', '24', 180, ''] }, checks: 'passing', stuck: ['weekly-digest', 'queue-prep', 'dep-bumps'], needs: 4 },
+  empty: { rows: { ...STUCK_ROWS, ...calm }, checks: 'passing', stuck: [], needs: 4, line: 'Nothing stuck' },
   // The same calm lane with one unreadable row and no answer from GitHub: the list says what it could not check.
-  degraded: { rows: { ...STUCK_ROWS, ...calm, 'Bad Row': ['queued', '', '', null, ''] }, checks: 'missing', stuck: [], needs: 2,
+  degraded: { rows: { ...STUCK_ROWS, ...calm, 'Bad Row': ['queued', '', '', null, ''] }, checks: 'missing', stuck: [], needs: 4,
     line: 'Could not check for stuck work: fixture-stuck has 1 unreadable row; GitHub did not answer for fixture-stuck.' },
   // Three lanes of trouble, 15 stuck units: the first five show and the rest fold under "10 more stuck".
-  crowded: { rows: STUCK_ROWS, checks: 'failing', copies: 3, needs: 4,
+  crowded: { rows: STUCK_ROWS, checks: 'failing', copies: 3, needs: 6,
     stuck: ['old-stall', 'paused-spike', 'orphan', 'draft-fail', 'lost-ref'].flatMap((id) => [id, `${id}-2`, `${id}-3`]) },
 };
 

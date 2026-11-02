@@ -1,6 +1,6 @@
 ---
 name: reader
-description: "Retired reader trial. Do not assign new tasks; use Codex Sol Low for collection and retain trial measurements for the planned review."
+description: "Retired reader trial. Do not assign new tasks; use Opus at Low effort for collection and retain trial measurements for the planned review."
 model: haiku
 effort: low
 tools: Read, Bash, Write

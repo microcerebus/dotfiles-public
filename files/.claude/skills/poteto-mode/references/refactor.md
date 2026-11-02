@@ -14,7 +14,7 @@ A missing feature or a real bug found on the way is split out and shipped after 
 5. Move in small steps that keep the pin green.
    Migrate every caller and delete the old API in the same wave, with no shims.
    Grep every rename in strings, docs and back-references.
-   Hand mechanical edits to `codex exec` with an exact scope.
+   Hand mechanical edits to an Opus worker with an exact scope, per `arena/references/model-families.md`.
 6. Prove behavior is unchanged on the real artifact: rerun the pin, and for larger reshapes diff old against new output or smoke-test with the verification skill.
 7. Keep the change only if it lowers reader load somewhere; otherwise revert it.
 8. Commit in order: the subtraction, then the reshape, then any cleanup.

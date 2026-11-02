@@ -22,7 +22,7 @@ ROOT = HERE.parents[2]
 SOURCE = ROOT / "scripts/dotfiles-autoupdate"
 # The reviewed fixed source. A change to the script stops the run until the
 # source map and model are reviewed against it (README.md, "Rerunning").
-SOURCE_SHA256 = "c3d8339f961a33f4fd0ab70489bd6c312c2c59b17989aa73434007b204cae45b"
+SOURCE_SHA256 = "765cb03b3ad59daa29a5a46af6814381c4fd2d5d96e66e875ff67696a481dbdf"
 UNFIXED_MODEL = ROOT / "docs/pstack-audit/batch-4-proof/Handoff.tla"
 # Same pin as the batch 4 runner, so both results come from one TLC.
 NIXPKGS = "7a6522c868711d06e3a520bbcdfafe9806f4337f"
