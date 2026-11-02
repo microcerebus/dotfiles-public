@@ -147,6 +147,11 @@ let
   denyPorts = [ 9222 9333 9334 3773 4391 4790 7265 ];
   # Denied too, and used by nothing else: the isolation check's own canary.
   canaryPort = 9336;
+  # How long launchd waits after SIGTERM before it SIGKILLs the runner. Set,
+  # not left to launchd's system-defined default, because the firewall
+  # daemon counts on a stop being over by then (exit_timeout in
+  # scripts/github-runner).
+  exitTimeout = 20;
   pfRules = pkgs.writeText "github-runner.pf"
     (builtins.replaceStrings [ "@uid@" ] [ (toString id) ] (builtins.readFile ./github-runner.pf));
 
@@ -173,6 +178,7 @@ let
     reload_status=${root}/reload.status
     deny_ports=${lib.concatMapStringsSep "," toString denyPorts}
     canary_port=${toString canaryPort}
+    exit_timeout=${toString exitTimeout}
     log=${runnerLog}
   '';
   script = pkgs.writeShellScript "github-runner" (builtins.readFile ../scripts/github-runner);
@@ -293,6 +299,7 @@ in
       # Each failed start runs the isolation check, which asks sudo (logged),
       # so a broken runner retries once a minute, not every 10 seconds.
       ThrottleInterval = 60;
+      ExitTimeOut = exitTimeout;
       ProcessType = "Interactive"; # no background CPU and I/O throttling for builds
       StandardOutPath = runnerLog;
       StandardErrorPath = runnerLog;

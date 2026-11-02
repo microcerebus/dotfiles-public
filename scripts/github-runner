@@ -40,7 +40,7 @@
 #
 # <config> is the store file nix/github-runner.nix writes (url name labels bin
 # state work home tmp tool seed inbox protected anchor rules loaded user
-# label plist reload reload_status deny_ports canary_port log). Paths come from it, never
+# label plist reload reload_status deny_ports canary_port exit_timeout log). Paths come from it, never
 # from the environment: a job can rewrite HOME or TMPDIR for later steps through
 # GITHUB_ENV, and the completed hook must not follow that. The hooks run this
 # through scripts/github-runner-hook.js, by path, with only PATH, HOME, TMPDIR
@@ -520,11 +520,19 @@ seed_tools() {
 # running job did before.
 #
 # Only a runner this daemon unloaded is loaded again: $reload.idle says
-# "unloading" from just before the unload until the load succeeds. A runner
-# found not loaded otherwise was stopped by hand and stays stopped. A runner
-# found loaded under "unloading" outlived a daemon killed before the unload:
-# its idle minute starts again.
+# "unloading <time>" from just before the unload until the load succeeds. A
+# runner found not loaded otherwise was stopped by hand and stays stopped.
+# A runner found loaded under "unloading" may still be stopping: launchd
+# lists it until the listener exits, and a switch that reloads this daemon
+# kills the poll that asked for the unload. Within $exit_timeout seconds of
+# the time (the plist's ExitTimeOut, after which launchd kills the runner),
+# plus 10, the poll waits. After that the runner outlived a daemon killed
+# before the unload: its idle minute starts again. A switch can run while
+# launchd stops the runner, and activate may remove $reload.idle then, so a
+# poll that unloaded the runner loads it whatever the file says by now;
+# activate leaves "unloading" in place for a poll killed before its load.
 loaded_runner() { launchctl print "system/$label" >/dev/null 2>&1; }
+unloading_idle() { case "$(cat "$reload.idle" 2>/dev/null || true)" in unloading | "unloading "*) ;; *) return 1 ;; esac; }
 
 # Failed starts. A runner that fails its isolation check, or cannot enter
 # its seatbelt (sandbox-exec is deprecated, and a macOS update could remove
@@ -556,18 +564,32 @@ runner_start() {
 }
 
 reload_when_idle() {
-  local now seen state busy=0 failure='' installed ok since started runs='' failed='' last_runs
+  local now seen state asked busy=0 unloaded='' stopping='' failure='' installed ok since started runs='' failed='' last_runs
   now="$(date +%s)"
   if [ -e "$reload.pending" ]; then
     seen="$(cat "$reload.pending")"
     state="$(cat "$reload.idle" 2>/dev/null || true)"
-    if [ "$state" = unloading ] && loaded_runner; then
-      # Killed before the unload: the old plist still runs. Start over.
-      state=''
-      rm -f "$reload.idle"
-    fi
+    case "$state" in
+      unloading | "unloading "*)
+        # A time later than now (the clock stepped back) counts as now; no
+        # time (an older version of this script) as long ago.
+        asked="${state#unloading}" state=unloading
+        asked="${asked# }"
+        case "$asked" in '' | *[!0-9]*) asked=0 ;; esac
+        [ "$asked" -le "$now" ] || { asked="$now"; echo "unloading $now" >"$reload.idle"; }
+        if ! loaded_runner; then
+          : # the load below retries
+        elif [ $((now - asked)) -le $((exit_timeout + 10)) ]; then
+          stopping=1 # the next poll looks again
+        else
+          # Killed before the unload: the old plist still runs. Start over.
+          state=''
+          rm -f "$reload.idle"
+        fi
+        ;;
+    esac
     if [ "$state" = unloading ]; then
-      : # the load below retries
+      : # still stopping, or the load below retries
     elif loaded_runner; then
       pgrep -U "$user" -f '/Runner[.]Worker( |$)' >/dev/null || busy=$?
       case "$busy" in
@@ -579,9 +601,11 @@ reload_when_idle() {
             echo "$state" >"$reload.idle"
           fi
           if [ $((now - state)) -ge 60 ]; then
-            echo unloading >"$reload.idle"
+            echo "unloading $now" >"$reload.idle"
+            unloaded=1
             launchctl unload "$plist" || true
             if loaded_runner; then
+              unloaded=''
               echo "$state" >"$reload.idle"
               failure="deferred reload failed: launchctl could not unload the runner, which still runs its old plist; the next idle poll tries again"
             fi
@@ -596,10 +620,20 @@ reload_when_idle() {
       rm -f "$reload.pending" "$reload.idle"
       echo "$(date '+%F %T') the runner was stopped by hand, so it stays stopped; its new plist $plist is in place for the next load"
     fi
-    if [ "$(cat "$reload.idle" 2>/dev/null || true)" = unloading ]; then
+    if [ -z "$stopping" ] && { [ -n "$unloaded" ] || unloading_idle; }; then
       launchctl load "$plist" || true
+      # This load can land between nix-darwin's unload and its cp when a
+      # switch finds the runner already stopped and leaves the reload to
+      # nix-darwin: launchd then runs the old plist with no marker, until the
+      # next switch. The window is milliseconds, and a listener started then
+      # has no job to lose; without this load, a load of nix-darwin's that
+      # meets the stop still under way leaves the runner stopped instead.
       if loaded_runner; then
         # A switch that installed a newer plist meanwhile keeps its marker.
+        # That includes a switch during the unload that only restarted the
+        # marker's clock for the same plist, so the runner is reloaded once
+        # more after its next idle minute. The marker cannot tell that
+        # switch from one whose plist launchd has not loaded yet.
         [ "$(cat "$reload.pending" 2>/dev/null)" != "$seen" ] || rm -f "$reload.pending"
         rm -f "$reload.idle"
         echo "$(date '+%F %T') reloaded the runner from $plist"
@@ -713,9 +747,11 @@ case "$cmd" in
       # The marker names the plist its switch installed. If that is not the
       # installed one, a system without this step (a rollback, or a push that
       # reverted it) has installed and loaded another since: start afresh.
+      # Unless the daemon is unloading the runner: then it still needs
+      # "unloading" to load it again.
       if [ -n "$since" ] && ! cmp -s "$pending_plist" "$plist"; then
         since=''
-        rm -f "$reload.idle"
+        unloading_idle || rm -f "$reload.idle"
       fi
       tmp_plist="${plist%/*}/.${plist##*/}.new"
       # Marker first: a failure either way leaves the old plist installed and

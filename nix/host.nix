@@ -1,6 +1,6 @@
 # System layer: macOS settings + declarative Homebrew.
 # Layer ownership (AGENTS.md): Homebrew owns GUI/macOS-native apps ONLY.
-{ lib, pkgs, username, hostname, ... }:
+{ config, lib, pkgs, username, hostname, ... }:
 
 {
   # Required by nix-darwin for user-scoped options (homebrew, defaults, ...).
@@ -38,18 +38,25 @@
   homebrew = {
     enable = true;
     onActivation = {
-      # Activation only installs what is missing and zaps what is undeclared.
-      # Upgrades run as a separate `brew upgrade` AFTER activation (daily
-      # dotfiles-sync agent in nix/user.nix, and the `rebuild` alias), because
-      # inside activation one failed download aborts everything after it:
-      # on 2026-10-07 the chatgpt cask pointed at a 404 and blocked the whole
-      # Home Manager switch. Outside activation a bad cask fails alone.
+      # Activation only installs what is missing. Upgrades and removals run
+      # AFTER activation, because inside it one failed brew step aborts
+      # everything after it: on 2026-10-07 the chatgpt cask pointed at a 404
+      # and blocked the whole Home Manager switch. Outside activation a bad
+      # cask fails alone. `brew upgrade` runs in the daily dotfiles-sync
+      # agent and the `rebuild` alias (nix/user.nix).
+      # Removal runs only in `rebuild`, in the owner's terminal, where brew lists
+      # what goes and asks first, and it uninstalls rather than zaps, so a
+      # cask's data stays. The hourly auto-update switches as root with no
+      # terminal: on 2026-10-29 its zap removed tools he had installed for a
+      # project hours before, then the dotnet-sdk cask's uninstall needed
+      # his sudo password and aborted the switch before Home Manager.
+      # tests/activation_brew_removal_test.nix fails any removal here.
       # Guardrails: casks stay non-greedy (default) so self-updating apps
       # manage themselves; `brew pin <formula>` holds back a known-bad
       # version; the daily cloud routine reviews new formula/cask versions
       # for advisories alongside the flake.lock bump it pushes to main.
       autoUpdate = false;
-      cleanup = "zap"; # remove anything not declared here (keeps machine honest)
+      cleanup = "none"; # `rebuild` offers to remove what is undeclared (keeps machine honest)
       upgrade = false;
     };
 
@@ -60,7 +67,7 @@
       # hours of each release, while brew skips the self-updating cask and
       # left it ~60 versions behind (2026-10-07).
       "t3-code@nightly" # T3 Code nightly (pingdotgg/t3code); self-updating.
-                        # Data in ~/.t3 - removing this cask zaps it.
+                        # Data in ~/.t3 - a zap of this cask trashes it.
       "codex"      # OpenAI Codex CLI. A CLI, so by the layer rule it belongs in
                    # Home Manager, but nixpkgs ran ~11 releases behind (0.149 vs
                    # 0.160.1, 2026-10-07) and a read-only /nix/store binary left
@@ -72,8 +79,8 @@
       "hammerspoon"          # macOS automation (files/.hammerspoon)
       "raycast"              # launcher; owns cmd+space (Spotlight hotkey disabled below)
 
-      # Daily apps. Previously hand-installed; declared here so cleanup = "zap"
-      # stops removing them and fresh machines get them for free.
+      # Daily apps. Previously hand-installed; declared here so `rebuild`
+      # never offers to remove them and fresh machines get them for free.
       # One-time adoption of already-present apps (human runs):
       #   brew install --cask --adopt <cask>
       "brave-browser"   # kept installed; Chrome is the browser for agent tooling
@@ -109,6 +116,7 @@
       "visual-studio-code"
       "vlc"                  # media player
       "zoom"                 # video calls (interviews)
+      "dotnet-sdk"           # nxnative project (dotnet build); the owner's pick 2026-10-29
 
       # Tailscale GUI app: provides the TUN via a Network Extension, so no
       # root daemon to manage (the `tailscale` *formula* needs sudo tailscaled).
@@ -149,6 +157,10 @@
       # needs Homebrew (macOS-native daemons, etc.).
       "dashlane/tap/dashlane-cli" # not in nixpkgs; official tap
       "mas" # Mac App Store CLI; required by masApps above
+      # nxnative project (README prereqs); the owner chose a declaration over a
+      # devShell, 2026-10-29. glslang pulls in spirv-tools and spirv-headers.
+      "glslang"
+      "xcodegen"
     ];
   };
 
@@ -231,21 +243,9 @@
     blockAllIncoming = false;
   };
 
-  # Zap guard: dropping a cask lets cleanup=zap run its zap stanza. Two
-  # dropped casks would destroy live data: claude-code's zap trashes
-  # ~/.claude.json* and the native ~/.local/{bin,share}/claude install;
-  # codex-app's zap trashes com.openai.codex prefs, which ChatGPT.app now
-  # uses. Abort until they are removed with a plain (non-zap) uninstall.
-  # Delete this block once neither Caskroom dir exists (2026-10-07).
-  system.activationScripts.preActivation.text = ''
-    for c in claude-code codex-app; do
-      if [ -d "/opt/homebrew/Caskroom/$c" ]; then
-        echo "error: cask $c is installed; its zap would delete live data." >&2
-        echo "  Run first:  brew uninstall --cask claude-code codex-app" >&2
-        exit 1
-      fi
-    done
-  '';
+  # The Brewfile at a stable path, for `brew bundle cleanup` in the `rebuild`
+  # alias (nix/user.nix).
+  environment.etc."homebrew/Brewfile".text = config.homebrew.brewfile;
 
   # Toolchain drift warning: a nixpkgs bump on 2026-10-10 moved the system
   # node (22.23.2 -> 22.23.3) and pnpm (11 -> 12) and broke job-tracker's

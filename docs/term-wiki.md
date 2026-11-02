@@ -200,7 +200,7 @@ Practice: `term-dojo game` (chapter 6) or `term-dojo tutor tmux`.
 ## Reference
 
 - **Key layers**: Karabiner (caps→ctrl/esc) → Ghostty owns `cmd+*` → tmux `ctrl+a` / Herdr `ctrl+b` → nvim leader `Space`. Never overlap.
-- **Two speeds of change**: `files/*` symlinked = instant; `nix/*.nix` = `rebuild` (human runs it). Homebrew cleanup is zap - declare everything in `nix/host.nix`.
+- **Two speeds of change**: `files/*` symlinked = instant; `nix/*.nix` = `rebuild` (human runs it). `rebuild` lists undeclared Homebrew packages and asks before it uninstalls them (no zap) - declare what you keep in `nix/host.nix`.
 - **AI layer**: Claude Code everywhere (`cc` in shell, `<leader>aa` in nvim via sidekick; copilot removed). Hex handles voice-to-text system-wide.
 - **Browser split**: agents and CLI-opened links use Google Chrome (`$BROWSER=open-chrome` routes gh/OAuth flows); Brave is personal and off limits to agents.
 - **Repo map**: `flake.nix` · `nix/host.nix` (macOS/casks) · `nix/user.nix` (shell/CLI) · `files/` (live configs) · `docs/` · `scripts/`.

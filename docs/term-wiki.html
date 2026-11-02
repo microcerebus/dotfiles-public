@@ -581,7 +581,7 @@ flowchart LR
       <ul class="plain">
         <li><b>Instant:</b> anything under <code>files/</code> is symlinked out-of-store - edit ghostty/tmux/starship/karabiner config, reload the app, done</li>
         <li><b>Rebuild:</b> package lists, zsh init, macOS defaults (<code>nix/*.nix</code>) - run <code>rebuild</code>, which the human always drives</li>
-        <li>Homebrew cleanup is <b>zap</b>: any app not declared in <code>nix/host.nix</code> gets uninstalled on the next rebuild - declare everything</li>
+        <li>Homebrew cleanup <b>asks</b>: <code>rebuild</code> lists any app not declared in <code>nix/host.nix</code> and offers to uninstall it (no zap, data stays) - declare what you keep</li>
         <li>validate without touching the system: <code>nix flake check --no-build</code> · <code>tests/mac_setup_test.sh</code></li>
       </ul>
     </div>

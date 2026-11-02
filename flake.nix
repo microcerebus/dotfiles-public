@@ -80,15 +80,32 @@
         ];
       };
 
-      # Pure-eval table test for the activation sudo guard; it builds one
-      # empty file, so it adds nothing to the system build.
-      checks.${system}.activation-sudo-lint =
-        let
-          failures = import ./tests/activation_sudo_lint_test.nix { inherit (nixpkgs) lib; };
-          pkgs = self.darwinConfigurations.${hostname}.pkgs;
-        in
-        if failures == [ ] then pkgs.runCommandLocal "activation-sudo-lint" { } "touch $out"
-        else throw ("tests/activation_sudo_lint_test.nix failed:\n"
-          + nixpkgs.lib.concatMapStrings (f: "  - ${f}\n") failures);
+      checks.${system} = {
+        # Pure-eval table test for the activation sudo guard; it builds one
+        # empty file, so it adds nothing to the system build.
+        activation-sudo-lint =
+          let
+            failures = import ./tests/activation_sudo_lint_test.nix { inherit (nixpkgs) lib; };
+            pkgs = self.darwinConfigurations.${hostname}.pkgs;
+          in
+          if failures == [ ] then pkgs.runCommandLocal "activation-sudo-lint" { } "touch $out"
+          else throw ("tests/activation_sudo_lint_test.nix failed:\n"
+            + nixpkgs.lib.concatMapStrings (f: "  - ${f}\n") failures);
+
+        # Pure-eval check that the host's activate never uninstalls a brew
+        # package, by flag, command or environment; the auto-update daemon
+        # runs it with no terminal.
+        activation-brew-removal =
+          let
+            host = self.darwinConfigurations.${hostname};
+            failures = import ./tests/activation_brew_removal_test.nix {
+              inherit (nixpkgs) lib;
+              inherit (host) config;
+            };
+          in
+          if failures == [ ] then host.pkgs.runCommandLocal "activation-brew-removal" { } "touch $out"
+          else throw ("tests/activation_brew_removal_test.nix failed:\n"
+            + nixpkgs.lib.concatMapStrings (f: "  - ${f}\n") failures);
+      };
     };
 }

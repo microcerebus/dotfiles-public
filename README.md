@@ -40,8 +40,8 @@ Most of this is ordinary Nix plumbing. Three parts are not:
 
 - **One layer owns each job.** Home Manager for CLI, Homebrew for GUI apps,
   devShells for per-project toolchains. Nothing is installed twice, and
-  `homebrew.onActivation.cleanup = "zap"` means an undeclared app does not
-  survive the next rebuild. The config is the machine.
+  each `rebuild` lists every undeclared Homebrew app and offers to
+  uninstall it. The config is the machine.
 - **A keybinding contract across nested TUIs.** Ghostty, tmux, Herdr,
   Hammerspoon, Raycast, and Karabiner each own a disjoint keyspace, written
   down and enforced (see below). Nested terminal multiplexers otherwise eat
@@ -74,7 +74,8 @@ Details: [`docs/tmux-training.md`](docs/tmux-training.md).
 ```sh
 rebuild            # apply the flake, waiting for an auto-update switch in progress (alias: sudo dotfiles-autoupdate rebuild ~/dotfiles)
 rollback           # back to the previous system generation (rollback <n>: generation n), under the same wait
-                   # caution: it runs that generation's brew bundle with --zap, so casks added since are zapped (prefs and data deleted)
+                   # caution: a generation built before this fix still runs its brew bundle with --zap, so casks added since then are zapped (prefs and data deleted);
+                   # grep -l -- --zap /nix/var/nix/profiles/system-*-link/activate lists them
 term-dojo          # daily training: 10 questions from YOUR live configs
 term-dojo drill X  # hands-on exercises (ghostty|tmux|neovim|motions|shell|git|nix|herdr|agents)
 term-dojo tutor X  # interactive tutorial (tmux|vim): do it for real, verified live
@@ -134,8 +135,9 @@ This mirror will not build until you personalize it. Three placeholders:
 Then review before your first `rebuild` - this is someone else's machine:
 
 - `nix/host.nix` casks and `masApps` are a personal app list. Cut what you do
-  not want. `cleanup = "zap"` **uninstalls anything not declared here**, so a
-  first rebuild with the list unchanged will remove your undeclared apps.
+  not want. After each switch, `rebuild` lists **every Homebrew package not
+  declared here** and asks once to uninstall all of them. Answer no until the
+  list is yours; a yes uninstalls without zap, so app data stays.
 - `files/AGENTS.md` and `files/OPINIONS.md` encode opinions, including a model
   routing table with specific cost and quality judgments. Treat them as a
   worked example of the format, not as advice.

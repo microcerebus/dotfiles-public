@@ -9,7 +9,7 @@ Keep the phone and Mac protocol versions compatible when updating either app.
 T3 Connect and Tailscale are separate access paths; Tailscale being healthy does not prove that T3 Connect works.
 
 History: Paseo (agent-control relay) and Moshi/mosh were both tried in 2026-07 and scrapped in favor of this simpler stack.
-Their brew entries were removed from `nix/host.nix`; `cleanup = "zap"` uninstalls them on rebuild.
+Their brew entries were removed from `nix/host.nix`, and the `cleanup = "zap"` then in force uninstalled them on rebuild.
 
 ## Setup
 

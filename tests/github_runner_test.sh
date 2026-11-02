@@ -104,6 +104,8 @@ EOF
 # installs a newer plist during the reload would. STUB_UNLOAD_KILL=before or
 # after kills the caller just before or just after the unload takes effect,
 # as a daemon killed in the middle of a reload would be.
+# STUB_UNLOAD_DURING=<file>: run <file> with bash -e before the unload takes
+# effect, as a switch that runs while launchd stops the runner would.
 # print shows launchctl.print, if a case wrote one.
 cat >"$stubs/launchctl" <<'EOF'
 #!/usr/bin/env bash
@@ -116,6 +118,7 @@ case "$1" in
     # Like launchctl, a failed unload can still exit 0.
     [ "${STUB_UNLOAD_FAIL:-0}" = 1 ] && { echo "Unload failed: 5: Input/output error" >&2; exit 0; }
     [ "${STUB_UNLOAD_KILL:-}" != before ] || { kill -KILL "$PPID"; exit 0; }
+    [ -z "${STUB_UNLOAD_DURING:-}" ] || STUB_UNLOAD_DURING='' bash -e "$STUB_UNLOAD_DURING" >>"$STUB_LOG/during.out" 2>&1 || true
     rm -f "$STUB_LOG/launchctl.loaded"
     [ "${STUB_UNLOAD_KILL:-}" != after ] || kill -KILL "$PPID" ;;
   load)
@@ -253,6 +256,11 @@ print(port)
 
 # The runner's launchd label, as activation and its plist name use it.
 label=$(nix eval --raw "$repo#darwinConfigurations.myhost.config.launchd.daemons.github-runner.serviceConfig.Label")
+# How long launchd lets the runner exit before it kills it. The firewall
+# daemon reads the same value from its config (exit_timeout) to tell a stop
+# still in flight from a runner that was never unloaded, so nix sets both
+# from one binding; the suite's config takes the plist's value.
+exit_timeout=$(nix eval --raw "$repo#darwinConfigurations.myhost.config.launchd.daemons.github-runner.serviceConfig.ExitTimeOut" --apply toString)
 
 # netstat_rows <proto local state>...: the rows as `netstat -an -p tcp` prints them.
 netstat_rows() {
@@ -311,6 +319,7 @@ reload=$r/reload
 reload_status=$r/reload.status
 deny_ports=9222,9333,9334
 canary_port=$canary
+exit_timeout=$exit_timeout
 log=$r/runner.log
 EOF
 }
@@ -1467,13 +1476,17 @@ plists() {
 }
 # switch [<dir>]: the runner's part of a switch to the system whose launchd
 # dir is <dir> (default $r/new); sets out and code. Like store paths, each
-# system's plist is a file of its own.
-switch() {
+# system's plist is a file of its own. switch_script [<dir>] only writes it
+# to $r/switch.sh.
+switch_script() {
   local s='' c='' new="${1:-$r/new}"
   if [ -n "$activate_line" ]; then read -r s _ c _ < <(head -n 1 <<<"$activate_line"); fi
   printf '%s\n%s\n' "$activate_line" "$darwin_part" \
     | sed -e "s|$launchd/Library/LaunchDaemons|$new|g" -e "s|/Library/LaunchDaemons|$r/LaunchDaemons|g" \
       ${s:+-e "s|^$s |\"$BASH\" \"$script\" |" -e "s| $c | $r/conf |"} >"$r/switch.sh"
+}
+switch() {
+  switch_script "$@"
   code=0
   out="$(PATH="$forbid:$stubs:/usr/bin:/bin" STUB_LOG="$r/log" "$BASH" -e "$r/switch.sh" 2>&1)" || code=$?
 }
@@ -1683,12 +1696,19 @@ if [ "$(cat "$r/log/launchctl.loaded")" = new ] && [ ! -e "$r/reload.pending" ] 
 else bad "the next idle poll after a failed unload reloads the runner and clears the alarm" "$out" "$(cat "$r/reload.status" 2>/dev/null)"; fi
 
 # A daemon killed in the middle of a reload. Killed before the unload, it
-# leaves "unloading" with the old runner still loaded: the next poll starts
-# the idle minute again rather than call the old runner reloaded. Killed after
-# the unload, it leaves the runner unloaded: the next poll loads it.
+# leaves "unloading" with the old runner still loaded: a poll a minute later,
+# past the time launchd gives a stop, starts the idle minute again rather
+# than call the old runner reloaded. Killed after the unload, it leaves the
+# runner unloaded: the next poll loads it.
+# shellcheck disable=SC2016 # nix's ${...}, not the shell's
+if [[ "$exit_timeout" =~ ^[0-9]+$ ]] && [ "$exit_timeout" -le 40 ] \
+  && grep -qF 'ExitTimeOut = exitTimeout;' "$repo/nix/github-runner.nix" \
+  && grep -qF 'exit_timeout=${toString exitTimeout}' "$repo/nix/github-runner.nix"; then
+  ok "the runner's plist sets ExitTimeOut ($exit_timeout s), from the binding its config's exit_timeout comes from"
+else bad "the runner's plist sets ExitTimeOut, from the binding its config's exit_timeout comes from" "ExitTimeOut: [$exit_timeout]"; fi
 fresh; plists loaded; echo 0 >"$r/log/pgrep.code"; switch; echo 1 >"$r/log/pgrep.code"
 run firewall; idle_since 60; STUB_UNLOAD_KILL=before run firewall
-killed=$code; : >"$r/log/launchctl.calls"; run firewall
+killed=$code; tick 60; : >"$r/log/launchctl.calls"; run firewall
 if [ "$killed" != 0 ] && [ "$(cat "$r/log/launchctl.loaded")" = old ] && [ -e "$r/reload.pending" ] \
   && [ "$(cat "$r/reload.idle" 2>/dev/null)" = "$(now)" ] && ! calls | grep -qv "^print" && ! grep -q reloaded <<<"$out"; then
   ok "a daemon killed before the unload leaves the reload pending and starts the idle minute again"
@@ -1706,6 +1726,89 @@ if [ "$killed" != 0 ] && [ "$(cat "$r/log/launchctl.loaded" 2>/dev/null)" = new 
   ok "a daemon killed after the unload has the runner loaded again on the next poll"
 else bad "a daemon killed after the unload has the runner loaded again on the next poll" "killed: exit $killed" "$out" \
   "launchctl: $(calls | tr '\n' ';')" "loaded: $(cat "$r/log/launchctl.loaded" 2>&1)"; fi
+
+# A poll killed after it asked launchd to unload the runner, while launchd
+# still lists it: the listener takes a while to exit. A switch that reloads
+# the firewall daemon does this, and launchd starts the next poll at once.
+# That poll must not take the runner for one that was never unloaded, or the
+# poll after the stop takes it for one stopped by hand and drops the reload.
+# STUB_UNLOAD_KILL=before stands in for it: the stub cannot keep a stop in
+# flight, and the poll cannot tell the two apart.
+fresh; plists loaded; echo 0 >"$r/log/pgrep.code"; switch; echo 1 >"$r/log/pgrep.code"
+run firewall; idle_since 60; STUB_UNLOAD_KILL=before run firewall; killed=$code
+tick 5; : >"$r/log/launchctl.calls"; run firewall; said=$out; stopping=$(calls | grep -cv '^print' || true)
+idle=$(cat "$r/reload.idle" 2>/dev/null || true)
+rm -f "$r/log/launchctl.loaded"; tick 55; run firewall
+if [ "$killed" != 0 ] && [ "$stopping" = 0 ] && [ "${idle%% *}" = unloading ] \
+  && [ "$(cat "$r/log/launchctl.loaded" 2>/dev/null)" = new ] && [ ! -e "$r/reload.pending" ] && [ ! -e "$r/reload.idle" ] \
+  && ! grep -q "stopped by hand" <<<"$out" && grep -q reloaded <<<"$out"; then
+  ok "a poll killed while launchd still stops the runner leaves it to the poll after the stop, which loads it"
+else bad "a poll killed while launchd still stops the runner leaves it to the poll after the stop, which loads it" \
+  "killed: exit $killed" "poll during the stop: $said (idle $idle, launchctl calls other than print: $stopping)" \
+  "poll after the stop: $out" "launchctl: $(calls | tr '\n' ';')" "loaded: $(cat "$r/log/launchctl.loaded" 2>&1)" \
+  "pending: $(cat "$r/reload.pending" 2>&1)"; fi
+
+# "unloading" with no time, as the version before wrote it, counts as long
+# ago: with the runner loaded, the idle minute starts again.
+fresh; plists loaded; echo 0 >"$r/log/pgrep.code"; switch; echo 1 >"$r/log/pgrep.code"
+echo unloading >"$r/reload.idle"; : >"$r/log/launchctl.calls"; run firewall
+if [ "$(cat "$r/reload.idle" 2>/dev/null)" = "$(now)" ] && ! calls | grep -qv '^print' && [ -e "$r/reload.pending" ]; then
+  ok "an \"unloading\" with no time and the runner loaded starts the idle minute again"
+else bad "an \"unloading\" with no time and the runner loaded starts the idle minute again" "$out" \
+  "idle: $(cat "$r/reload.idle" 2>&1)" "launchctl: $(calls | tr '\n' ';')"; fi
+
+# A switch that runs while the daemon unloads the runner. The realistic path:
+# a switch interrupted between its marker and its plist, so the marker names
+# a plist that is not installed, run again while launchd stops the runner.
+# Activate restarts the idle minute for that marker, but the unload is under
+# way: the runner must be loaded again, by the daemon or, if a switch kills
+# the daemon first, by its next poll. during <switch>: write the switch to
+# run during the unload; <switch> is `again` (the same system) or `nomarker`
+# (one whose marker cannot be written, so nix-darwin reloads the runner).
+during() {
+  switch_script
+  if [ "$1" = nomarker ]; then
+    printf 'rm -f %q && mkdir %q\n' "$r/reload.pending" "$r/reload.pending" >"$r/during.sh"
+  else : >"$r/during.sh"; fi
+  printf 'PATH=%q\n' "$forbid:$stubs:/usr/bin:/bin" >>"$r/during.sh"
+  cat "$r/switch.sh" >>"$r/during.sh"
+}
+interrupted() {
+  fresh; plists loaded; echo 1 >"$r/log/pgrep.code"
+  echo "$(($(now) - 120)) $r/new/$label.plist" >"$r/reload.pending"
+  run firewall; idle_since 60
+}
+interrupted; during again; : >"$r/log/launchctl.calls"
+STUB_UNLOAD_DURING="$r/during.sh" run firewall; said=$out; run firewall
+if [ "$(cat "$r/log/launchctl.loaded" 2>/dev/null)" = new ] && [ "$(cat "$r/LaunchDaemons/$label.plist")" = new ] \
+  && ! grep -q "stopped by hand" <<<"$out" && ! grep -q '^fail' "$r/reload.status"; then
+  ok "a switch during the daemon's unload leaves the runner loaded on the new plist"
+else bad "a switch during the daemon's unload leaves the runner loaded on the new plist" "poll: $said" "next poll: $out" \
+  "switch: $(cat "$r/log/during.out" 2>&1)" "launchctl: $(calls | tr '\n' ';')" "loaded: $(cat "$r/log/launchctl.loaded" 2>&1)" \
+  "pending: $(cat "$r/reload.pending" 2>&1)" "idle: $(cat "$r/reload.idle" 2>&1)"; fi
+interrupted; during again
+STUB_UNLOAD_DURING="$r/during.sh" STUB_UNLOAD_KILL=after run firewall; killed=$code; run firewall
+if [ "$killed" != 0 ] && [ "$(cat "$r/log/launchctl.loaded" 2>/dev/null)" = new ] && ! grep -q "stopped by hand" <<<"$out" \
+  && ! grep -q '^fail' "$r/reload.status"; then
+  ok "a switch during the unload of a daemon killed before its load leaves the runner to the next poll"
+else bad "a switch during the unload of a daemon killed before its load leaves the runner to the next poll" "killed: exit $killed" \
+  "next poll: $out" "switch: $(cat "$r/log/during.out" 2>&1)" "loaded: $(cat "$r/log/launchctl.loaded" 2>&1)" \
+  "pending: $(cat "$r/reload.pending" 2>&1)" "idle: $(cat "$r/reload.idle" 2>&1)"; fi
+interrupted; during again
+STUB_UNLOAD_DURING="$r/during.sh" STUB_LOAD_FAIL=1 run firewall; said=$out; failed=$(cat "$r/reload.status"); run firewall
+if grep -q '^fail	.*has not loaded' <<<"$failed" && [ "$(cat "$r/log/launchctl.loaded" 2>/dev/null)" = new ] \
+  && ! grep -q "stopped by hand" <<<"$out" && ! grep -q '^fail' "$r/reload.status"; then
+  ok "a load that fails after a switch during the unload alarms, and the next poll loads the runner"
+else bad "a load that fails after a switch during the unload alarms, and the next poll loads the runner" "poll: $said" \
+  "status: $failed" "next poll: $out" "loaded: $(cat "$r/log/launchctl.loaded" 2>&1)" "idle: $(cat "$r/reload.idle" 2>&1)"; fi
+interrupted; during nomarker
+STUB_UNLOAD_DURING="$r/during.sh" run firewall; said=$out
+if [ "$(cat "$r/log/launchctl.loaded" 2>/dev/null)" = new ] && grep -q "nix-darwin reloads it now" "$r/log/during.out" \
+  && grep -q reloaded <<<"$said"; then
+  ok "a switch during the unload that falls back to nix-darwin's reload leaves the runner loaded"
+else bad "a switch during the unload that falls back to nix-darwin's reload leaves the runner loaded" "poll: $said" \
+  "switch: $(cat "$r/log/during.out" 2>&1)" "launchctl: $(calls | tr '\n' ';')" "loaded: $(cat "$r/log/launchctl.loaded" 2>&1)"; fi
+rmdir "$r/reload.pending" 2>/dev/null || true
 
 # A switch that installs a newer plist while the daemon reloads keeps its
 # marker, so that plist is reloaded too.

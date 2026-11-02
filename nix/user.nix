@@ -218,15 +218,23 @@ in
     ];
 
     shellAliases = {
-      # brew upgrade runs after the switch so one broken cask cannot block it
-      # (see homebrew.onActivation in nix/host.nix).
-      rebuild = "sudo ${autoupdate} rebuild ${dotfiles} && brew upgrade";
+      # brew removes what is undeclared and upgrades after the switch, so one
+      # broken cask cannot block it (see homebrew.onActivation in
+      # nix/host.nix). Without --force, cleanup lists what it would remove
+      # and asks; a no still upgrades. No --zap: a cask's zap also trashes
+      # data the list does not show (dotnet-sdk's: ~/.dotnet, ~/.nuget).
+      # With no terminal brew only prints the list and suggests
+      # `brew bundle cleanup --force` without --file; run it with
+      # --file=/etc/homebrew/Brewfile, or it reads a project Brewfile in $PWD.
+      rebuild = "sudo ${autoupdate} rebuild ${dotfiles} && { brew bundle cleanup --file=/etc/homebrew/Brewfile; brew upgrade; }";
       # Switches back to the previous generation (`rollback <n>`: to generation
       # n) under the same switch lock as rebuild, waiting for an auto-update
       # switch to finish first. Rolling back from a pushed revision holds it off
       # the hourly apply for a day.
-      # It runs the old generation's brew bundle with --zap, so casks added since
-      # then are zapped (prefs and data deleted).
+      # A generation built before this fix still runs its brew bundle with
+      # --zap, so casks added since then are zapped (prefs and data deleted);
+      # `grep -l -- --zap /nix/var/nix/profiles/system-*-link/activate` lists
+      # them.
       rollback = "sudo ${autoupdate} rollback";
       # The daily dotfiles-sync run, now and in this terminal, where sudo can
       # prompt for the casks that ship a .pkg. The agent's own program
